@@ -1,0 +1,4 @@
+/target
+
+// Library required by building libpnet on Windows
+Packet.lib

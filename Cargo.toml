@@ -1,0 +1,14 @@
+[package]
+name = "pcap2socks"
+version = "0.1.0"
+authors = ["Xie Zhihao <xzh1206@gmail.com>"]
+edition = "2018"
+description = "Redirect traffic to SOCKS proxy with pcap."
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+clap = "3.0.0-beta.1"
+ipnetwork = "0.16.0"
+pnet = "0.26.0"
+socks = "0.3.2"
