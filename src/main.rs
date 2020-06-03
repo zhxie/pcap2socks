@@ -1,37 +1,41 @@
-use pcap2socks as p;
+use log::{error, info};
+use pcap2socks as lib;
 
 fn main() {
     // Parse arguments
-    let opts = match p::parse() {
+    let flags = lib::parse();
+
+    // Validate arguments
+    let opts = match lib::validate(&flags) {
         Ok(opts) => opts,
         Err(e) => {
-            eprintln!("parse: {}", e);
+            error!("parse: {}", e);
             return;
         }
     };
 
+    // Log
+    lib::set_logger(&flags);
+
     // Interfaces
-    let inter = match p::interface(opts.inter) {
+    let inter = match lib::interface(opts.inter) {
         Ok(inter) => inter,
         Err(e) => {
-            println!("Available interfaces are listed below, use -i <INTERFACE> to designate:");
-            for inter in p::pcap::interfaces().iter() {
-                println!("  {}", inter);
-            }
-            eprintln!("select interface: {}", e);
+            lib::enumerate_interfaces();
+            error!("parse: {}", e);
             return;
         }
     };
-    println!("Listen on {}", inter);
+    info!("Listen on {}", inter);
 
     // Publish
     if let Some(publish) = opts.publish {
-        println!("Publish {}", publish);
+        info!("Publish {}", publish);
     }
 
     // Proxy
     match opts.srcs.len() {
-        0 => println!("Proxy to {}", opts.dst),
+        0 => info!("Proxy to {}", opts.dst),
         _ => {
             let ip_addrs = format!(
                 "{}",
@@ -42,13 +46,13 @@ fn main() {
                     .join(", ")
             );
 
-            println!("Proxy {} to {}", ip_addrs, opts.dst)
+            info!("Proxy {} to {}", ip_addrs, opts.dst);
         }
     }
 
     // Start proxying
-    if let Err(e) = p::proxy(inter, opts.publish, opts.srcs, opts.dst) {
-        eprintln!("proxy: {}", e);
+    if let Err(e) = lib::proxy(inter, opts.publish, opts.srcs, opts.dst) {
+        error!("proxy: {}", e);
         return;
     }
 }

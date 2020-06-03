@@ -1,4 +1,5 @@
 use clap::Clap;
+use log::{info, warn};
 use pnet::packet::ethernet::{EtherTypes, EthernetPacket};
 use std::io::ErrorKind;
 use std::net::{Ipv4Addr, SocketAddrV4};
@@ -6,21 +7,40 @@ use std::sync::{Arc, Mutex};
 
 pub mod args;
 
-/// Parses arguments and returns a `Opts`.
-pub fn parse() -> Result<args::Opts, String> {
-    let flags = args::Flags::parse();
+/// Parses arguments and returns a `Flags`.
+pub fn parse() -> args::Flags {
+    args::Flags::parse()
+}
 
-    match args::Opts::validate(&flags) {
+/// Sets the logger.
+pub fn set_logger(flags: &args::Flags) {
+    let level = match flags.verbose {
+        true => log::LevelFilter::Debug,
+        false => log::LevelFilter::Info,
+    };
+    env_logger::builder()
+        .format_level(false)
+        .format_module_path(false)
+        .format_timestamp(None)
+        .filter_level(level)
+        .init();
+}
+
+/// Validate arguments and returns an `Opts`.
+pub fn validate(flags: &args::Flags) -> Result<args::Opts, String> {
+    match args::Opts::validate(flags) {
         Ok(opts) => Ok(opts),
         Err(e) => Err(format!("{}", e)),
     }
 }
 
 pub mod pcap;
+use pcap::ethernet;
+use pcap::interface::{self, Interface};
 
 // Gets an available network iterface match the name.
-pub fn interface(name: Option<String>) -> Result<pcap::Interface, String> {
-    let mut inters = pcap::interfaces();
+pub fn interface(name: Option<String>) -> Result<Interface, String> {
+    let mut inters = interface::interfaces();
     if inters.len() <= 0 {
         return Err(String::from("no available interface"));
     }
@@ -38,8 +58,17 @@ pub fn interface(name: Option<String>) -> Result<pcap::Interface, String> {
     Ok(inters[0].clone())
 }
 
+// Enumerates and prints all available network interfaces.
+pub fn enumerate_interfaces() {
+    let inters = interface::interfaces();
+    info!("Available interfaces are listed below, use -i <INTERFACE> to designate:");
+    for inter in inters.iter() {
+        info!("  {}", inter);
+    }
+}
+
 pub fn proxy(
-    inter: pcap::Interface,
+    inter: Interface,
     publish: Option<Ipv4Addr>,
     srcs: Vec<Ipv4Addr>,
     dst: SocketAddrV4,
@@ -58,7 +87,7 @@ pub fn proxy(
                 match packet.get_ethertype() {
                     EtherTypes::Arp => {
                         if let Some(publish) = publish {
-                            match pcap::ethernet::handle_ethernet_arp(
+                            match ethernet::handle_ethernet_arp(
                                 packet,
                                 inter.hardware_addr,
                                 &srcs,
@@ -67,10 +96,10 @@ pub fn proxy(
                             ) {
                                 Ok(s) => {
                                     if !s.is_empty() {
-                                        println!("{}", s);
+                                        info!("{}", s);
                                     }
                                 }
-                                Err(e) => eprintln!("{}", e),
+                                Err(e) => warn!("{}", e),
                             };
                         }
                     }
