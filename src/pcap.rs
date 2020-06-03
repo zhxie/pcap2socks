@@ -9,24 +9,45 @@ use std::fmt::{Display, Formatter};
 use std::hash::Hash;
 use std::net::Ipv4Addr;
 
+/// Represents a network interface and its associated addresses.
 #[derive(Clone, Eq, Hash, PartialEq)]
 pub struct Interface {
     pub name: String,
     pub alias: Option<String>,
-    pub hardware_addr: Option<MacAddr>,
+    pub hardware_addr: MacAddr,
     pub ip_addrs: Vec<Ipv4Addr>,
     pub loopback: bool,
 }
 
 impl Interface {
+    /// Construct a new empty `Interface`.
     pub fn new() -> Interface {
         Interface {
             name: String::new(),
             alias: None,
-            hardware_addr: None,
+            hardware_addr: MacAddr::zero(),
             ip_addrs: vec![],
             loopback: false,
         }
+    }
+
+    // Opens the network interface for sending and receiving data.
+    pub fn open(&self) -> Result<(Box<dyn DataLinkSender>, Box<dyn DataLinkReceiver>), String> {
+        let inters = datalink::interfaces();
+        let inter = match inters
+            .into_iter()
+            .filter(|current_inter| current_inter.name == self.name)
+            .next()
+        {
+            Some(int) => int,
+            _ => return Err(format!("unknown interface {}", self.name)),
+        };
+        let (tx, rx) = match datalink::channel(&inter, Default::default()) {
+            Ok(Ethernet(tx, rx)) => (tx, rx),
+            Ok(_) => return Err(format!("unhandled link type")),
+            Err(e) => return Err(format!("{}", e)),
+        };
+        Ok((tx, rx))
     }
 }
 
@@ -39,10 +60,7 @@ impl Display for Interface {
             name = self.name.clone();
         }
 
-        let mut hardware_addr = String::new();
-        if let Some(addr) = &self.hardware_addr {
-            hardware_addr = format!(" [{}]", addr);
-        }
+        let hardware_addr = format!(" [{}]", self.hardware_addr);
 
         let ip_addrs = format!(
             "{}",
@@ -62,6 +80,7 @@ impl Display for Interface {
     }
 }
 
+/// Gets a list of available network interfaces for the current machine.
 pub fn interfaces() -> Vec<Interface> {
     let inters = datalink::interfaces();
 
@@ -77,7 +96,10 @@ pub fn interfaces() -> Vec<Interface> {
 
             let mut i = Interface::new();
             i.name = inter.name.clone();
-            i.hardware_addr = inter.mac;
+            i.hardware_addr = match inter.mac {
+                Some(mac) => mac,
+                None => return Err(()),
+            };
             i.ip_addrs = inter
                 .ips
                 .iter()
@@ -106,26 +128,4 @@ pub fn interfaces() -> Vec<Interface> {
     ifs
 }
 
-pub fn open(
-    interface: &Interface,
-) -> Result<(Box<dyn DataLinkSender>, Box<dyn DataLinkReceiver>), String> {
-    let inters = datalink::interfaces();
-    let inter = match inters
-        .into_iter()
-        .filter(|current_inter| current_inter.name == interface.name)
-        .next()
-    {
-        Some(int) => int,
-        _ => return Err(format!("unknown interface {}", interface.name)),
-    };
-
-    let (tx, rx) = match datalink::channel(&inter, Default::default()) {
-        Ok(Ethernet(tx, rx)) => (tx, rx),
-        Ok(_) => return Err(format!("channel: {}", "unhandled link type")),
-        Err(e) => return Err(format!("channel: {}", e)),
-    };
-
-    Ok((tx, rx))
-}
-
-mod ethernet;
+pub mod ethernet;

@@ -1,36 +1,27 @@
-use pcap2socks;
+use pcap2socks as p;
 
 fn main() {
     // Parse arguments
-    let opts = match pcap2socks::parse() {
+    let opts = match p::parse() {
         Ok(opts) => opts,
         Err(e) => {
-            eprintln!("{}", &e);
+            eprintln!("parse: {}", e);
             return;
         }
     };
 
     // Interfaces
-    let mut inters = pcap2socks::interfaces();
-    if inters.len() <= 0 {
-        eprintln!("No available interface.");
-        return;
-    }
-    let inter;
-    if inters.len() > 1 {
-        if let None = opts.inter {
-            eprintln!("Available interfaces are listed below, use -i <INTERFACE> to designate.");
+    let inter = match p::interface(opts.inter) {
+        Ok(inter) => inter,
+        Err(e) => {
+            println!("Available interfaces are listed below, use -i <INTERFACE> to designate:");
+            for inter in p::pcap::interfaces().iter() {
+                println!("  {}", inter);
+            }
+            eprintln!("select interface: {}", e);
             return;
         }
-    }
-    if let Some(inter) = opts.inter {
-        inters.retain(|current_inter| current_inter.name == inter);
-        if inters.len() <= 0 {
-            eprintln!("Unknown interface {}.", inter);
-            return;
-        }
-    }
-    inter = inters[0].clone();
+    };
     println!("Listen on {}", inter);
 
     // Publish
@@ -53,5 +44,11 @@ fn main() {
 
             println!("Proxy {} to {}", ip_addrs, opts.dst)
         }
+    }
+
+    // Start proxying
+    if let Err(e) = p::proxy(inter, opts.publish, opts.srcs, opts.dst) {
+        eprintln!("proxy: {}", e);
+        return;
     }
 }

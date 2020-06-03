@@ -1,8 +1,9 @@
 use pnet::datalink::MacAddr;
-use pnet::packet::arp::{Arp, ArpHardwareTypes, ArpOperations, ArpPacket};
+use pnet::packet::arp::{Arp, ArpHardwareTypes, ArpOperations, ArpPacket, MutableArpPacket};
 use pnet::packet::ethernet::EtherTypes;
 
-pub fn handle_arp(packet: ArpPacket, hardware_addr: MacAddr) -> Arp {
+/// Creates a ARP reply according to a given ARP packet.
+pub fn reply_arp(packet: &ArpPacket, hardware_addr: MacAddr) -> Arp {
     Arp {
         hardware_type: ArpHardwareTypes::Ethernet,
         protocol_type: EtherTypes::Ipv4,
@@ -15,4 +16,16 @@ pub fn handle_arp(packet: ArpPacket, hardware_addr: MacAddr) -> Arp {
         target_proto_addr: packet.get_sender_proto_addr(),
         payload: vec![],
     }
+}
+
+/// Serializes an ARP layer.
+pub fn serialize_arp(arp: &Arp, buffer: &mut [u8]) -> Result<(), String> {
+    let mut arp_packet = match MutableArpPacket::new(buffer) {
+        Some(packet) => packet,
+        None => return Err(format!("cannot serialize ARP layer")),
+    };
+
+    arp_packet.populate(arp);
+
+    Ok(())
 }
