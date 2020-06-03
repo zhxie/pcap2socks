@@ -1,48 +1,37 @@
-use ipnetwork;
+use ipnetwork::IpNetwork;
 use pnet::datalink;
+use pnet::datalink::Channel::Ethernet;
+use pnet::datalink::{DataLinkReceiver, DataLinkSender, MacAddr};
+use std::clone::Clone;
+use std::cmp::{Eq, PartialEq};
 use std::fmt;
-use std::net;
+use std::fmt::{Display, Formatter};
+use std::hash::Hash;
+use std::net::Ipv4Addr;
 
-pub struct MacAddr(pub u8, pub u8, pub u8, pub u8, pub u8, pub u8);
-
-impl MacAddr {
-    pub fn new(a: u8, b: u8, c: u8, d: u8, e: u8, f: u8) -> MacAddr {
-        return MacAddr(a, b, c, d, e, f);
-    }
-}
-
-impl fmt::Display for MacAddr {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        return write!(
-            f,
-            "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-            self.0, self.1, self.2, self.3, self.4, self.5
-        );
-    }
-}
-
+#[derive(Clone, Eq, Hash, PartialEq)]
 pub struct Interface {
     pub name: String,
     pub alias: Option<String>,
     pub hardware_addr: Option<MacAddr>,
-    pub ip_addrs: Vec<net::Ipv4Addr>,
+    pub ip_addrs: Vec<Ipv4Addr>,
     pub loopback: bool,
 }
 
 impl Interface {
     pub fn new() -> Interface {
-        return Interface {
+        Interface {
             name: String::new(),
             alias: None,
             hardware_addr: None,
             ip_addrs: vec![],
             loopback: false,
-        };
+        }
     }
 }
 
-impl fmt::Display for Interface {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+impl Display for Interface {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         let name;
         if let Some(alias) = &self.alias {
             name = format!("{} ({})", self.name, alias);
@@ -69,7 +58,7 @@ impl fmt::Display for Interface {
             flags = String::from(" (Loopback)");
         }
 
-        return write!(f, "{}{}{}: {}", name, hardware_addr, flags, ip_addrs);
+        write!(f, "{}{}{}: {}", name, hardware_addr, flags, ip_addrs)
     }
 }
 
@@ -79,27 +68,28 @@ pub fn interfaces() -> Vec<Interface> {
     let ifs: Vec<Interface> = inters
         .iter()
         .map(|inter| {
-            // if !inter.is_up() {
-            //     return Err(());
-            // }
+            if inter.is_loopback() {
+                return Err(());
+            }
+            /*if !inter.is_up() {
+                return Err(());
+            }*/
 
             let mut i = Interface::new();
             i.name = inter.name.clone();
-            if let Some(addr) = inter.mac {
-                i.hardware_addr = Some(MacAddr::new(addr.0, addr.1, addr.2, addr.3, addr.4, addr.5))
-            }
+            i.hardware_addr = inter.mac;
             i.ip_addrs = inter
                 .ips
                 .iter()
                 .map(|ip| match ip {
-                    ipnetwork::IpNetwork::V4(ipv4) => {
-                        let ip = ipv4.network();
+                    IpNetwork::V4(ipv4) => {
+                        let ip = ipv4.ip();
                         if ip.is_unspecified() {
                             return Err(());
                         }
-                        return Ok(ip);
+                        Ok(ip)
                     }
-                    _ => return Err(()),
+                    _ => Err(()),
                 })
                 .filter_map(Result::ok)
                 .collect();
@@ -108,10 +98,34 @@ pub fn interfaces() -> Vec<Interface> {
             }
             i.loopback = inter.is_loopback();
 
-            return Ok(i);
+            Ok(i)
         })
         .filter_map(Result::ok)
         .collect();
 
-    return ifs;
+    ifs
 }
+
+pub fn open(
+    interface: &Interface,
+) -> Result<(Box<dyn DataLinkSender>, Box<dyn DataLinkReceiver>), String> {
+    let inters = datalink::interfaces();
+    let inter = match inters
+        .into_iter()
+        .filter(|current_inter| current_inter.name == interface.name)
+        .next()
+    {
+        Some(int) => int,
+        _ => return Err(format!("unknown interface {}", interface.name)),
+    };
+
+    let (tx, rx) = match datalink::channel(&inter, Default::default()) {
+        Ok(Ethernet(tx, rx)) => (tx, rx),
+        Ok(_) => return Err(format!("channel: {}", "unhandled link type")),
+        Err(e) => return Err(format!("channel: {}", e)),
+    };
+
+    Ok((tx, rx))
+}
+
+mod ethernet;

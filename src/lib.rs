@@ -13,6 +13,7 @@ pub fn parse() -> Result<args::Opts, String> {
 }
 
 pub mod pcap;
+pub mod socks;
 
 /// Get a list of available network interfaces for the current machine.
 pub fn interfaces() -> Vec<pcap::Interface> {

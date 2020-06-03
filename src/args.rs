@@ -1,6 +1,5 @@
 use clap::Clap;
-use std::net;
-use std::path;
+use std::net::{Ipv4Addr, SocketAddrV4};
 
 #[derive(Clap)]
 #[clap(
@@ -10,6 +9,13 @@ use std::path;
 pub struct Flags {
     #[clap(long, short, about = "Print verbose information")]
     pub verbose: bool,
+    #[clap(
+        long = "interface",
+        short,
+        about = "Interface for listening",
+        value_name = "INTERFACE"
+    )]
+    pub inter: Option<String>,
     #[clap(long, short, about = "ARP publishing address", value_name = "ADDRESS")]
     pub publish: Option<String>,
     #[clap(long = "sources", short, about = "Sources", value_name = "ADDRESS")]
@@ -25,9 +31,10 @@ pub struct Flags {
 
 pub struct Opts {
     pub verbose: bool,
-    pub publish: Option<net::Ipv4Addr>,
-    pub srcs: Vec<net::Ipv4Addr>,
-    pub dst: net::SocketAddrV4,
+    pub inter: Option<String>,
+    pub publish: Option<Ipv4Addr>,
+    pub srcs: Vec<Ipv4Addr>,
+    pub dst: SocketAddrV4,
 }
 
 impl Opts {
@@ -35,9 +42,10 @@ impl Opts {
     pub fn new() -> Opts {
         Opts {
             verbose: false,
+            inter: None,
             publish: None,
             srcs: vec![],
-            dst: net::SocketAddrV4::new(net::Ipv4Addr::new(127, 0, 0, 1), 1080),
+            dst: SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 1080),
         }
     }
 
@@ -46,56 +54,55 @@ impl Opts {
         let verbose = flags.verbose;
         let mut publish = None;
         if let Some(p) = &flags.publish {
-            match p.parse::<net::Ipv4Addr>() {
-                Ok(addr) => {
-                    if addr.is_unspecified() {
+            publish = match p.parse::<Ipv4Addr>() {
+                Ok(publish) => {
+                    if publish.is_unspecified() {
                         return Err(format!(
                             "validate publish {}: {}",
-                            p, "IP address unspecified"
+                            p, "unspecified IP address"
                         ));
                     }
-                    publish = Some(addr);
+                    Some(publish)
                 }
                 Err(e) => return Err(format!("validate publish {}: {}", p, e)),
-            }
+            };
         }
-        let srcs: Vec<net::Ipv4Addr>;
-        let s: Result<Vec<_>, _> = flags
+        let srcs: Result<Vec<_>, _> = flags
             .srcs
             .iter()
-            .map(|src| src.parse::<net::Ipv4Addr>())
+            .map(|src| src.parse::<Ipv4Addr>())
             .collect();
-        match s {
-            Ok(s) => srcs = s,
+        let srcs = match srcs {
+            Ok(src) => src,
             Err(e) => return Err(format!("validate sources: {}", e)),
-        }
+        };
         for src in srcs.iter() {
             if src.is_unspecified() {
                 return Err(format!(
                     "validate source {}: {}",
-                    src, "IP address unspecified"
+                    src, "unspecified IP address"
                 ));
             }
         }
-        let dst;
-        match flags.dst.parse::<net::SocketAddrV4>() {
+        let dst = match flags.dst.parse::<SocketAddrV4>() {
             Ok(addr) => {
                 if addr.ip().is_unspecified() {
                     return Err(format!(
                         "validate destination {}: {}",
-                        flags.dst, "IP address unspecified"
+                        flags.dst, "unspecified IP address"
                     ));
                 }
-                dst = addr;
+                addr
             }
             Err(e) => return Err(format!("validate destination {}: {}", flags.dst, e)),
-        }
+        };
 
-        return Ok(Opts {
+        Ok(Opts {
             verbose: verbose,
+            inter: flags.inter.clone(),
             publish: publish,
             srcs: srcs,
             dst: dst,
-        });
+        })
     }
 }
