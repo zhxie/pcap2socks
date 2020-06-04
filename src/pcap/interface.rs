@@ -16,7 +16,7 @@ pub struct Interface {
     pub alias: Option<String>,
     pub hardware_addr: MacAddr,
     pub ip_addrs: Vec<Ipv4Addr>,
-    pub loopback: bool,
+    pub is_loopback: bool,
 }
 
 impl Interface {
@@ -27,7 +27,7 @@ impl Interface {
             alias: None,
             hardware_addr: MacAddr::zero(),
             ip_addrs: vec![],
-            loopback: false,
+            is_loopback: false,
         }
     }
 
@@ -72,7 +72,7 @@ impl Display for Interface {
         );
 
         let mut flags = String::new();
-        if self.loopback {
+        if self.is_loopback {
             flags = String::from(" (Loopback)");
         }
 
@@ -87,9 +87,6 @@ pub fn interfaces() -> Vec<Interface> {
     let ifs: Vec<Interface> = inters
         .iter()
         .map(|inter| {
-            if inter.is_loopback() {
-                return Err(());
-            }
             /*if !inter.is_up() {
                 return Err(());
             }*/
@@ -118,7 +115,7 @@ pub fn interfaces() -> Vec<Interface> {
             if i.ip_addrs.len() <= 0 {
                 return Err(());
             }
-            i.loopback = inter.is_loopback();
+            i.is_loopback = inter.is_loopback();
 
             Ok(i)
         })

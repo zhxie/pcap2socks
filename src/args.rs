@@ -57,14 +57,11 @@ impl Opts {
             publish = match p.parse::<Ipv4Addr>() {
                 Ok(publish) => {
                     if publish.is_unspecified() {
-                        return Err(format!(
-                            "validate publish {}: {}",
-                            p, "unspecified IP address"
-                        ));
+                        return Err(format!("publish {} is an unspecified IP address", p));
                     }
                     Some(publish)
                 }
-                Err(e) => return Err(format!("validate publish {}: {}", p, e)),
+                Err(e) => return Err(format!("parse publish {}: {}", p, e)),
             };
         }
         let srcs: Result<Vec<_>, _> = flags
@@ -74,27 +71,24 @@ impl Opts {
             .collect();
         let srcs = match srcs {
             Ok(src) => src,
-            Err(e) => return Err(format!("validate sources: {}", e)),
+            Err(e) => return Err(format!("parse sources: {}", e)),
         };
         for src in srcs.iter() {
             if src.is_unspecified() {
-                return Err(format!(
-                    "validate source {}: {}",
-                    src, "unspecified IP address"
-                ));
+                return Err(format!("source {} is an unspecified IP address", src));
             }
         }
         let dst = match flags.dst.parse::<SocketAddrV4>() {
             Ok(addr) => {
                 if addr.ip().is_unspecified() {
                     return Err(format!(
-                        "validate destination {}: {}",
-                        flags.dst, "unspecified IP address"
+                        "destination {} is an unspecified IP address",
+                        flags.dst
                     ));
                 }
                 addr
             }
-            Err(e) => return Err(format!("validate destination {}: {}", flags.dst, e)),
+            Err(e) => return Err(format!("parse destination {}: {}", flags.dst, e)),
         };
 
         Ok(Opts {

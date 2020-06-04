@@ -9,7 +9,7 @@ fn main() {
     let opts = match lib::validate(&flags) {
         Ok(opts) => opts,
         Err(e) => {
-            error!("parse: {}", e);
+            error!("cannot parse arguements: {}", e);
             return;
         }
     };
@@ -17,12 +17,17 @@ fn main() {
     // Log
     lib::set_logger(&flags);
 
-    // Interfaces
+    // Interface
     let inter = match lib::interface(opts.inter) {
         Ok(inter) => inter,
         Err(e) => {
-            lib::enumerate_interfaces();
-            error!("parse: {}", e);
+            error!("cannot determine interface: {}", e);
+            println!();
+
+            println!("Available interfaces are listed below, use -i <INTERFACE> to designate:");
+            for inter in lib::interfaces().iter() {
+                println!("    {}", inter);
+            }
             return;
         }
     };
@@ -49,8 +54,6 @@ fn main() {
             info!("Proxy {} to {}", ip_addrs, opts.dst);
         }
     }
-
-    // Start proxying
     if let Err(e) = lib::proxy(inter, opts.publish, opts.srcs, opts.dst) {
         error!("proxy: {}", e);
         return;

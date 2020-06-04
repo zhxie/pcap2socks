@@ -1,7 +1,8 @@
 use clap::Clap;
-use log::{info, warn};
+use env_logger::fmt::Color;
+use log::{debug, warn, Level, LevelFilter};
 use pnet::packet::ethernet::{EtherTypes, EthernetPacket};
-use std::io::ErrorKind;
+use std::io::{ErrorKind, Write};
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::{Arc, Mutex};
 
@@ -15,14 +16,25 @@ pub fn parse() -> args::Flags {
 /// Sets the logger.
 pub fn set_logger(flags: &args::Flags) {
     let level = match flags.verbose {
-        true => log::LevelFilter::Debug,
-        false => log::LevelFilter::Info,
+        true => LevelFilter::Debug,
+        false => LevelFilter::Info,
     };
     env_logger::builder()
-        .format_level(false)
-        .format_module_path(false)
-        .format_timestamp(None)
         .filter_level(level)
+        .format(|buf, record| {
+            let mut style = buf.style();
+
+            let level = match record.level() {
+                Level::Error => style.set_bold(true).set_color(Color::Red).value("error: "),
+                Level::Warn => style
+                    .set_bold(true)
+                    .set_color(Color::Yellow)
+                    .value("warning: "),
+                Level::Info => style.set_bold(true).set_color(Color::Green).value(""),
+                _ => style.set_color(Color::Rgb(165, 165, 165)).value(""),
+            };
+            writeln!(buf, "{}{}", level, record.args())
+        })
         .init();
 }
 
@@ -30,7 +42,7 @@ pub fn set_logger(flags: &args::Flags) {
 pub fn validate(flags: &args::Flags) -> Result<args::Opts, String> {
     match args::Opts::validate(flags) {
         Ok(opts) => Ok(opts),
-        Err(e) => Err(format!("{}", e)),
+        Err(e) => Err(e),
     }
 }
 
@@ -38,9 +50,17 @@ pub mod pcap;
 use pcap::ethernet;
 use pcap::interface::{self, Interface};
 
-// Gets an available network iterface match the name.
+/// Gets a list of available network interfaces for the current machine.
+pub fn interfaces() -> Vec<Interface> {
+    interface::interfaces()
+        .into_iter()
+        .filter(|inter| !inter.is_loopback)
+        .collect()
+}
+
+/// Gets an available network iterface match the name.
 pub fn interface(name: Option<String>) -> Result<Interface, String> {
-    let mut inters = interface::interfaces();
+    let mut inters = interfaces();
     if inters.len() <= 0 {
         return Err(String::from("no available interface"));
     }
@@ -56,15 +76,6 @@ pub fn interface(name: Option<String>) -> Result<Interface, String> {
         }
     }
     Ok(inters[0].clone())
-}
-
-// Enumerates and prints all available network interfaces.
-pub fn enumerate_interfaces() {
-    let inters = interface::interfaces();
-    info!("Available interfaces are listed below, use -i <INTERFACE> to designate:");
-    for inter in inters.iter() {
-        info!("  {}", inter);
-    }
 }
 
 pub fn proxy(
@@ -96,10 +107,10 @@ pub fn proxy(
                             ) {
                                 Ok(s) => {
                                     if !s.is_empty() {
-                                        info!("{}", s);
+                                        debug!("{}", s);
                                     }
                                 }
-                                Err(e) => warn!("{}", e),
+                                Err(e) => warn!("cannot handle ARP packet: {}", e),
                             };
                         }
                     }
