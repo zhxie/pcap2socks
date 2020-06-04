@@ -6,10 +6,18 @@ use pnet::packet::Packet;
 use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex};
 
-pub mod arp;
+/// Creates an `Ethernet` according to the given Ethernet packet.
+pub fn parse_ethernet(packet: &EthernetPacket) -> Ethernet {
+    Ethernet {
+        destination: packet.get_destination(),
+        source: packet.get_source(),
+        ethertype: packet.get_ethertype(),
+        payload: vec![],
+    }
+}
 
 /// Creates an `Ethernet` with the reverse flow of the given Ethernet packet.
-pub fn reverse_ethernet(packet: &EthernetPacket) -> Ethernet {
+pub fn parse_ethernet_reverse(packet: &EthernetPacket) -> Ethernet {
     Ethernet {
         destination: packet.get_source(),
         source: packet.get_destination(),
@@ -55,7 +63,7 @@ pub fn handle_ethernet_arp(
         _ => return Ok(String::new()),
     };
 
-    let mut ethernet = reverse_ethernet(&packet);
+    let mut ethernet = parse_ethernet_reverse(&packet);
     ethernet.source = hardware_addr;
 
     let mut new_ethernet_buffer = [0u8; 42];

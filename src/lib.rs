@@ -114,6 +114,7 @@ pub fn proxy(
                             };
                         }
                     }
+                    EtherTypes::Ipv4 => continue,
                     _ => continue,
                 };
             }
