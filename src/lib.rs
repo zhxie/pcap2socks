@@ -81,7 +81,7 @@ pub fn interface(name: Option<String>) -> Result<Interface, String> {
 pub fn proxy(
     inter: Interface,
     publish: Option<Ipv4Addr>,
-    srcs: Vec<Ipv4Addr>,
+    src: Ipv4Addr,
     dst: SocketAddrV4,
 ) -> Result<(), String> {
     let (tx, mut rx) = match inter.open() {
@@ -101,7 +101,7 @@ pub fn proxy(
                             match ethernet::handle_ethernet_arp(
                                 packet,
                                 inter.hardware_addr,
-                                &srcs,
+                                &src,
                                 &publish,
                                 Arc::clone(&mutex_tx),
                             ) {

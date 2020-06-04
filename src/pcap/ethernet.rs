@@ -34,7 +34,7 @@ pub fn serialize_ethernet(ethernet: &Ethernet, buffer: &mut [u8]) -> Result<(), 
 pub fn handle_ethernet_arp(
     packet: EthernetPacket,
     hardware_addr: MacAddr,
-    srcs: &Vec<Ipv4Addr>,
+    src: &Ipv4Addr,
     dst: &Ipv4Addr,
     tx: Arc<Mutex<Box<dyn DataLinkSender>>>,
 ) -> Result<String, String> {
@@ -46,9 +46,7 @@ pub fn handle_ethernet_arp(
         t => return Err(format!("unhandled Ethernet type {}", t)),
     };
 
-    if !srcs.contains(&arp_packet.get_sender_proto_addr())
-        || dst != &arp_packet.get_target_proto_addr()
-    {
+    if src != &arp_packet.get_sender_proto_addr() || dst != &arp_packet.get_target_proto_addr() {
         return Ok(String::new());
     }
 

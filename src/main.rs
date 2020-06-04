@@ -39,22 +39,8 @@ fn main() {
     }
 
     // Proxy
-    match opts.srcs.len() {
-        0 => info!("Proxy to {}", opts.dst),
-        _ => {
-            let ip_addrs = format!(
-                "{}",
-                opts.srcs
-                    .iter()
-                    .map(|src| { src.to_string() })
-                    .collect::<Vec<String>>()
-                    .join(", ")
-            );
-
-            info!("Proxy {} to {}", ip_addrs, opts.dst);
-        }
-    }
-    if let Err(e) = lib::proxy(inter, opts.publish, opts.srcs, opts.dst) {
+    info!("Proxy {} to {}", opts.src, opts.dst);
+    if let Err(e) = lib::proxy(inter, opts.publish, opts.src, opts.dst) {
         error!("proxy: {}", e);
         return;
     }
