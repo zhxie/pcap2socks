@@ -21,7 +21,7 @@ pub fn parse_ipv4(packet: &Ipv4Packet) -> Ipv4 {
     }
 }
 
-/// Serializes an IPv4 layer.
+/// Serializes an `Ipv4`.
 pub fn serialize_ipv4(layer: &Ipv4, n: usize, buffer: &mut [u8]) -> Result<usize, String> {
     let mut packet = match MutableIpv4Packet::new(buffer) {
         Some(packet) => packet,

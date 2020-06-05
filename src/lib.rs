@@ -47,12 +47,11 @@ pub fn validate(flags: &args::Flags) -> Result<args::Opts, String> {
 }
 
 pub mod pcap;
-use pcap::interface::{self, Interface};
-use pcap::{layer, Indicator};
+use pcap::{layer, Indicator, Interface};
 
 /// Gets a list of available network interfaces for the current machine.
 pub fn interfaces() -> Vec<Interface> {
-    interface::interfaces()
+    pcap::interfaces()
         .into_iter()
         .filter(|inter| !inter.is_loopback)
         .collect()
@@ -97,38 +96,6 @@ pub fn proxy(
                 let packet = EthernetPacket::new(frame).unwrap();
                 let indicator = Indicator::parse(&packet);
                 debug!("{}", indicator);
-                match indicator.get_network_type() {
-                    Some(t) => match t {
-                        layer::LayerTypes::Arp => {}
-                        layer::LayerTypes::Ipv4 => continue,
-                        _ => continue,
-                    },
-                    None => continue,
-                };
-                /*
-                match packet.get_ethertype() {
-                    EtherTypes::Arp => {
-                        if let Some(publish) = publish {
-                            match ethernet::handle_ethernet_arp(
-                                packet,
-                                inter.hardware_addr,
-                                &src,
-                                &publish,
-                                Arc::clone(&mutex_tx),
-                            ) {
-                                Ok(s) => {
-                                    if !s.is_empty() {
-                                        debug!("{}", s);
-                                    }
-                                }
-                                Err(e) => warn!("cannot handle ARP packet: {}", e),
-                            };
-                        }
-                    }
-                    EtherTypes::Ipv4 => continue,
-                    _ => continue,
-                };
-                */
             }
             Err(e) => {
                 if e.kind() != ErrorKind::TimedOut {

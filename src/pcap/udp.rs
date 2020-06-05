@@ -1,5 +1,5 @@
+use pnet::packet::ipv4::Ipv4;
 use pnet::packet::udp::{self, MutableUdpPacket, Udp, UdpPacket};
-use std::net::Ipv4Addr;
 
 /// Creates an `Udp` according to the given UDP packet.
 pub fn parse_udp(packet: &UdpPacket) -> Udp {
@@ -12,11 +12,10 @@ pub fn parse_udp(packet: &UdpPacket) -> Udp {
     }
 }
 
-/// Serializes an UDP layer in IPv4.
+/// Serializes an `Udp` with `Ipv4`.
 pub fn serialize_ipv4_udp(
     layer: &Udp,
-    src: &Ipv4Addr,
-    dst: &Ipv4Addr,
+    ipv4_layer: &Ipv4,
     n: usize,
     buffer: &mut [u8],
 ) -> Result<usize, String> {
@@ -28,7 +27,11 @@ pub fn serialize_ipv4_udp(
     udp_packet.populate(layer);
 
     // Checksum
-    let checksum = udp::ipv4_checksum(&udp_packet.to_immutable(), src, dst);
+    let checksum = udp::ipv4_checksum(
+        &udp_packet.to_immutable(),
+        &ipv4_layer.source,
+        &ipv4_layer.destination,
+    );
     udp_packet.set_checksum(checksum);
 
     Ok(UdpPacket::packet_size(layer) + n)

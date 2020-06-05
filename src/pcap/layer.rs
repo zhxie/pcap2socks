@@ -6,9 +6,11 @@ use pnet::packet::udp::Udp;
 use std::clone::Clone;
 use std::cmp::{Eq, PartialEq};
 use std::fmt::{self, Display, Formatter};
+use std::hash::Hash;
+use std::net::IpAddr;
 
 /// Represents the type of the layer.
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone, Eq, Hash, PartialEq)]
 pub struct LayerType(u8);
 
 impl Display for LayerType {
@@ -51,8 +53,8 @@ pub enum Layer {
     Ethernet(Ethernet),
     Arp(Arp),
     Ipv4(Ipv4),
-    Tcp(Tcp),
-    Udp(Udp),
+    Tcp(Tcp, IpAddr, IpAddr),
+    Udp(Udp, IpAddr, IpAddr),
 }
 
 impl Display for Layer {
@@ -93,7 +95,7 @@ impl Display for Layer {
                         fragment
                     )
                 }
-                Layer::Tcp(layer) => {
+                Layer::Tcp(layer, _, _) => {
                     let mut flags = String::new();
                     if layer.flags & TcpFlags::ACK != 0 {
                         flags = flags + "A";
@@ -119,7 +121,7 @@ impl Display for Layer {
                         flags
                     )
                 }
-                Layer::Udp(layer) => format!(
+                Layer::Udp(layer, _, _) => format!(
                     "{}: {} -> {}, Length = {}",
                     LayerTypes::Udp,
                     layer.source,

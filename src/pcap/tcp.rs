@@ -1,5 +1,5 @@
+use pnet::packet::ipv4::Ipv4;
 use pnet::packet::tcp::{self, MutableTcpPacket, Tcp, TcpOptionPacket, TcpPacket};
-use std::net::Ipv4Addr;
 
 /// Creates an `Tcp` according to the given TCP packet.
 pub fn parse_tcp(packet: &TcpPacket) -> Tcp {
@@ -19,11 +19,10 @@ pub fn parse_tcp(packet: &TcpPacket) -> Tcp {
     }
 }
 
-/// Serializes an TCP layer in IPv4.
-pub fn serialize_ipv4_tcpm(
+/// Serializes an `Tcp` with `Ipv4`.
+pub fn serialize_ipv4_tcp(
     layer: &Tcp,
-    src: &Ipv4Addr,
-    dst: &Ipv4Addr,
+    ipv4_layer: &Ipv4,
     n: usize,
     buffer: &mut [u8],
 ) -> Result<usize, String> {
@@ -40,7 +39,11 @@ pub fn serialize_ipv4_tcpm(
     packet.set_data_offset((data_offset / 4) as u8);
 
     // Checksum
-    let checksum = tcp::ipv4_checksum(&packet.to_immutable(), src, dst);
+    let checksum = tcp::ipv4_checksum(
+        &packet.to_immutable(),
+        &ipv4_layer.source,
+        &ipv4_layer.destination,
+    );
     packet.set_checksum(checksum);
 
     Ok(TcpPacket::packet_size(layer) + n)
