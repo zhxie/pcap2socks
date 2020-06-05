@@ -1,7 +1,7 @@
 use clap::Clap;
 use env_logger::fmt::Color;
 use log::{debug, warn, Level, LevelFilter};
-use pnet::packet::ethernet::{EtherTypes, EthernetPacket};
+use pnet::packet::ethernet::EthernetPacket;
 use std::io::{ErrorKind, Write};
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::{Arc, Mutex};
@@ -47,8 +47,8 @@ pub fn validate(flags: &args::Flags) -> Result<args::Opts, String> {
 }
 
 pub mod pcap;
-use pcap::ethernet;
 use pcap::interface::{self, Interface};
+use pcap::{layer, Indicator};
 
 /// Gets a list of available network interfaces for the current machine.
 pub fn interfaces() -> Vec<Interface> {
@@ -95,6 +95,17 @@ pub fn proxy(
         match rx.next() {
             Ok(frame) => {
                 let packet = EthernetPacket::new(frame).unwrap();
+                let indicator = Indicator::parse(&packet);
+                debug!("{}", indicator);
+                match indicator.get_network_type() {
+                    Some(t) => match t {
+                        layer::LayerTypes::Arp => {}
+                        layer::LayerTypes::Ipv4 => continue,
+                        _ => continue,
+                    },
+                    None => continue,
+                };
+                /*
                 match packet.get_ethertype() {
                     EtherTypes::Arp => {
                         if let Some(publish) = publish {
@@ -117,6 +128,7 @@ pub fn proxy(
                     EtherTypes::Ipv4 => continue,
                     _ => continue,
                 };
+                */
             }
             Err(e) => {
                 if e.kind() != ErrorKind::TimedOut {

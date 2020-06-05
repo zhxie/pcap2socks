@@ -14,21 +14,22 @@ pub fn parse_udp(packet: &UdpPacket) -> Udp {
 
 /// Serializes an UDP layer in IPv4.
 pub fn serialize_ipv4_udp(
-    udp: &Udp,
+    layer: &Udp,
     src: &Ipv4Addr,
     dst: &Ipv4Addr,
+    n: usize,
     buffer: &mut [u8],
-) -> Result<(), String> {
+) -> Result<usize, String> {
     let mut udp_packet = match MutableUdpPacket::new(buffer) {
         Some(packet) => packet,
         None => return Err(format!("connot serialize UDP layer")),
     };
 
-    udp_packet.populate(udp);
+    udp_packet.populate(layer);
 
     // Checksum
     let checksum = udp::ipv4_checksum(&udp_packet.to_immutable(), src, dst);
     udp_packet.set_checksum(checksum);
 
-    Ok(())
+    Ok(UdpPacket::packet_size(layer) + n)
 }

@@ -35,13 +35,13 @@ pub fn reply_arp(packet: &ArpPacket, hardware_addr: MacAddr) -> Arp {
 }
 
 /// Serializes an ARP layer.
-pub fn serialize_arp(arp: &Arp, buffer: &mut [u8]) -> Result<(), String> {
-    let mut arp_packet = match MutableArpPacket::new(buffer) {
+pub fn serialize_arp(layer: &Arp, n: usize, buffer: &mut [u8]) -> Result<usize, String> {
+    let mut packet = match MutableArpPacket::new(buffer) {
         Some(packet) => packet,
         None => return Err(format!("cannot serialize ARP layer")),
     };
 
-    arp_packet.populate(arp);
+    packet.populate(layer);
 
-    Ok(())
+    Ok(ArpPacket::packet_size(layer) + n)
 }

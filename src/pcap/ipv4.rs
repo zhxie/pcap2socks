@@ -1,4 +1,4 @@
-use pnet::packet::ipv4::{self, Ipv4, Ipv4Packet, MutableIpv4Packet};
+use pnet::packet::ipv4::{self, Ipv4, Ipv4OptionPacket, Ipv4Packet, MutableIpv4Packet};
 
 /// Creates an `Ipv4` according to the given IPv4 packet.
 pub fn parse_ipv4(packet: &Ipv4Packet) -> Ipv4 {
@@ -22,17 +22,23 @@ pub fn parse_ipv4(packet: &Ipv4Packet) -> Ipv4 {
 }
 
 /// Serializes an IPv4 layer.
-pub fn serialize_ipv4(ipv4: &Ipv4, buffer: &mut [u8]) -> Result<(), String> {
-    let mut ipv4_packet = match MutableIpv4Packet::new(buffer) {
+pub fn serialize_ipv4(layer: &Ipv4, n: usize, buffer: &mut [u8]) -> Result<usize, String> {
+    let mut packet = match MutableIpv4Packet::new(buffer) {
         Some(packet) => packet,
         None => return Err(format!("connot serialize IPv4 layer")),
     };
 
-    ipv4_packet.populate(ipv4);
+    packet.populate(layer);
+    let mut header_length = 20;
+    for option in layer.options.iter() {
+        header_length = header_length + Ipv4OptionPacket::packet_size(option);
+    }
+    packet.set_header_length((header_length / 4) as u8);
+    packet.set_total_length((header_length + n) as u16);
 
     // Checksum
-    let checksum = ipv4::checksum(&ipv4_packet.to_immutable());
-    ipv4_packet.set_checksum(checksum);
+    let checksum = ipv4::checksum(&packet.to_immutable());
+    packet.set_checksum(checksum);
 
-    Ok(())
+    Ok(Ipv4Packet::packet_size(layer) + n)
 }

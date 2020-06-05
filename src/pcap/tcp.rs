@@ -1,4 +1,4 @@
-use pnet::packet::tcp::{self, MutableTcpPacket, Tcp, TcpPacket};
+use pnet::packet::tcp::{self, MutableTcpPacket, Tcp, TcpOptionPacket, TcpPacket};
 use std::net::Ipv4Addr;
 
 /// Creates an `Tcp` according to the given TCP packet.
@@ -20,22 +20,28 @@ pub fn parse_tcp(packet: &TcpPacket) -> Tcp {
 }
 
 /// Serializes an TCP layer in IPv4.
-pub fn serialize_ipv4_tcp(
-    tcp: &Tcp,
+pub fn serialize_ipv4_tcpm(
+    layer: &Tcp,
     src: &Ipv4Addr,
     dst: &Ipv4Addr,
+    n: usize,
     buffer: &mut [u8],
-) -> Result<(), String> {
-    let mut tcp_packet = match MutableTcpPacket::new(buffer) {
+) -> Result<usize, String> {
+    let mut packet = match MutableTcpPacket::new(buffer) {
         Some(packet) => packet,
         None => return Err(format!("connot serialize TCP layer")),
     };
 
-    tcp_packet.populate(tcp);
+    packet.populate(layer);
+    let mut data_offset = 20;
+    for option in layer.options.iter() {
+        data_offset = data_offset + TcpOptionPacket::packet_size(option);
+    }
+    packet.set_data_offset((data_offset / 4) as u8);
 
     // Checksum
-    let checksum = tcp::ipv4_checksum(&tcp_packet.to_immutable(), src, dst);
-    tcp_packet.set_checksum(checksum);
+    let checksum = tcp::ipv4_checksum(&packet.to_immutable(), src, dst);
+    packet.set_checksum(checksum);
 
-    Ok(())
+    Ok(TcpPacket::packet_size(layer) + n)
 }

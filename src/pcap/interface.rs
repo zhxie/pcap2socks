@@ -4,8 +4,7 @@ use pnet::datalink::Channel::Ethernet;
 use pnet::datalink::{DataLinkReceiver, DataLinkSender, MacAddr};
 use std::clone::Clone;
 use std::cmp::{Eq, PartialEq};
-use std::fmt;
-use std::fmt::{Display, Formatter};
+use std::fmt::{self, Display, Formatter};
 use std::hash::Hash;
 use std::net::Ipv4Addr;
 
