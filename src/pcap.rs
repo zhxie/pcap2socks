@@ -131,24 +131,25 @@ pub fn interfaces() -> Vec<Interface> {
 
 pub mod arp;
 pub mod ethernet;
-mod ipv4;
+pub mod ipv4;
 pub mod layer;
-mod tcp;
-mod udp;
+pub mod tcp;
+pub mod udp;
+
+use layer::{Layer, LayerType, Layers};
 
 /// Represents a packet indicator.
-#[derive(Clone)]
 pub struct Indicator {
-    pub link: layer::Layer,
-    pub network: Option<layer::Layer>,
-    pub transport: Option<layer::Layer>,
+    pub link: Layers,
+    pub network: Option<Layers>,
+    pub transport: Option<Layers>,
 }
 
 impl Indicator {
     /// Creates a `Indicator`.
     pub fn new(ethernet: Ethernet) -> Indicator {
         Indicator {
-            link: layer::Layer::Ethernet(ethernet),
+            link: Layers::Ethernet(ethernet::Ethernet::new(ethernet)),
             network: None,
             transport: None,
         }
@@ -158,18 +159,18 @@ impl Indicator {
     pub fn parse(packet: &EthernetPacket) -> Indicator {
         let mut transport = None;
 
-        let link = layer::Layer::Ethernet(ethernet::parse_ethernet(packet));
+        let link = Layers::Ethernet(ethernet::Ethernet::parse(packet));
         let network = match packet.get_ethertype() {
             EtherTypes::Arp => match ArpPacket::new(packet.payload()) {
-                Some(arp_packet) => Some(layer::Layer::Arp(arp::parse_arp(&arp_packet))),
+                Some(arp_packet) => Some(Layers::Arp(arp::Arp::parse(&arp_packet))),
                 None => None,
             },
             EtherTypes::Ipv4 => match Ipv4Packet::new(packet.payload()) {
                 Some(ipv4_packet) => {
-                    let this_ipv4 = ipv4::parse_ipv4(&ipv4_packet);
-                    let src = this_ipv4.source;
-                    let dst = this_ipv4.destination;
-                    let this_ipv4 = Some(layer::Layer::Ipv4(this_ipv4));
+                    let this_ipv4 = ipv4::Ipv4::parse(&ipv4_packet);
+                    let src = this_ipv4.get_src();
+                    let dst = this_ipv4.get_dst();
+                    let this_ipv4 = Some(Layers::Ipv4(this_ipv4));
                     // Fragment
                     if ipv4_packet.get_flags() & Ipv4Flags::MoreFragments == 0
                         && ipv4_packet.get_fragment_offset() <= 0
@@ -177,21 +178,21 @@ impl Indicator {
                         transport = match ipv4_packet.get_next_level_protocol() {
                             IpNextHeaderProtocols::Tcp => {
                                 match TcpPacket::new(ipv4_packet.payload()) {
-                                    Some(tcp_packet) => Some(layer::Layer::Tcp(
-                                        tcp::parse_tcp(&tcp_packet),
+                                    Some(tcp_packet) => Some(Layers::Tcp(tcp::Tcp::parse(
+                                        &tcp_packet,
                                         IpAddr::V4(src),
                                         IpAddr::V4(dst),
-                                    )),
+                                    ))),
                                     None => None,
                                 }
                             }
                             IpNextHeaderProtocols::Udp => {
                                 match UdpPacket::new(ipv4_packet.payload()) {
-                                    Some(udp_packet) => Some(layer::Layer::Udp(
-                                        udp::parse_udp(&udp_packet),
+                                    Some(udp_packet) => Some(Layers::Udp(udp::Udp::parse(
+                                        &udp_packet,
                                         IpAddr::V4(src),
                                         IpAddr::V4(dst),
-                                    )),
+                                    ))),
                                     None => None,
                                 }
                             }
@@ -214,118 +215,115 @@ impl Indicator {
     }
 
     /// Get the link layer.
-    pub fn get_link(&self) -> &layer::Layer {
+    pub fn get_link(&self) -> &Layers {
         &self.link
     }
 
+    // Get the link layer type.
+    pub fn get_link_type(&self) -> LayerType {
+        self.get_link().get_type()
+    }
+
     /// Get the `Ethernet`.
-    pub fn get_ethernet(&self) -> &Ethernet {
-        if let layer::Layer::Ethernet(layer) = &self.link {
-            return layer;
+    pub fn get_ethernet(&self) -> Option<&ethernet::Ethernet> {
+        if let Layers::Ethernet(layer) = &self.get_link() {
+            return Some(layer);
         }
 
-        panic!("unexpected link layer")
+        None
     }
 
     /// Get the network layer.
-    pub fn get_network(&self) -> Option<&layer::Layer> {
-        match &self.network {
-            Some(layer) => Some(layer),
-            None => None,
+    pub fn get_network(&self) -> Option<&Layers> {
+        if let Some(layer) = &self.network {
+            return Some(layer);
         }
+
+        None
     }
 
     /// Get the network layer type.
-    pub fn get_network_type(&self) -> Option<layer::LayerType> {
-        match self.get_network() {
-            Some(layer) => match layer {
-                layer::Layer::Arp(_) => Some(layer::LayerTypes::Arp),
-                layer::Layer::Ipv4(_) => Some(layer::LayerTypes::Ipv4),
-                _ => None,
-            },
-            None => None,
+    pub fn get_network_type(&self) -> Option<LayerType> {
+        if let Some(layer) = self.get_network() {
+            return Some(layer.get_type());
         }
+
+        None
     }
 
     /// Get the ARP.
-    pub fn get_arp(&self) -> Option<&Arp> {
-        match self.get_network() {
-            Some(layer) => match layer {
-                layer::Layer::Arp(arp) => Some(arp),
-                _ => None,
-            },
-            None => None,
+    pub fn get_arp(&self) -> Option<&arp::Arp> {
+        if let Some(layer) = self.get_network() {
+            if let Layers::Arp(layer) = layer {
+                return Some(layer);
+            }
         }
+
+        None
     }
 
     /// Get the IPv4.
-    pub fn get_ipv4(&self) -> Option<&Ipv4> {
-        match self.get_network() {
-            Some(layer) => match layer {
-                layer::Layer::Ipv4(ipv4) => Some(ipv4),
-                _ => None,
-            },
-            None => None,
+    pub fn get_ipv4(&self) -> Option<&ipv4::Ipv4> {
+        if let Some(layer) = self.get_network() {
+            if let Layers::Ipv4(layer) = layer {
+                return Some(layer);
+            }
         }
+
+        None
     }
 
     /// Get the transport layer.
-    pub fn get_transport(&self) -> Option<&layer::Layer> {
-        match &self.transport {
-            Some(layer) => Some(layer),
-            None => None,
+    pub fn get_transport(&self) -> Option<&Layers> {
+        if let Some(layer) = &self.transport {
+            return Some(layer);
         }
+
+        None
     }
 
     /// Get the transport layer type.
-    pub fn get_transport_type(&self) -> Option<layer::LayerType> {
-        match self.get_transport() {
-            Some(layer) => match layer {
-                layer::Layer::Tcp(_, _, _) => Some(layer::LayerTypes::Tcp),
-                layer::Layer::Udp(_, _, _) => Some(layer::LayerTypes::Udp),
-                _ => None,
-            },
-            None => None,
+    pub fn get_transport_type(&self) -> Option<LayerType> {
+        if let Some(layer) = self.get_transport() {
+            return Some(layer.get_type());
         }
+
+        None
     }
 
     /// Get the TCP.
-    pub fn get_tcp(&self) -> Option<&Tcp> {
-        match self.get_transport() {
-            Some(layer) => match layer {
-                layer::Layer::Tcp(tcp, _, _) => Some(tcp),
-                _ => None,
-            },
-            None => None,
+    pub fn get_tcp(&self) -> Option<&tcp::Tcp> {
+        if let Some(layer) = self.get_transport() {
+            if let Layers::Tcp(layer) = layer {
+                return Some(layer);
+            }
         }
+
+        None
     }
 
     /// Get the UDP.
-    pub fn get_udp(&self) -> Option<&Udp> {
-        match self.get_transport() {
-            Some(layer) => match layer {
-                layer::Layer::Udp(udp, _, _) => Some(udp),
-                _ => None,
-            },
-            None => None,
+    pub fn get_udp(&self) -> Option<&udp::Udp> {
+        if let Some(layer) = self.get_transport() {
+            if let Layers::Udp(layer) = layer {
+                return Some(layer);
+            }
         }
+
+        None
     }
 }
 
 impl Display for Indicator {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        let link_string = format!(
-            "\n- {} ({} Bytes)",
-            self.get_link(),
-            layer_size(self.get_link())
-        );
+        let link_string = format!("\n- {} ({} Bytes)", self.link, self.link.get_size());
         let mut network_string = String::new();
-        if let Some(network) = self.get_network() {
-            network_string = format!("\n- {} ({} Bytes)", network, layer_size(network));
+        if let Some(network) = &self.network {
+            network_string = format!("\n- {} ({} Bytes)", network, network.get_size());
         }
         let mut transport_string = String::new();
-        if let Some(transport) = self.get_transport() {
-            transport_string = format!("\n- {} ({} Bytes)", transport, layer_size(transport));
+        if let Some(transport) = &self.transport {
+            transport_string = format!("\n- {} ({} Bytes)", transport, transport.get_size());
         }
 
         write!(
@@ -333,16 +331,5 @@ impl Display for Indicator {
             "Indicator{}{}{}",
             link_string, network_string, transport_string
         )
-    }
-}
-
-// Get The size of a `Layer` when converted into a byte-array.
-pub fn layer_size(layer: &layer::Layer) -> usize {
-    match layer {
-        layer::Layer::Ethernet(layer) => EthernetPacket::packet_size(layer),
-        layer::Layer::Arp(layer) => ArpPacket::packet_size(layer),
-        layer::Layer::Ipv4(layer) => Ipv4Packet::packet_size(layer),
-        layer::Layer::Tcp(layer, _, _) => TcpPacket::packet_size(layer),
-        layer::Layer::Udp(layer, _, _) => UdpPacket::packet_size(layer),
     }
 }

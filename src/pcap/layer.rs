@@ -1,13 +1,7 @@
-use pnet::packet::arp::{Arp, ArpOperations};
-use pnet::packet::ethernet::Ethernet;
-use pnet::packet::ipv4::{Ipv4, Ipv4Flags};
-use pnet::packet::tcp::{Tcp, TcpFlags};
-use pnet::packet::udp::Udp;
 use std::clone::Clone;
 use std::cmp::{Eq, PartialEq};
 use std::fmt::{self, Display, Formatter};
 use std::hash::Hash;
-use std::net::IpAddr;
 
 /// Represents the type of the layer.
 #[derive(Clone, Eq, Hash, PartialEq)]
@@ -48,87 +42,85 @@ pub mod LayerTypes {
 }
 
 /// Represents a layer.
-#[derive(Clone)]
-pub enum Layer {
-    Ethernet(Ethernet),
-    Arp(Arp),
-    Ipv4(Ipv4),
-    Tcp(Tcp, IpAddr, IpAddr),
-    Udp(Udp, IpAddr, IpAddr),
+pub trait Layer: Display {
+    // Get the type of the `Layer`.
+    fn get_type(&self) -> LayerType;
+
+    // Get The size of the `Layer` when converted into a byte-array.
+    fn get_size(&self) -> usize;
+
+    // Serialize the `Layer` into a byte-array.
+    fn serialize(&self, buffer: &mut [u8]) -> Result<(), String>;
+
+    // Recalculate the length and serialize the `Layer` into a byte-array.
+    fn serialize_n(&self, n: usize, buffer: &mut [u8]) -> Result<usize, String>;
 }
 
-impl Display for Layer {
+use super::arp;
+use super::ethernet;
+use super::ipv4;
+use super::tcp;
+use super::udp;
+
+#[derive(Debug, Clone)]
+pub enum Layers {
+    Ethernet(ethernet::Ethernet),
+    Arp(arp::Arp),
+    Ipv4(ipv4::Ipv4),
+    Tcp(tcp::Tcp),
+    Udp(udp::Udp),
+}
+
+impl Display for Layers {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                Layer::Ethernet(layer) => format!(
-                    "{}: {} -> {}",
-                    LayerTypes::Ethernet,
-                    layer.source,
-                    layer.destination
-                ),
-                Layer::Arp(layer) => format!(
-                    "{}: {} -> {}, Operation = {}",
-                    LayerTypes::Arp,
-                    layer.sender_proto_addr,
-                    layer.target_proto_addr,
-                    match layer.operation {
-                        ArpOperations::Request => "Request",
-                        ArpOperations::Reply => "Reply",
-                        _ => "unknown",
-                    }
-                ),
-                Layer::Ipv4(layer) => {
-                    let mut fragment = String::new();
-                    if layer.flags & Ipv4Flags::MoreFragments != 0 || layer.fragment_offset > 0 {
-                        fragment = format!(", Fragment = {}", layer.fragment_offset);
-                    }
+        return match &self {
+            Layers::Ethernet(layer) => layer.fmt(f),
+            Layers::Arp(layer) => layer.fmt(f),
+            Layers::Ipv4(layer) => layer.fmt(f),
+            Layers::Tcp(layer) => layer.fmt(f),
+            Layers::Udp(layer) => layer.fmt(f),
+        };
+    }
+}
 
-                    format!(
-                        "{}: {} -> {}, Length = {}{}",
-                        LayerTypes::Ipv4,
-                        layer.source,
-                        layer.destination,
-                        layer.total_length,
-                        fragment
-                    )
-                }
-                Layer::Tcp(layer, _, _) => {
-                    let mut flags = String::new();
-                    if layer.flags & TcpFlags::ACK != 0 {
-                        flags = flags + "A";
-                    }
-                    if layer.flags & TcpFlags::RST != 0 {
-                        flags = flags + "R";
-                    }
-                    if layer.flags & TcpFlags::SYN != 0 {
-                        flags = flags + "S";
-                    }
-                    if layer.flags & TcpFlags::FIN != 0 {
-                        flags = flags + "F";
-                    }
-                    if !flags.is_empty() {
-                        flags = String::from(" [") + &flags + "]";
-                    }
+impl Layer for Layers {
+    fn get_type(&self) -> LayerType {
+        return match &self {
+            Layers::Ethernet(layer) => layer.get_type(),
+            Layers::Arp(layer) => layer.get_type(),
+            Layers::Ipv4(layer) => layer.get_type(),
+            Layers::Tcp(layer) => layer.get_type(),
+            Layers::Udp(layer) => layer.get_type(),
+        };
+    }
 
-                    format!(
-                        "{}: {} -> {}{}",
-                        LayerTypes::Tcp,
-                        layer.source,
-                        layer.destination,
-                        flags
-                    )
-                }
-                Layer::Udp(layer, _, _) => format!(
-                    "{}: {} -> {}, Length = {}",
-                    LayerTypes::Udp,
-                    layer.source,
-                    layer.destination,
-                    layer.length
-                ),
-            }
-        )
+    fn get_size(&self) -> usize {
+        return match &self {
+            Layers::Ethernet(layer) => layer.get_size(),
+            Layers::Arp(layer) => layer.get_size(),
+            Layers::Ipv4(layer) => layer.get_size(),
+            Layers::Tcp(layer) => layer.get_size(),
+            Layers::Udp(layer) => layer.get_size(),
+        };
+    }
+
+    fn serialize(&self, buffer: &mut [u8]) -> Result<(), String> {
+        return match &self {
+            Layers::Ethernet(layer) => layer.serialize(buffer),
+            Layers::Arp(layer) => layer.serialize(buffer),
+            Layers::Ipv4(layer) => layer.serialize(buffer),
+            Layers::Tcp(layer) => layer.serialize(buffer),
+            Layers::Udp(layer) => layer.serialize(buffer),
+        };
+    }
+
+    fn serialize_n(&self, n: usize, buffer: &mut [u8]) -> Result<usize, String> {
+        return match &self {
+            Layers::Ethernet(layer) => layer.serialize_n(n, buffer),
+            Layers::Arp(layer) => layer.serialize_n(n, buffer),
+            Layers::Ipv4(layer) => layer.serialize_n(n, buffer),
+            Layers::Tcp(layer) => layer.serialize_n(n, buffer),
+            Layers::Udp(layer) => layer.serialize_n(n, buffer),
+        };
     }
 }
