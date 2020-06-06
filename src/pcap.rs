@@ -1,11 +1,11 @@
 use ipnetwork::IpNetwork;
 use pnet::datalink::{self, Channel, DataLinkReceiver, DataLinkSender, MacAddr};
-use pnet::packet::arp::{Arp, ArpPacket};
+use pnet::packet::arp::ArpPacket;
 use pnet::packet::ethernet::{EtherTypes, Ethernet, EthernetPacket};
 use pnet::packet::ip::IpNextHeaderProtocols;
-use pnet::packet::ipv4::{Ipv4, Ipv4Flags, Ipv4Packet};
-use pnet::packet::tcp::{Tcp, TcpPacket};
-use pnet::packet::udp::{Udp, UdpPacket};
+use pnet::packet::ipv4::{Ipv4Flags, Ipv4Packet};
+use pnet::packet::tcp::TcpPacket;
+use pnet::packet::udp::UdpPacket;
 use pnet::packet::Packet;
 use std::clone::Clone;
 use std::cmp::{Eq, PartialEq};
@@ -211,6 +211,14 @@ impl Indicator {
             link,
             network,
             transport,
+        }
+    }
+
+    /// Creates a `Indicator` by the given frame.
+    pub fn from(frame: &[u8]) -> Option<Indicator> {
+        match EthernetPacket::new(frame) {
+            Some(packet) => Some(Indicator::parse(&packet)),
+            None => None,
         }
     }
 

@@ -1,7 +1,6 @@
 use clap::Clap;
 use env_logger::fmt::Color;
 use log::{debug, warn, Level, LevelFilter};
-use pnet::packet::ethernet::EthernetPacket;
 use std::io::{ErrorKind, Write};
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::{Arc, Mutex};
@@ -93,9 +92,10 @@ pub fn proxy(
     loop {
         match rx.next() {
             Ok(frame) => {
-                let packet = EthernetPacket::new(frame).unwrap();
-                let indicator = Indicator::parse(&packet);
-                debug!("{}", indicator);
+                match Indicator::from(frame) {
+                    Some(indicator) => debug!("{}", indicator),
+                    None => {}
+                };
             }
             Err(e) => {
                 if e.kind() != ErrorKind::TimedOut {
