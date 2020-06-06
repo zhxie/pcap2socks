@@ -1,4 +1,5 @@
 pub use super::layer::{Layer, LayerType, LayerTypes};
+use pnet::packet::ip::IpNextHeaderProtocols;
 use pnet::packet::ipv4::{self, Ipv4Flags, Ipv4Packet, MutableIpv4Packet};
 use std::clone::Clone;
 use std::fmt::{self, Display, Formatter};
@@ -12,7 +13,70 @@ pub struct Ipv4 {
 
 impl Ipv4 {
     /// Creates an `Ipv4`.
-    pub fn new(ipv4: ipv4::Ipv4) -> Ipv4 {
+    pub fn new(identification: u16, t: LayerType, src: Ipv4Addr, dst: Ipv4Addr) -> Option<Ipv4> {
+        let next_level_protocol = match t {
+            LayerTypes::Tcp => IpNextHeaderProtocols::Tcp,
+            LayerTypes::Udp => IpNextHeaderProtocols::Udp,
+            _ => return None,
+        };
+        Some(Ipv4 {
+            layer: ipv4::Ipv4 {
+                version: 4,
+                header_length: 5,
+                dscp: 0,
+                ecn: 0,
+                total_length: 0,
+                identification,
+                flags: 0,
+                fragment_offset: 0,
+                ttl: 128,
+                next_level_protocol,
+                checksum: 0,
+                source: src,
+                destination: dst,
+                options: vec![],
+                payload: vec![],
+            },
+        })
+    }
+
+    /// Creates an `Ipv4` represents an IPv4 fragment.
+    pub fn new_more_fragment(
+        identification: u16,
+        t: LayerType,
+        fragment_offset: u16,
+        src: Ipv4Addr,
+        dst: Ipv4Addr,
+    ) -> Option<Ipv4> {
+        let ipv4 = Ipv4::new(identification, t, src, dst);
+        if let Some(mut ipv4) = ipv4 {
+            ipv4.layer.flags = Ipv4Flags::MoreFragments;
+            ipv4.layer.fragment_offset = fragment_offset;
+            return Some(ipv4);
+        };
+
+        None
+    }
+
+    /// Creates an `Ipv4` represents an IPv4 last fragment.
+    pub fn new_last_fragment(
+        identification: u16,
+        t: LayerType,
+        fragment_offset: u16,
+        src: Ipv4Addr,
+        dst: Ipv4Addr,
+    ) -> Option<Ipv4> {
+        let ipv4 = Ipv4::new(identification, t, src, dst);
+        if let Some(mut ipv4) = ipv4 {
+            ipv4.layer.fragment_offset = fragment_offset;
+            return Some(ipv4);
+        };
+
+        None
+    }
+
+    /// Creates an `Ipv4` according to the given `Ipv4`.
+    pub fn from(ipv4: ipv4::Ipv4) -> Ipv4 {
         Ipv4 { layer: ipv4 }
     }
 
@@ -55,7 +119,7 @@ impl Ipv4 {
 
         // Fix length
         if fix_length {
-            let mut header_length = self.get_size();
+            let header_length = self.get_size();
             packet.set_header_length((header_length / 4) as u8);
             packet.set_total_length((header_length + n) as u16);
         }
@@ -69,12 +133,32 @@ impl Ipv4 {
         Ok(self.get_size())
     }
 
-    // Get the source of the layer.
+    /// Get the identification of the layer.
+    pub fn get_identification(&self) -> u16 {
+        self.layer.identification
+    }
+
+    /// Returns if more fragments are follows this `Ipv4`.
+    pub fn is_more_fragment(&self) -> bool {
+        self.layer.flags & Ipv4Flags::MoreFragments != 0
+    }
+
+    /// Get the fragment offset of the layer.
+    pub fn get_fragment_offset(&self) -> u16 {
+        self.layer.fragment_offset
+    }
+
+    /// Returns if the `Ipv4` is a IPv4 fragment.
+    pub fn is_fragment(&self) -> bool {
+        self.is_more_fragment() || self.get_fragment_offset() > 0
+    }
+
+    /// Get the source of the layer.
     pub fn get_src(&self) -> Ipv4Addr {
         self.layer.source
     }
 
-    // Get the destination of the layer.
+    /// Get the destination of the layer.
     pub fn get_dst(&self) -> Ipv4Addr {
         self.layer.destination
     }
@@ -83,8 +167,8 @@ impl Ipv4 {
 impl Display for Ipv4 {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         let mut fragment = String::new();
-        if self.layer.flags & Ipv4Flags::MoreFragments != 0 || self.layer.fragment_offset > 0 {
-            fragment = format!(", Fragment = {}", self.layer.fragment_offset);
+        if self.is_fragment() {
+            fragment = format!(", Fragment = {}", self.get_fragment_offset() * 8);
         }
 
         write!(

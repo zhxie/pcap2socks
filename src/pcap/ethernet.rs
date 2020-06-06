@@ -12,7 +12,23 @@ pub struct Ethernet {
 
 impl Ethernet {
     /// Creates an `Ethernet`.
-    pub fn new(ethernet: ethernet::Ethernet) -> Ethernet {
+    pub fn new(t: LayerType, src: MacAddr, dst: MacAddr) -> Option<Ethernet> {
+        match t {
+            LayerTypes::Arp => Some(Ethernet {
+                layer: ethernet::Ethernet {
+                    destination: dst,
+                    source: src,
+                    ethertype: EtherTypes::Arp,
+                    payload: vec![],
+                },
+            }),
+            LayerTypes::Ipv4 => None,
+            _ => None,
+        }
+    }
+
+    /// Creates an `Ethernet` according to the given `Ethernet`.
+    pub fn from(ethernet: ethernet::Ethernet) -> Ethernet {
         Ethernet { layer: ethernet }
     }
 
@@ -25,22 +41,6 @@ impl Ethernet {
                 ethertype: packet.get_ethertype(),
                 payload: vec![],
             },
-        }
-    }
-
-    /// Creates an `Ethernet` according to the given layer type.
-    pub fn from(t: LayerType, src: MacAddr, dst: MacAddr) -> Option<Ethernet> {
-        match t {
-            LayerTypes::Arp => Some(Ethernet {
-                layer: ethernet::Ethernet {
-                    destination: dst,
-                    source: src,
-                    ethertype: EtherTypes::Arp,
-                    payload: vec![],
-                },
-            }),
-            LayerTypes::Ipv4 => None,
-            _ => None,
         }
     }
 
@@ -87,7 +87,7 @@ impl Layer for Ethernet {
         Ok(self.get_size())
     }
 
-    fn serialize_n(&self, buffer: &mut [u8], n: usize) -> Result<usize, String> {
+    fn serialize_n(&self, buffer: &mut [u8], _: usize) -> Result<usize, String> {
         self.serialize(buffer)
     }
 }

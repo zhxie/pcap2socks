@@ -14,7 +14,22 @@ pub struct Udp {
 
 impl Udp {
     /// Creates an `Udp`.
-    pub fn new(udp: udp::Udp, src: IpAddr, dst: IpAddr) -> Udp {
+    pub fn new(src_ip_addr: IpAddr, dst_ip_addr: IpAddr, src: u16, dst: u16) -> Udp {
+        Udp {
+            layer: udp::Udp {
+                source: src,
+                destination: dst,
+                length: 0,
+                checksum: 0,
+                payload: vec![],
+            },
+            src: src_ip_addr,
+            dst: dst_ip_addr,
+        }
+    }
+
+    /// Creates an `Udp` according to the given `Udp`.
+    pub fn from(udp: udp::Udp, src: IpAddr, dst: IpAddr) -> Udp {
         Udp {
             layer: udp,
             src,
@@ -22,7 +37,7 @@ impl Udp {
         }
     }
 
-    /// Creates a `Udp` according to the given UDP packet, source and destination.
+    /// Creates an `Udp` according to the given UDP packet, source and destination.
     pub fn parse(packet: &UdpPacket, src: IpAddr, dst: IpAddr) -> Udp {
         Udp {
             layer: udp::Udp {
@@ -133,6 +148,6 @@ impl Layer for Udp {
     }
 
     fn serialize_n(&self, buffer: &mut [u8], n: usize) -> Result<usize, String> {
-        self.serialize_private(buffer, true, 0, true)
+        self.serialize_private(buffer, true, n, true)
     }
 }

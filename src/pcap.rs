@@ -1,7 +1,7 @@
 use ipnetwork::IpNetwork;
 use pnet::datalink::{self, Channel, DataLinkReceiver, DataLinkSender, MacAddr};
 use pnet::packet::arp::ArpPacket;
-use pnet::packet::ethernet::{EtherTypes, Ethernet, EthernetPacket};
+use pnet::packet::ethernet::{EtherTypes, EthernetPacket};
 use pnet::packet::ip::IpNextHeaderProtocols;
 use pnet::packet::ipv4::{Ipv4Flags, Ipv4Packet};
 use pnet::packet::tcp::TcpPacket;
@@ -135,7 +135,6 @@ pub mod ipv4;
 pub mod layer;
 pub mod tcp;
 pub mod udp;
-
 use layer::{Layer, LayerType, LayerTypes, Layers};
 
 /// Represents a packet indicator.

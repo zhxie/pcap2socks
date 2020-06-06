@@ -13,8 +13,79 @@ pub struct Tcp {
 }
 
 impl Tcp {
-    /// Creates a `Tcp`.
-    pub fn new(tcp: tcp::Tcp, src: IpAddr, dst: IpAddr) -> Tcp {
+    /// Creates a `Tcp` represents a TCP ACK.
+    pub fn new_ack(
+        src_ip_addr: IpAddr,
+        dst_ip_addr: IpAddr,
+        src: u16,
+        dst: u16,
+        sequence: u32,
+        acknowledgement: u32,
+    ) -> Tcp {
+        Tcp {
+            layer: tcp::Tcp {
+                source: src,
+                destination: dst,
+                sequence,
+                acknowledgement,
+                data_offset: 5,
+                reserved: 0,
+                flags: TcpFlags::ACK,
+                window: 65535,
+                checksum: 0,
+                urgent_ptr: 0,
+                options: vec![],
+                payload: vec![],
+            },
+            src: src_ip_addr,
+            dst: dst_ip_addr,
+        }
+    }
+
+    /// Creates a `Tcp` represents a TCP ACK/SYN.
+    pub fn new_ack_syn(
+        src_ip_addr: IpAddr,
+        dst_ip_addr: IpAddr,
+        src: u16,
+        dst: u16,
+        sequence: u32,
+        acknowledgement: u32,
+    ) -> Tcp {
+        let mut tcp = Tcp::new_ack(
+            src_ip_addr,
+            dst_ip_addr,
+            src,
+            dst,
+            sequence,
+            acknowledgement,
+        );
+        tcp.layer.flags = TcpFlags::ACK | TcpFlags::SYN;
+        tcp
+    }
+
+    /// Creates a `Tcp` represents a TCP RST.
+    pub fn new_rst(
+        src_ip_addr: IpAddr,
+        dst_ip_addr: IpAddr,
+        src: u16,
+        dst: u16,
+        sequence: u32,
+        acknowledgement: u32,
+    ) -> Tcp {
+        let mut tcp = Tcp::new_ack(
+            src_ip_addr,
+            dst_ip_addr,
+            src,
+            dst,
+            sequence,
+            acknowledgement,
+        );
+        tcp.layer.flags = TcpFlags::RST;
+        tcp
+    }
+
+    /// Creates a `Tcp` according to the given `Tcp`.
+    pub fn from(tcp: tcp::Tcp, src: IpAddr, dst: IpAddr) -> Tcp {
         Tcp {
             layer: tcp,
             src,
@@ -64,11 +135,46 @@ impl Tcp {
         self.layer.destination
     }
 
+    /// Get the sequence of the layer.
+    pub fn get_sequence(&self) -> u32 {
+        self.layer.sequence
+    }
+
+    /// Get the acknowledgement of the layer.
+    pub fn get_acknowledgement(&self) -> u32 {
+        self.layer.acknowledgement
+    }
+
+    /// Returns if the `Tcp` is a TCP acknowledgement.
+    pub fn is_ack(&self) -> bool {
+        self.layer.flags & TcpFlags::ACK != 0
+    }
+
+    /// Returns if the `Tcp` is a TCP reset.
+    pub fn is_rst(&self) -> bool {
+        self.layer.flags & TcpFlags::RST != 0
+    }
+
+    /// Returns if the `Tcp` is a TCP synchronization.
+    pub fn is_syn(&self) -> bool {
+        self.layer.flags & TcpFlags::SYN != 0
+    }
+
+    /// Returns if the `Tcp` is a TCP finish.
+    pub fn is_fin(&self) -> bool {
+        self.layer.flags & TcpFlags::FIN != 0
+    }
+
+    /// Returns if the `Tcp` is a TCP reset or finish.
+    pub fn is_rst_or_fin(&self) -> bool {
+        self.is_rst() || self.is_fin()
+    }
+
     fn serialize_private(
         &self,
         buffer: &mut [u8],
         fix_length: bool,
-        n: usize,
+        _: usize,
         compute_checksum: bool,
     ) -> Result<usize, String> {
         let mut packet = match MutableTcpPacket::new(buffer) {
@@ -80,8 +186,7 @@ impl Tcp {
 
         // Fix length
         if fix_length {
-            let mut data_offset = self.get_size();
-            packet.set_data_offset((data_offset / 4) as u8);
+            packet.set_data_offset((self.get_size() / 4) as u8);
         }
 
         // Compute checksum
@@ -116,26 +221,34 @@ impl Tcp {
 
 impl Display for Tcp {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        let mut flags = String::new();
-        if self.layer.flags & TcpFlags::ACK != 0 {
+        let mut flags = String::from("[");
+        flags = flags + "-";
+        if self.is_ack() {
             flags = flags + "A";
+        } else {
+            flags = flags + ".";
         }
-        if self.layer.flags & TcpFlags::RST != 0 {
+        flags = flags + "-";
+        if self.is_rst() {
             flags = flags + "R";
+        } else {
+            flags = flags + ".";
         }
-        if self.layer.flags & TcpFlags::SYN != 0 {
+        if self.is_syn() {
             flags = flags + "S";
+        } else {
+            flags = flags + ".";
         }
-        if self.layer.flags & TcpFlags::FIN != 0 {
+        if self.is_fin() {
             flags = flags + "F";
+        } else {
+            flags = flags + ".";
         }
-        if !flags.is_empty() {
-            flags = String::from(" [") + &flags + "]";
-        }
+        flags = flags + "]";
 
         write!(
             f,
-            "{}: {} -> {}{}",
+            "{}: {} -> {} {}",
             LayerTypes::Tcp,
             self.layer.source,
             self.layer.destination,

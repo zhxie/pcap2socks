@@ -49,7 +49,7 @@ pub fn validate(flags: &args::Flags) -> Result<args::Opts, String> {
 }
 
 pub mod pcap;
-use pcap::layer::{self, Layer, LayerType, Layers};
+use pcap::layer::{self, Layer, Layers};
 use pcap::{arp, ethernet, Indicator, Interface};
 
 /// Gets a list of available network interfaces for the current machine.
@@ -110,7 +110,7 @@ pub fn proxy(
                                                 true => {
                                                     let new_arp =
                                                         arp::Arp::reply(&arp, inter.hardware_addr);
-                                                    let new_ethernet = ethernet::Ethernet::from(
+                                                    let new_ethernet = ethernet::Ethernet::new(
                                                         new_arp.get_type(),
                                                         new_arp.get_src_hardware_addr(),
                                                         new_arp.get_dst_hardware_addr(),
@@ -169,7 +169,7 @@ pub fn proxy(
             }
             Err(e) => {
                 if e.kind() != ErrorKind::TimedOut {
-                    return Err(format!("pcap: {}", e));
+                    return Err(format!("handle pcap: {}", e));
                 }
             }
         }

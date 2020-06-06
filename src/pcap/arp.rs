@@ -12,8 +12,8 @@ pub struct Arp {
 }
 
 impl Arp {
-    /// Creates an `Arp`.
-    pub fn new(arp: arp::Arp) -> Arp {
+    /// Creates an `Arp` according to the given `Arp`.
+    pub fn from(arp: arp::Arp) -> Arp {
         Arp { layer: arp }
     }
 
@@ -131,7 +131,7 @@ impl Layer for Arp {
         Ok(self.get_size())
     }
 
-    fn serialize_n(&self, buffer: &mut [u8], n: usize) -> Result<usize, String> {
+    fn serialize_n(&self, buffer: &mut [u8], _: usize) -> Result<usize, String> {
         self.serialize(buffer)
     }
 }
