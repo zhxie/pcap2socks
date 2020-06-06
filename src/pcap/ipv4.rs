@@ -39,6 +39,36 @@ impl Ipv4 {
         }
     }
 
+    fn serialize_private(
+        &self,
+        buffer: &mut [u8],
+        fix_length: bool,
+        n: usize,
+        compute_checksum: bool,
+    ) -> Result<usize, String> {
+        let mut packet = match MutableIpv4Packet::new(buffer) {
+            Some(packet) => packet,
+            None => return Err(format!("buffer is too small")),
+        };
+
+        packet.populate(&self.layer);
+
+        // Fix length
+        if fix_length {
+            let mut header_length = self.get_size();
+            packet.set_header_length((header_length / 4) as u8);
+            packet.set_total_length((header_length + n) as u16);
+        }
+
+        // Compute checksum
+        if compute_checksum {
+            let checksum = ipv4::checksum(&packet.to_immutable());
+            packet.set_checksum(checksum);
+        }
+
+        Ok(self.get_size())
+    }
+
     // Get the source of the layer.
     pub fn get_src(&self) -> Ipv4Addr {
         self.layer.source
@@ -78,38 +108,11 @@ impl Layer for Ipv4 {
         Ipv4Packet::packet_size(&self.layer)
     }
 
-    fn serialize(&self, buffer: &mut [u8]) -> Result<(), String> {
-        let mut packet = match MutableIpv4Packet::new(buffer) {
-            Some(packet) => packet,
-            None => return Err(format!("buffer is too small")),
-        };
-
-        packet.populate(&self.layer);
-
-        // Checksum
-        let checksum = ipv4::checksum(&packet.to_immutable());
-        packet.set_checksum(checksum);
-
-        Ok(())
+    fn serialize(&self, buffer: &mut [u8]) -> Result<usize, String> {
+        self.serialize_private(buffer, false, 0, true)
     }
 
-    fn serialize_n(&self, n: usize, buffer: &mut [u8]) -> Result<usize, String> {
-        let mut packet = match MutableIpv4Packet::new(buffer) {
-            Some(packet) => packet,
-            None => return Err(format!("buffer is too small")),
-        };
-
-        packet.populate(&self.layer);
-
-        // Recalculate size
-        let mut header_length = self.get_size();
-        packet.set_header_length((header_length / 4) as u8);
-        packet.set_total_length((header_length + n) as u16);
-
-        // Checksum
-        let checksum = ipv4::checksum(&packet.to_immutable());
-        packet.set_checksum(checksum);
-
-        Ok(self.get_size() + n)
+    fn serialize_n(&self, buffer: &mut [u8], n: usize) -> Result<usize, String> {
+        self.serialize_private(buffer, true, n, true)
     }
 }

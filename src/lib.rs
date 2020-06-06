@@ -1,6 +1,6 @@
 use clap::Clap;
 use env_logger::fmt::Color;
-use log::{debug, warn, Level, LevelFilter};
+use log::{debug, trace, warn, Level, LevelFilter};
 use std::io::{ErrorKind, Write};
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::{Arc, Mutex};
@@ -14,9 +14,12 @@ pub fn parse() -> args::Flags {
 
 /// Sets the logger.
 pub fn set_logger(flags: &args::Flags) {
-    let level = match flags.verbose {
-        true => LevelFilter::Debug,
-        false => LevelFilter::Info,
+    let level = match flags.vverbose {
+        true => LevelFilter::Trace,
+        false => match flags.verbose {
+            true => LevelFilter::Debug,
+            false => LevelFilter::Info,
+        },
     };
     env_logger::builder()
         .filter_level(level)
@@ -46,7 +49,7 @@ pub fn validate(flags: &args::Flags) -> Result<args::Opts, String> {
 }
 
 pub mod pcap;
-use pcap::{layer, Indicator, Interface};
+use pcap::{arp, ethernet, layer, layer::Layer, Indicator, Interface};
 
 /// Gets a list of available network interfaces for the current machine.
 pub fn interfaces() -> Vec<Interface> {
@@ -93,13 +96,61 @@ pub fn proxy(
         match rx.next() {
             Ok(frame) => {
                 match Indicator::from(frame) {
-                    Some(indicator) => debug!("{}", indicator),
-                    None => {}
+                    Some(indicator) => {
+                        trace!("{}", indicator);
+
+                        match indicator.get_network_type() {
+                            Some(t) => {
+                                match t {
+                                    layer::LayerTypes::Arp => {
+                                        if let Some(publish) = publish {
+                                            let arp = indicator.get_arp().unwrap();
+                                            match arp.is_request_of(src, publish) {
+                                                true => {
+                                                    let new_arp =
+                                                        arp::Arp::reply(&arp, inter.hardware_addr);
+                                                    let new_ethernet = ethernet::Ethernet::from(
+                                                        new_arp.get_type(),
+                                                        new_arp.get_src_hardware_addr(),
+                                                        new_arp.get_dst_hardware_addr(),
+                                                    )
+                                                    .unwrap();
+
+                                                    // Serialize
+                                                    let size = new_arp.get_size()
+                                                        + new_ethernet.get_size();
+                                                    let mut buffer = vec![0u8; size];
+                                                    match serialize!(
+                                                        &mut buffer,
+                                                        &new_ethernet,
+                                                        &new_arp
+                                                    ) {
+                                                        Ok(_) => {}
+                                                        Err(e) => {
+                                                            warn!("serialize: {}", e);
+                                                            continue;
+                                                        }
+                                                    }
+
+                                                    // Send
+                                                }
+                                                false => continue,
+                                            };
+                                        }
+                                    }
+                                    layer::LayerTypes::Ipv4 => continue,
+                                    _ => continue,
+                                };
+                            }
+                            None => continue,
+                        };
+                    }
+                    None => continue,
                 };
             }
             Err(e) => {
                 if e.kind() != ErrorKind::TimedOut {
-                    return Err(format!("receive: {}", e));
+                    return Err(format!("pcap: {}", e));
                 }
             }
         }

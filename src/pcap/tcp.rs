@@ -2,7 +2,7 @@ pub use super::layer::{Layer, LayerType, LayerTypes};
 use pnet::packet::tcp::{self, MutableTcpPacket, TcpFlags, TcpPacket};
 use std::clone::Clone;
 use std::fmt::{self, Display, Formatter};
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::IpAddr;
 
 /// Represents a TCP packet.
 #[derive(Clone, Debug)]
@@ -42,6 +42,55 @@ impl Tcp {
             src,
             dst,
         }
+    }
+
+    fn serialize_private(
+        &self,
+        buffer: &mut [u8],
+        fix_length: bool,
+        n: usize,
+        compute_checksum: bool,
+    ) -> Result<usize, String> {
+        let mut packet = match MutableTcpPacket::new(buffer) {
+            Some(packet) => packet,
+            None => return Err(format!("buffer is too small")),
+        };
+
+        packet.populate(&self.layer);
+
+        // Fix length
+        if fix_length {
+            let mut data_offset = self.get_size();
+            packet.set_data_offset((data_offset / 4) as u8);
+        }
+
+        // Compute checksum
+        if compute_checksum {
+            let checksum;
+            match self.src {
+                IpAddr::V4(src) => {
+                    if let IpAddr::V4(dst) = self.dst {
+                        checksum = tcp::ipv4_checksum(&packet.to_immutable(), &src, &dst);
+                    } else {
+                        return Err(format!(
+                            "source and destination's IP version is not matched"
+                        ));
+                    }
+                }
+                IpAddr::V6(src) => {
+                    if let IpAddr::V6(dst) = self.dst {
+                        checksum = tcp::ipv6_checksum(&packet.to_immutable(), &src, &dst);
+                    } else {
+                        return Err(format!(
+                            "source and destination's IP version is not matched"
+                        ));
+                    }
+                }
+            };
+            packet.set_checksum(checksum);
+        }
+
+        Ok(self.get_size())
     }
 }
 
@@ -84,77 +133,11 @@ impl Layer for Tcp {
         TcpPacket::packet_size(&self.layer)
     }
 
-    fn serialize(&self, buffer: &mut [u8]) -> Result<(), String> {
-        let mut packet = match MutableTcpPacket::new(buffer) {
-            Some(packet) => packet,
-            None => return Err(format!("buffer is too small")),
-        };
-
-        packet.populate(&self.layer);
-
-        // Checksum
-        let checksum;
-        match self.src {
-            IpAddr::V4(src) => {
-                if let IpAddr::V4(dst) = self.dst {
-                    checksum = tcp::ipv4_checksum(&packet.to_immutable(), &src, &dst);
-                } else {
-                    return Err(format!(
-                        "source and destination's IP version is not matched"
-                    ));
-                }
-            }
-            IpAddr::V6(src) => {
-                if let IpAddr::V6(dst) = self.dst {
-                    checksum = tcp::ipv6_checksum(&packet.to_immutable(), &src, &dst);
-                } else {
-                    return Err(format!(
-                        "source and destination's IP version is not matched"
-                    ));
-                }
-            }
-        };
-        packet.set_checksum(checksum);
-
-        Ok(())
+    fn serialize(&self, buffer: &mut [u8]) -> Result<usize, String> {
+        self.serialize_private(buffer, false, 0, true)
     }
 
-    fn serialize_n(&self, n: usize, buffer: &mut [u8]) -> Result<usize, String> {
-        let mut packet = match MutableTcpPacket::new(buffer) {
-            Some(packet) => packet,
-            None => return Err(format!("buffer is too small")),
-        };
-
-        packet.populate(&self.layer);
-
-        // Recalculate size
-        let mut data_offset = self.get_size();
-        packet.set_data_offset((data_offset / 4) as u8);
-
-        // Checksum
-        let checksum;
-        match self.src {
-            IpAddr::V4(src) => {
-                if let IpAddr::V4(dst) = self.dst {
-                    checksum = tcp::ipv4_checksum(&packet.to_immutable(), &src, &dst);
-                } else {
-                    return Err(format!(
-                        "source and destination's IP version is not matched"
-                    ));
-                }
-            }
-            IpAddr::V6(src) => {
-                if let IpAddr::V6(dst) = self.dst {
-                    checksum = tcp::ipv6_checksum(&packet.to_immutable(), &src, &dst);
-                } else {
-                    return Err(format!(
-                        "source and destination's IP version is not matched"
-                    ));
-                }
-            }
-        };
-        packet.set_checksum(checksum);
-
-        Ok(self.get_size() + n)
+    fn serialize_n(&self, buffer: &mut [u8], n: usize) -> Result<usize, String> {
+        self.serialize_private(buffer, true, n, true)
     }
 }

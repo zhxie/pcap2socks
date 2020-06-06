@@ -1,5 +1,4 @@
 pub use super::layer::{Layer, LayerType, LayerTypes};
-use pnet::packet::arp::Arp;
 use pnet::packet::ethernet::{self, EtherTypes, EthernetPacket, MutableEthernetPacket};
 use pnet::util::MacAddr;
 use std::clone::Clone;
@@ -67,7 +66,7 @@ impl Layer for Ethernet {
         EthernetPacket::packet_size(&self.layer)
     }
 
-    fn serialize(&self, buffer: &mut [u8]) -> Result<(), String> {
+    fn serialize(&self, buffer: &mut [u8]) -> Result<usize, String> {
         let mut packet = match MutableEthernetPacket::new(buffer) {
             Some(packet) => packet,
             None => return Err(format!("buffer is too small")),
@@ -75,13 +74,10 @@ impl Layer for Ethernet {
 
         packet.populate(&self.layer);
 
-        Ok(())
+        Ok(self.get_size())
     }
 
-    fn serialize_n(&self, n: usize, buffer: &mut [u8]) -> Result<usize, String> {
-        match self.serialize(buffer) {
-            Ok(_) => Ok(self.get_size() + n),
-            Err(e) => Err(e),
-        }
+    fn serialize_n(&self, buffer: &mut [u8], n: usize) -> Result<usize, String> {
+        self.serialize(buffer)
     }
 }

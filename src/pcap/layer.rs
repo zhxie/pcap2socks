@@ -50,10 +50,10 @@ pub trait Layer: Display {
     fn get_size(&self) -> usize;
 
     // Serialize the `Layer` into a byte-array.
-    fn serialize(&self, buffer: &mut [u8]) -> Result<(), String>;
+    fn serialize(&self, buffer: &mut [u8]) -> Result<usize, String>;
 
     // Recalculate the length and serialize the `Layer` into a byte-array.
-    fn serialize_n(&self, n: usize, buffer: &mut [u8]) -> Result<usize, String>;
+    fn serialize_n(&self, buffer: &mut [u8], n: usize) -> Result<usize, String>;
 }
 
 use super::arp;
@@ -104,7 +104,7 @@ impl Layer for Layers {
         };
     }
 
-    fn serialize(&self, buffer: &mut [u8]) -> Result<(), String> {
+    fn serialize(&self, buffer: &mut [u8]) -> Result<usize, String> {
         return match &self {
             Layers::Ethernet(layer) => layer.serialize(buffer),
             Layers::Arp(layer) => layer.serialize(buffer),
@@ -114,13 +114,13 @@ impl Layer for Layers {
         };
     }
 
-    fn serialize_n(&self, n: usize, buffer: &mut [u8]) -> Result<usize, String> {
+    fn serialize_n(&self, buffer: &mut [u8], n: usize) -> Result<usize, String> {
         return match &self {
-            Layers::Ethernet(layer) => layer.serialize_n(n, buffer),
-            Layers::Arp(layer) => layer.serialize_n(n, buffer),
-            Layers::Ipv4(layer) => layer.serialize_n(n, buffer),
-            Layers::Tcp(layer) => layer.serialize_n(n, buffer),
-            Layers::Udp(layer) => layer.serialize_n(n, buffer),
+            Layers::Ethernet(layer) => layer.serialize_n(buffer, n),
+            Layers::Arp(layer) => layer.serialize_n(buffer, n),
+            Layers::Ipv4(layer) => layer.serialize_n(buffer, n),
+            Layers::Tcp(layer) => layer.serialize_n(buffer, n),
+            Layers::Udp(layer) => layer.serialize_n(buffer, n),
         };
     }
 }

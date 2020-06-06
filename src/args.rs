@@ -9,6 +9,8 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 pub struct Flags {
     #[clap(long, short, about = "Prints verbose information")]
     pub verbose: bool,
+    #[clap(long, short = "V", about = "Prints vverbose information")]
+    pub vverbose: bool,
     #[clap(
         long = "interface",
         short,
@@ -31,6 +33,7 @@ pub struct Flags {
 
 pub struct Opts {
     pub verbose: bool,
+    pub vverbose: bool,
     pub inter: Option<String>,
     pub publish: Option<Ipv4Addr>,
     pub src: Ipv4Addr,
@@ -42,6 +45,7 @@ impl Opts {
     pub fn new() -> Opts {
         Opts {
             verbose: false,
+            vverbose: false,
             inter: None,
             publish: None,
             src: Ipv4Addr::UNSPECIFIED,
@@ -52,6 +56,7 @@ impl Opts {
     /// Validates flags and creates a new `Opts`.
     pub fn validate(flags: &Flags) -> Result<Opts, String> {
         let verbose = flags.verbose;
+        let vverbose = flags.vverbose;
         let mut publish = None;
         if let Some(p) = &flags.publish {
             publish = match p.parse::<Ipv4Addr>() {
@@ -88,6 +93,7 @@ impl Opts {
 
         Ok(Opts {
             verbose,
+            vverbose,
             inter: flags.inter.clone(),
             publish,
             src,

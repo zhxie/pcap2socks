@@ -1,5 +1,4 @@
 pub use super::layer::{Layer, LayerType, LayerTypes};
-use pnet::packet::ipv4::Ipv4;
 use pnet::packet::udp::{self, MutableUdpPacket, UdpPacket};
 use std::clone::Clone;
 use std::fmt::{self, Display, Formatter};
@@ -37,6 +36,54 @@ impl Udp {
             dst,
         }
     }
+
+    fn serialize_private(
+        &self,
+        buffer: &mut [u8],
+        fix_length: bool,
+        n: usize,
+        compute_checksum: bool,
+    ) -> Result<usize, String> {
+        let mut packet = match MutableUdpPacket::new(buffer) {
+            Some(packet) => packet,
+            None => return Err(format!("buffer is too small")),
+        };
+
+        packet.populate(&self.layer);
+
+        // Fix length
+        if fix_length {
+            packet.set_length((self.get_size() + n) as u16);
+        }
+
+        // Compute checksum
+        if compute_checksum {
+            let checksum;
+            match self.src {
+                IpAddr::V4(src) => {
+                    if let IpAddr::V4(dst) = self.dst {
+                        checksum = udp::ipv4_checksum(&packet.to_immutable(), &src, &dst);
+                    } else {
+                        return Err(format!(
+                            "source and destination's IP version is not matched"
+                        ));
+                    }
+                }
+                IpAddr::V6(src) => {
+                    if let IpAddr::V6(dst) = self.dst {
+                        checksum = udp::ipv6_checksum(&packet.to_immutable(), &src, &dst);
+                    } else {
+                        return Err(format!(
+                            "source and destination's IP version is not matched"
+                        ));
+                    }
+                }
+            };
+            packet.set_checksum(checksum);
+        }
+
+        Ok(self.get_size() + n)
+    }
 }
 
 impl Display for Udp {
@@ -61,76 +108,11 @@ impl Layer for Udp {
         UdpPacket::packet_size(&self.layer)
     }
 
-    fn serialize(&self, buffer: &mut [u8]) -> Result<(), String> {
-        let mut packet = match MutableUdpPacket::new(buffer) {
-            Some(packet) => packet,
-            None => return Err(format!("buffer is too small")),
-        };
-
-        packet.populate(&self.layer);
-
-        // Checksum
-        let checksum;
-        match self.src {
-            IpAddr::V4(src) => {
-                if let IpAddr::V4(dst) = self.dst {
-                    checksum = udp::ipv4_checksum(&packet.to_immutable(), &src, &dst);
-                } else {
-                    return Err(format!(
-                        "source and destination's IP version is not matched"
-                    ));
-                }
-            }
-            IpAddr::V6(src) => {
-                if let IpAddr::V6(dst) = self.dst {
-                    checksum = udp::ipv6_checksum(&packet.to_immutable(), &src, &dst);
-                } else {
-                    return Err(format!(
-                        "source and destination's IP version is not matched"
-                    ));
-                }
-            }
-        };
-        packet.set_checksum(checksum);
-
-        Ok(())
+    fn serialize(&self, buffer: &mut [u8]) -> Result<usize, String> {
+        self.serialize_private(buffer, false, 0, true)
     }
 
-    fn serialize_n(&self, n: usize, buffer: &mut [u8]) -> Result<usize, String> {
-        let mut packet = match MutableUdpPacket::new(buffer) {
-            Some(packet) => packet,
-            None => return Err(format!("buffer is too small")),
-        };
-
-        packet.populate(&self.layer);
-
-        // Recalculate size
-        packet.set_length((self.get_size() + n) as u16);
-
-        // Checksum
-        let checksum;
-        match self.src {
-            IpAddr::V4(src) => {
-                if let IpAddr::V4(dst) = self.dst {
-                    checksum = udp::ipv4_checksum(&packet.to_immutable(), &src, &dst);
-                } else {
-                    return Err(format!(
-                        "source and destination's IP version is not matched"
-                    ));
-                }
-            }
-            IpAddr::V6(src) => {
-                if let IpAddr::V6(dst) = self.dst {
-                    checksum = udp::ipv6_checksum(&packet.to_immutable(), &src, &dst);
-                } else {
-                    return Err(format!(
-                        "source and destination's IP version is not matched"
-                    ));
-                }
-            }
-        };
-        packet.set_checksum(checksum);
-
-        Ok(self.get_size() + n)
+    fn serialize_n(&self, buffer: &mut [u8], n: usize) -> Result<usize, String> {
+        self.serialize_private(buffer, true, 0, true)
     }
 }

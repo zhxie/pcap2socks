@@ -341,3 +341,17 @@ impl Display for Indicator {
         )
     }
 }
+
+#[macro_export]
+macro_rules! serialize {
+    ( $b:expr, $( $layer:expr ),* ) => {{
+        let mut n = 0;
+        $(
+            match $layer.serialize(&mut $b[n..]) {
+                Ok(m) => n = n + m,
+                Err(e) => return Err(format!("serialize {}: {}", $layer.get_type(), e)),
+            };
+        )*
+        Ok(n)
+    } as Result<usize, String>};
+}

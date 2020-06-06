@@ -3,6 +3,7 @@ use pnet::datalink::MacAddr;
 use pnet::packet::arp::{self, ArpOperations, ArpPacket, MutableArpPacket};
 use std::clone::Clone;
 use std::fmt::{self, Display, Formatter};
+use std::net::Ipv4Addr;
 
 /// Represents an ARP layer.
 #[derive(Clone, Debug)]
@@ -51,6 +52,26 @@ impl Arp {
             },
         }
     }
+
+    /// Returns if the `Arp` is a ARP request of the given source and destination.
+    pub fn is_request_of(&self, src: Ipv4Addr, dst: Ipv4Addr) -> bool {
+        match self.layer.operation {
+            ArpOperations::Request => {
+                self.layer.sender_proto_addr == src && self.layer.target_proto_addr == dst
+            }
+            _ => false,
+        }
+    }
+
+    /// Get the source hardware address of the layer.
+    pub fn get_src_hardware_addr(&self) -> MacAddr {
+        self.layer.sender_hw_addr
+    }
+
+    /// Get the destination hardware address of the layer.
+    pub fn get_dst_hardware_addr(&self) -> MacAddr {
+        self.layer.target_hw_addr
+    }
 }
 
 impl Display for Arp {
@@ -79,7 +100,7 @@ impl Layer for Arp {
         ArpPacket::packet_size(&self.layer)
     }
 
-    fn serialize(&self, buffer: &mut [u8]) -> Result<(), String> {
+    fn serialize(&self, buffer: &mut [u8]) -> Result<usize, String> {
         let mut packet = match MutableArpPacket::new(buffer) {
             Some(packet) => packet,
             None => return Err(format!("buffer is too small")),
@@ -87,13 +108,10 @@ impl Layer for Arp {
 
         packet.populate(&self.layer);
 
-        Ok(())
+        Ok(self.get_size())
     }
 
-    fn serialize_n(&self, n: usize, buffer: &mut [u8]) -> Result<usize, String> {
-        match self.serialize(buffer) {
-            Ok(_) => Ok(self.get_size() + n),
-            Err(e) => Err(e),
-        }
+    fn serialize_n(&self, buffer: &mut [u8], n: usize) -> Result<usize, String> {
+        self.serialize(buffer)
     }
 }
