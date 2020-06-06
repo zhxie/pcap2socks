@@ -44,6 +44,26 @@ impl Tcp {
         }
     }
 
+    /// Get the source IP address of the layer.
+    pub fn get_src_ip_addr(&self) -> IpAddr {
+        self.src
+    }
+
+    /// Get the destination IP address of the layer.
+    pub fn get_dst_ip_addr(&self) -> IpAddr {
+        self.dst
+    }
+
+    /// Get the source of the layer.
+    pub fn get_src(&self) -> u16 {
+        self.layer.source
+    }
+
+    /// Get the destination of the layer.
+    pub fn get_dst(&self) -> u16 {
+        self.layer.destination
+    }
+
     fn serialize_private(
         &self,
         buffer: &mut [u8],

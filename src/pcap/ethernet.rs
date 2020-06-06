@@ -43,6 +43,16 @@ impl Ethernet {
             _ => None,
         }
     }
+
+    /// Get the source of the layer.
+    pub fn get_src(&self) -> MacAddr {
+        return self.layer.source;
+    }
+
+    /// Get the destination of the layer.
+    pub fn get_dst(&self) -> MacAddr {
+        return self.layer.destination;
+    }
 }
 
 impl Display for Ethernet {

@@ -136,7 +136,7 @@ pub mod layer;
 pub mod tcp;
 pub mod udp;
 
-use layer::{Layer, LayerType, Layers};
+use layer::{Layer, LayerType, LayerTypes, Layers};
 
 /// Represents a packet indicator.
 pub struct Indicator {
@@ -147,11 +147,11 @@ pub struct Indicator {
 
 impl Indicator {
     /// Creates a `Indicator`.
-    pub fn new(ethernet: Ethernet) -> Indicator {
+    pub fn new(link: Layers, network: Option<Layers>, transport: Option<Layers>) -> Indicator {
         Indicator {
-            link: Layers::Ethernet(ethernet::Ethernet::new(ethernet)),
-            network: None,
-            transport: None,
+            link,
+            network,
+            transport,
         }
     }
 
@@ -222,12 +222,166 @@ impl Indicator {
         }
     }
 
+    /// Get the brief of the `Indicator`.
+    pub fn brief(&self) -> String {
+        match self.get_network_type() {
+            Some(t) => {
+                match t {
+                    LayerTypes::Arp => {
+                        let layer = self.get_arp().unwrap();
+                        return format!(
+                            "{}: {} -> {}",
+                            layer.get_type(),
+                            layer.get_src(),
+                            layer.get_dst()
+                        );
+                    }
+                    LayerTypes::Ipv4 => match self.get_transport_type() {
+                        Some(t) => {
+                            match t {
+                                LayerTypes::Tcp => {
+                                    let layer = self.get_tcp().unwrap();
+                                    return format!(
+                                        "{}: {}:{} -> {}:{}",
+                                        layer.get_type(),
+                                        layer.get_src_ip_addr(),
+                                        layer.get_src(),
+                                        layer.get_dst_ip_addr(),
+                                        layer.get_dst()
+                                    );
+                                }
+                                LayerTypes::Udp => {
+                                    let layer = self.get_udp().unwrap();
+                                    return format!(
+                                        "{}: {}:{} -> {}:{}",
+                                        layer.get_type(),
+                                        layer.get_src_ip_addr(),
+                                        layer.get_src(),
+                                        layer.get_dst_ip_addr(),
+                                        layer.get_dst()
+                                    );
+                                }
+                                _ => return format!("unexpected transport layer type"),
+                            };
+                        }
+                        None => {
+                            let layer = self.get_ipv4().unwrap();
+                            return format!(
+                                "{}: {} -> {}",
+                                layer.get_type(),
+                                layer.get_src(),
+                                layer.get_dst()
+                            );
+                        }
+                    },
+                    _ => return format!("unexpected network layer type"),
+                };
+            }
+            None => {
+                match self.get_link_type() {
+                    LayerTypes::Ethernet => {
+                        let layer = self.get_ethernet().unwrap();
+                        return format!(
+                            "{}: {} -> {}",
+                            layer.get_type(),
+                            layer.get_src(),
+                            layer.get_dst()
+                        );
+                    }
+                    _ => return format!("unexpected link layer type"),
+                };
+            }
+        };
+    }
+
+    /// Get The size of the `Indicator` when converted into a byte-array.
+    pub fn get_size(&self) -> usize {
+        let mut size = 0;
+
+        // Link
+        size = size + self.get_link().get_size();
+        // Network
+        if let Some(network) = self.get_network() {
+            size = size + network.get_size();
+        }
+        // Transport
+        if let Some(transport) = self.get_transport() {
+            size = size + transport.get_size();
+        }
+
+        return size;
+    }
+
+    /// Serialize the `Indicator` into a byte-array.
+    pub fn serialize(&self, buffer: &mut [u8]) -> Result<usize, String> {
+        let mut begin = 0;
+
+        // Link
+        match self.get_link().serialize(&mut buffer[begin..]) {
+            Ok(n) => begin = begin + n,
+            Err(e) => return Err(format!("serialize {}: {}", self.get_link_type(), e)),
+        };
+        // Network
+        if let Some(network) = self.get_network() {
+            match network.serialize(&mut buffer[begin..]) {
+                Ok(n) => begin = begin + n,
+                Err(e) => return Err(format!("serialize {}: {}", network.get_type(), e)),
+            };
+        };
+        // Transport
+        if let Some(transport) = self.get_transport() {
+            match transport.serialize(&mut buffer[begin..]) {
+                Ok(n) => begin = begin + n,
+                Err(e) => return Err(format!("serialize {}: {}", transport.get_type(), e)),
+            };
+        };
+
+        Ok(begin)
+    }
+
+    /// Recalculate the length and serialize the `Indicator` into a byte-array.
+    pub fn serialize_n(&self, buffer: &mut [u8], n: usize) -> Result<usize, String> {
+        let mut begin = 0;
+        let mut total = n;
+
+        // Link
+        match self.get_link().serialize_n(&mut buffer[begin..], total) {
+            Ok(n) => {
+                begin = begin + n;
+                total = total - n;
+            }
+            Err(e) => return Err(format!("serialize {}: {}", self.get_link_type(), e)),
+        };
+        // Network
+        if let Some(network) = self.get_network() {
+            match network.serialize_n(&mut buffer[begin..], total) {
+                Ok(n) => {
+                    begin = begin + n;
+                    total = total - n;
+                }
+                Err(e) => return Err(format!("serialize {}: {}", network.get_type(), e)),
+            };
+        };
+        // Transport
+        if let Some(transport) = self.get_transport() {
+            match transport.serialize_n(&mut buffer[begin..], total) {
+                Ok(n) => {
+                    begin = begin + n;
+                    total = total - n;
+                }
+                Err(e) => return Err(format!("serialize {}: {}", transport.get_type(), e)),
+            };
+        };
+
+        Ok(begin)
+    }
+
     /// Get the link layer.
     pub fn get_link(&self) -> &Layers {
         &self.link
     }
 
-    // Get the link layer type.
+    /// Get the link layer type.
     pub fn get_link_type(&self) -> LayerType {
         self.get_link().get_type()
     }
@@ -345,13 +499,31 @@ impl Display for Indicator {
 #[macro_export]
 macro_rules! serialize {
     ( $b:expr, $( $layer:expr ),* ) => {{
-        let mut n = 0;
+        let mut begin = 0;
         $(
-            match $layer.serialize(&mut $b[n..]) {
-                Ok(m) => n = n + m,
+            match $layer.serialize(&mut $b[begin..]) {
+                Ok(n) => begin = begin + n,
                 Err(e) => return Err(format!("serialize {}: {}", $layer.get_type(), e)),
             };
         )*
-        Ok(n)
+        Ok(begin)
+    } as Result<usize, String>};
+}
+
+#[macro_export]
+macro_rules! serialize_n {
+    ( $b:expr, $n:expr, $( $layer:expr ),* ) => {{
+        let mut size = $n;
+        let mut begin = 0;
+        $(
+            match $layer.serialize_n(&mut $b[begin..], size) {
+                Ok(n) => {
+                    size = size - n;
+                    begin = begin + n;
+                },
+                Err(e) => return Err(format!("serialize {}: {}", $layer.get_type(), e)),
+            };
+        )*
+        Ok(begin)
     } as Result<usize, String>};
 }

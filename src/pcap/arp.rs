@@ -53,7 +53,17 @@ impl Arp {
         }
     }
 
-    /// Returns if the `Arp` is a ARP request of the given source and destination.
+    /// Returns if the `Arp` is an ARP request.
+    pub fn is_request(&self) -> bool {
+        self.layer.operation == ArpOperations::Request
+    }
+
+    /// Returns if the `Arp` is an ARP reply.
+    pub fn is_reply(&self) -> bool {
+        self.layer.operation == ArpOperations::Reply
+    }
+
+    /// Returns if the `Arp` is an ARP request of the given source and destination.
     pub fn is_request_of(&self, src: Ipv4Addr, dst: Ipv4Addr) -> bool {
         match self.layer.operation {
             ArpOperations::Request => {
@@ -71,6 +81,16 @@ impl Arp {
     /// Get the destination hardware address of the layer.
     pub fn get_dst_hardware_addr(&self) -> MacAddr {
         self.layer.target_hw_addr
+    }
+
+    /// Get the source of the layer.
+    pub fn get_src(&self) -> Ipv4Addr {
+        self.layer.sender_proto_addr
+    }
+
+    /// Get the destination of the layer.
+    pub fn get_dst(&self) -> Ipv4Addr {
+        self.layer.target_proto_addr
     }
 }
 

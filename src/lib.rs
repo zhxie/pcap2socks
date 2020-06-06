@@ -49,7 +49,8 @@ pub fn validate(flags: &args::Flags) -> Result<args::Opts, String> {
 }
 
 pub mod pcap;
-use pcap::{arp, ethernet, layer, layer::Layer, Indicator, Interface};
+use pcap::layer::{self, Layer, LayerType, Layers};
+use pcap::{arp, ethernet, Indicator, Interface};
 
 /// Gets a list of available network interfaces for the current machine.
 pub fn interfaces() -> Vec<Interface> {
@@ -87,7 +88,7 @@ pub fn proxy(
 ) -> Result<(), String> {
     let (tx, mut rx) = match inter.open() {
         Ok((tx, rx)) => (tx, rx),
-        Err(e) => return Err(format!("open: {}", e)),
+        Err(e) => return Err(format!("open pcap: {}", e)),
     };
     let mutex_tx = Arc::new(Mutex::new(tx));
 
@@ -97,7 +98,7 @@ pub fn proxy(
             Ok(frame) => {
                 match Indicator::from(frame) {
                     Some(indicator) => {
-                        trace!("{}", indicator);
+                        trace!("receive from pcap: {}", indicator);
 
                         match indicator.get_network_type() {
                             Some(t) => {
@@ -116,23 +117,41 @@ pub fn proxy(
                                                     )
                                                     .unwrap();
 
+                                                    let new_indicator = Indicator::new(
+                                                        Layers::Ethernet(new_ethernet),
+                                                        Some(Layers::Arp(new_arp)),
+                                                        None,
+                                                    );
+                                                    trace!("<- {}", new_indicator);
+
                                                     // Serialize
-                                                    let size = new_arp.get_size()
-                                                        + new_ethernet.get_size();
+                                                    let size = new_indicator.get_size();
                                                     let mut buffer = vec![0u8; size];
-                                                    match serialize!(
-                                                        &mut buffer,
-                                                        &new_ethernet,
-                                                        &new_arp
-                                                    ) {
+                                                    match new_indicator.serialize(&mut buffer) {
                                                         Ok(_) => {}
                                                         Err(e) => {
                                                             warn!("serialize: {}", e);
                                                             continue;
                                                         }
-                                                    }
+                                                    };
 
                                                     // Send
+                                                    match mutex_tx
+                                                        .clone()
+                                                        .lock()
+                                                        .unwrap()
+                                                        .send_to(&buffer, None)
+                                                    {
+                                                        Some(result) => match result {
+                                                            Ok(_) => debug!(
+                                                                "send to pcap: {} ({} Bytes)",
+                                                                new_indicator.brief(),
+                                                                size
+                                                            ),
+                                                            Err(e) => warn!("send to pcap: {}", e),
+                                                        },
+                                                        None => continue,
+                                                    }
                                                 }
                                                 false => continue,
                                             };
