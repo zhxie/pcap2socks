@@ -1,8 +1,5 @@
 use clap::{crate_description, crate_version, Clap};
 use std::clone::Clone;
-use std::convert::From;
-use std::error::Error;
-use std::fmt::{self, Display, Formatter};
 use std::net::{Ipv4Addr, SocketAddrV4};
 
 #[derive(Clap)]
@@ -33,6 +30,11 @@ pub struct Flags {
         value_name = "ADDRESS"
     )]
     pub dst: String,
+}
+
+/// Parses the arguments.
+pub fn parse() -> Flags {
+    Flags::parse()
 }
 
 pub struct Opts {

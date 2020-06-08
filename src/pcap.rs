@@ -1,4 +1,3 @@
-use ipnetwork::IpNetwork;
 use pnet::datalink::{self, Channel, DataLinkReceiver, DataLinkSender, MacAddr};
 use pnet::packet::arp::ArpPacket;
 use pnet::packet::ethernet::{EtherTypes, EthernetPacket};
@@ -11,10 +10,15 @@ use std::clone::Clone;
 use std::cmp::{Eq, PartialEq};
 use std::fmt::{self, Display, Formatter};
 use std::hash::Hash;
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::Ipv4Addr;
+
+/// Represents the channel sending packets to the pcap.
+pub type Sender = Box<dyn DataLinkSender>;
+/// Represents the channel receiving packets from the pcap.
+pub type Receiver = Box<dyn DataLinkReceiver>;
 
 /// Represents a network interface and its associated addresses.
-#[derive(Clone, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct Interface {
     pub name: String,
     pub alias: Option<String>,
@@ -36,7 +40,7 @@ impl Interface {
     }
 
     // Opens the network interface for sending and receiving data.
-    pub fn open(&self) -> Result<(Box<dyn DataLinkSender>, Box<dyn DataLinkReceiver>), String> {
+    pub fn open(&self) -> Result<(Sender, Receiver), String> {
         let inters = datalink::interfaces();
         let inter = match inters
             .into_iter()
@@ -48,7 +52,7 @@ impl Interface {
         };
         let (tx, rx) = match datalink::channel(&inter, Default::default()) {
             Ok(Channel::Ethernet(tx, rx)) => (tx, rx),
-            Ok(_) => return Err(format!("unhandled link type")),
+            Ok(_) => return Err(format!("unhandled link layer type")),
             Err(e) => return Err(format!("{}", e)),
         };
         Ok((tx, rx))
@@ -105,7 +109,7 @@ pub fn interfaces() -> Vec<Interface> {
                 .ips
                 .iter()
                 .map(|ip| match ip {
-                    IpNetwork::V4(ref ipv4) => {
+                    ipnetwork::IpNetwork::V4(ref ipv4) => {
                         let ip = ipv4.ip();
                         if ip.is_unspecified() {
                             return Err(());
@@ -138,6 +142,7 @@ pub mod udp;
 use layer::{Layer, LayerType, LayerTypes, Layers};
 
 /// Represents a packet indicator.
+#[derive(Debug)]
 pub struct Indicator {
     pub link: Layers,
     pub network: Option<Layers>,
@@ -177,21 +182,17 @@ impl Indicator {
                         transport = match ipv4_packet.get_next_level_protocol() {
                             IpNextHeaderProtocols::Tcp => {
                                 match TcpPacket::new(ipv4_packet.payload()) {
-                                    Some(ref tcp_packet) => Some(Layers::Tcp(tcp::Tcp::parse(
-                                        tcp_packet,
-                                        IpAddr::V4(src),
-                                        IpAddr::V4(dst),
-                                    ))),
+                                    Some(ref tcp_packet) => {
+                                        Some(Layers::Tcp(tcp::Tcp::parse(tcp_packet, src, dst)))
+                                    }
                                     None => None,
                                 }
                             }
                             IpNextHeaderProtocols::Udp => {
                                 match UdpPacket::new(ipv4_packet.payload()) {
-                                    Some(ref udp_packet) => Some(Layers::Udp(udp::Udp::parse(
-                                        udp_packet,
-                                        IpAddr::V4(src),
-                                        IpAddr::V4(dst),
-                                    ))),
+                                    Some(ref udp_packet) => {
+                                        Some(Layers::Udp(udp::Udp::parse(udp_packet, src, dst)))
+                                    }
                                     None => None,
                                 }
                             }
@@ -366,7 +367,7 @@ impl Indicator {
             match transport.serialize_n(&mut buffer[begin..], total) {
                 Ok(n) => {
                     begin = begin + n;
-                    total = total - n;
+                    // total = total - n;
                 }
                 Err(e) => return Err(format!("serialize {}: {}", transport.get_type(), e)),
             };

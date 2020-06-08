@@ -4,7 +4,7 @@ use std::fmt::{self, Display, Formatter};
 use std::hash::Hash;
 
 /// Represents the type of the layer.
-#[derive(Clone, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct LayerType(u8);
 
 impl Display for LayerType {

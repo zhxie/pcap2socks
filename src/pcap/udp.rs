@@ -2,19 +2,19 @@ pub use super::layer::{Layer, LayerType, LayerTypes};
 use pnet::packet::udp::{self, MutableUdpPacket, UdpPacket};
 use std::clone::Clone;
 use std::fmt::{self, Display, Formatter};
-use std::net::IpAddr;
+use std::net::Ipv4Addr;
 
 /// Represents an UDP packet.
 #[derive(Clone, Debug)]
 pub struct Udp {
     pub layer: udp::Udp,
-    pub src: IpAddr,
-    pub dst: IpAddr,
+    pub src: Ipv4Addr,
+    pub dst: Ipv4Addr,
 }
 
 impl Udp {
     /// Creates an `Udp`.
-    pub fn new(src_ip_addr: IpAddr, dst_ip_addr: IpAddr, src: u16, dst: u16) -> Udp {
+    pub fn new(src_ip_addr: Ipv4Addr, dst_ip_addr: Ipv4Addr, src: u16, dst: u16) -> Udp {
         Udp {
             layer: udp::Udp {
                 source: src,
@@ -29,7 +29,7 @@ impl Udp {
     }
 
     /// Creates an `Udp` according to the given `Udp`.
-    pub fn from(udp: udp::Udp, src: IpAddr, dst: IpAddr) -> Udp {
+    pub fn from(udp: udp::Udp, src: Ipv4Addr, dst: Ipv4Addr) -> Udp {
         Udp {
             layer: udp,
             src,
@@ -38,7 +38,7 @@ impl Udp {
     }
 
     /// Creates an `Udp` according to the given UDP packet, source and destination.
-    pub fn parse(packet: &UdpPacket, src: IpAddr, dst: IpAddr) -> Udp {
+    pub fn parse(packet: &UdpPacket, src: Ipv4Addr, dst: Ipv4Addr) -> Udp {
         Udp {
             layer: udp::Udp {
                 source: packet.get_source(),
@@ -53,12 +53,12 @@ impl Udp {
     }
 
     /// Get the source IP address of the layer.
-    pub fn get_src_ip_addr(&self) -> IpAddr {
+    pub fn get_src_ip_addr(&self) -> Ipv4Addr {
         self.src
     }
 
     /// Get the destination IP address of the layer.
-    pub fn get_dst_ip_addr(&self) -> IpAddr {
+    pub fn get_dst_ip_addr(&self) -> Ipv4Addr {
         self.dst
     }
 
@@ -72,7 +72,7 @@ impl Udp {
         self.layer.destination
     }
 
-    fn serialize_private(
+    fn serialize_internal(
         &self,
         buffer: &mut [u8],
         fix_length: bool,
@@ -93,27 +93,11 @@ impl Udp {
 
         // Compute checksum
         if compute_checksum {
-            let checksum;
-            match self.src {
-                IpAddr::V4(ref src) => {
-                    if let IpAddr::V4(ref dst) = self.dst {
-                        checksum = udp::ipv4_checksum(&packet.to_immutable(), src, dst);
-                    } else {
-                        return Err(format!(
-                            "source and destination's IP version is not matched"
-                        ));
-                    }
-                }
-                IpAddr::V6(ref src) => {
-                    if let IpAddr::V6(ref dst) = self.dst {
-                        checksum = udp::ipv6_checksum(&packet.to_immutable(), src, dst);
-                    } else {
-                        return Err(format!(
-                            "source and destination's IP version is not matched"
-                        ));
-                    }
-                }
-            };
+            let checksum = udp::ipv4_checksum(
+                &packet.to_immutable(),
+                &self.get_src_ip_addr(),
+                &self.get_dst_ip_addr(),
+            );
             packet.set_checksum(checksum);
         }
 
@@ -144,10 +128,10 @@ impl Layer for Udp {
     }
 
     fn serialize(&self, buffer: &mut [u8]) -> Result<usize, String> {
-        self.serialize_private(buffer, false, 0, true)
+        self.serialize_internal(buffer, false, 0, true)
     }
 
     fn serialize_n(&self, buffer: &mut [u8], n: usize) -> Result<usize, String> {
-        self.serialize_private(buffer, true, n, true)
+        self.serialize_internal(buffer, true, n, true)
     }
 }

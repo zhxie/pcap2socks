@@ -2,21 +2,21 @@ pub use super::layer::{Layer, LayerType, LayerTypes};
 use pnet::packet::tcp::{self, MutableTcpPacket, TcpFlags, TcpPacket};
 use std::clone::Clone;
 use std::fmt::{self, Display, Formatter};
-use std::net::IpAddr;
+use std::net::Ipv4Addr;
 
 /// Represents a TCP packet.
 #[derive(Clone, Debug)]
 pub struct Tcp {
     pub layer: tcp::Tcp,
-    pub src: IpAddr,
-    pub dst: IpAddr,
+    pub src: Ipv4Addr,
+    pub dst: Ipv4Addr,
 }
 
 impl Tcp {
     /// Creates a `Tcp` represents a TCP ACK.
     pub fn new_ack(
-        src_ip_addr: IpAddr,
-        dst_ip_addr: IpAddr,
+        src_ip_addr: Ipv4Addr,
+        dst_ip_addr: Ipv4Addr,
         src: u16,
         dst: u16,
         sequence: u32,
@@ -44,8 +44,8 @@ impl Tcp {
 
     /// Creates a `Tcp` represents a TCP ACK/SYN.
     pub fn new_ack_syn(
-        src_ip_addr: IpAddr,
-        dst_ip_addr: IpAddr,
+        src_ip_addr: Ipv4Addr,
+        dst_ip_addr: Ipv4Addr,
         src: u16,
         dst: u16,
         sequence: u32,
@@ -65,8 +65,8 @@ impl Tcp {
 
     /// Creates a `Tcp` represents a TCP RST.
     pub fn new_rst(
-        src_ip_addr: IpAddr,
-        dst_ip_addr: IpAddr,
+        src_ip_addr: Ipv4Addr,
+        dst_ip_addr: Ipv4Addr,
         src: u16,
         dst: u16,
         sequence: u32,
@@ -85,7 +85,7 @@ impl Tcp {
     }
 
     /// Creates a `Tcp` according to the given `Tcp`.
-    pub fn from(tcp: tcp::Tcp, src: IpAddr, dst: IpAddr) -> Tcp {
+    pub fn from(tcp: tcp::Tcp, src: Ipv4Addr, dst: Ipv4Addr) -> Tcp {
         Tcp {
             layer: tcp,
             src,
@@ -94,7 +94,7 @@ impl Tcp {
     }
 
     /// Creates a `Tcp` according to the given TCP packet, source and destination.
-    pub fn parse(packet: &TcpPacket, src: IpAddr, dst: IpAddr) -> Tcp {
+    pub fn parse(packet: &TcpPacket, src: Ipv4Addr, dst: Ipv4Addr) -> Tcp {
         Tcp {
             layer: tcp::Tcp {
                 source: packet.get_source(),
@@ -116,12 +116,12 @@ impl Tcp {
     }
 
     /// Get the source IP address of the layer.
-    pub fn get_src_ip_addr(&self) -> IpAddr {
+    pub fn get_src_ip_addr(&self) -> Ipv4Addr {
         self.src
     }
 
     /// Get the destination IP address of the layer.
-    pub fn get_dst_ip_addr(&self) -> IpAddr {
+    pub fn get_dst_ip_addr(&self) -> Ipv4Addr {
         self.dst
     }
 
@@ -170,7 +170,7 @@ impl Tcp {
         self.is_rst() || self.is_fin()
     }
 
-    fn serialize_private(
+    fn serialize_internal(
         &self,
         buffer: &mut [u8],
         fix_length: bool,
@@ -191,27 +191,11 @@ impl Tcp {
 
         // Compute checksum
         if compute_checksum {
-            let checksum;
-            match self.src {
-                IpAddr::V4(ref src) => {
-                    if let IpAddr::V4(ref dst) = self.dst {
-                        checksum = tcp::ipv4_checksum(&packet.to_immutable(), src, dst);
-                    } else {
-                        return Err(format!(
-                            "source and destination's IP version is not matched"
-                        ));
-                    }
-                }
-                IpAddr::V6(ref src) => {
-                    if let IpAddr::V6(ref dst) = self.dst {
-                        checksum = tcp::ipv6_checksum(&packet.to_immutable(), src, dst);
-                    } else {
-                        return Err(format!(
-                            "source and destination's IP version is not matched"
-                        ));
-                    }
-                }
-            };
+            let checksum = tcp::ipv4_checksum(
+                &packet.to_immutable(),
+                &self.get_src_ip_addr(),
+                &self.get_dst_ip_addr(),
+            );
             packet.set_checksum(checksum);
         }
 
@@ -267,10 +251,10 @@ impl Layer for Tcp {
     }
 
     fn serialize(&self, buffer: &mut [u8]) -> Result<usize, String> {
-        self.serialize_private(buffer, false, 0, true)
+        self.serialize_internal(buffer, false, 0, true)
     }
 
     fn serialize_n(&self, buffer: &mut [u8], n: usize) -> Result<usize, String> {
-        self.serialize_private(buffer, true, n, true)
+        self.serialize_internal(buffer, true, n, true)
     }
 }

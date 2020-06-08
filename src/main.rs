@@ -40,8 +40,14 @@ fn main() {
 
     // Proxy
     info!("Proxy {} to {}", opts.src, opts.dst);
-    if let Err(e) = lib::proxy(&inter, opts.publish, opts.src, opts.dst) {
-        error!("proxy: {}", e);
-        return;
+    let mut proxy = match lib::Proxy::open(&inter, opts.publish, opts.src, opts.dst) {
+        Ok(p) => p,
+        Err(ref e) => {
+            error!("open proxy: {}", e);
+            return;
+        }
+    };
+    if let Err(ref e) = proxy.handle() {
+        error!("handle proxy: {}", e);
     }
 }
