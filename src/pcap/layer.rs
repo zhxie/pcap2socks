@@ -12,12 +12,12 @@ impl Display for LayerType {
         write!(
             f,
             "{}",
-            match self {
-                &LayerTypes::Ethernet => "Ethernet",
-                &LayerTypes::Arp => "ARP",
-                &LayerTypes::Ipv4 => "IPv4",
-                &LayerTypes::Tcp => "TCP",
-                &LayerTypes::Udp => "UDP",
+            match *self {
+                LayerTypes::Ethernet => "Ethernet",
+                LayerTypes::Arp => "ARP",
+                LayerTypes::Ipv4 => "IPv4",
+                LayerTypes::Tcp => "TCP",
+                LayerTypes::Udp => "UDP",
                 _ => "unknown",
             }
         )
@@ -73,54 +73,54 @@ pub enum Layers {
 
 impl Display for Layers {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        return match &self {
-            Layers::Ethernet(layer) => layer.fmt(f),
-            Layers::Arp(layer) => layer.fmt(f),
-            Layers::Ipv4(layer) => layer.fmt(f),
-            Layers::Tcp(layer) => layer.fmt(f),
-            Layers::Udp(layer) => layer.fmt(f),
+        return match self {
+            Layers::Ethernet(ref layer) => layer.fmt(f),
+            Layers::Arp(ref layer) => layer.fmt(f),
+            Layers::Ipv4(ref layer) => layer.fmt(f),
+            Layers::Tcp(ref layer) => layer.fmt(f),
+            Layers::Udp(ref layer) => layer.fmt(f),
         };
     }
 }
 
 impl Layer for Layers {
     fn get_type(&self) -> LayerType {
-        return match &self {
-            Layers::Ethernet(layer) => layer.get_type(),
-            Layers::Arp(layer) => layer.get_type(),
-            Layers::Ipv4(layer) => layer.get_type(),
-            Layers::Tcp(layer) => layer.get_type(),
-            Layers::Udp(layer) => layer.get_type(),
+        return match self {
+            Layers::Ethernet(ref layer) => layer.get_type(),
+            Layers::Arp(ref layer) => layer.get_type(),
+            Layers::Ipv4(ref layer) => layer.get_type(),
+            Layers::Tcp(ref layer) => layer.get_type(),
+            Layers::Udp(ref layer) => layer.get_type(),
         };
     }
 
     fn get_size(&self) -> usize {
-        return match &self {
-            Layers::Ethernet(layer) => layer.get_size(),
-            Layers::Arp(layer) => layer.get_size(),
-            Layers::Ipv4(layer) => layer.get_size(),
-            Layers::Tcp(layer) => layer.get_size(),
-            Layers::Udp(layer) => layer.get_size(),
+        return match self {
+            Layers::Ethernet(ref layer) => layer.get_size(),
+            Layers::Arp(ref layer) => layer.get_size(),
+            Layers::Ipv4(ref layer) => layer.get_size(),
+            Layers::Tcp(ref layer) => layer.get_size(),
+            Layers::Udp(ref layer) => layer.get_size(),
         };
     }
 
     fn serialize(&self, buffer: &mut [u8]) -> Result<usize, String> {
-        return match &self {
-            Layers::Ethernet(layer) => layer.serialize(buffer),
-            Layers::Arp(layer) => layer.serialize(buffer),
-            Layers::Ipv4(layer) => layer.serialize(buffer),
-            Layers::Tcp(layer) => layer.serialize(buffer),
-            Layers::Udp(layer) => layer.serialize(buffer),
+        return match self {
+            Layers::Ethernet(ref layer) => layer.serialize(buffer),
+            Layers::Arp(ref layer) => layer.serialize(buffer),
+            Layers::Ipv4(ref layer) => layer.serialize(buffer),
+            Layers::Tcp(ref layer) => layer.serialize(buffer),
+            Layers::Udp(ref layer) => layer.serialize(buffer),
         };
     }
 
     fn serialize_n(&self, buffer: &mut [u8], n: usize) -> Result<usize, String> {
-        return match &self {
-            Layers::Ethernet(layer) => layer.serialize_n(buffer, n),
-            Layers::Arp(layer) => layer.serialize_n(buffer, n),
-            Layers::Ipv4(layer) => layer.serialize_n(buffer, n),
-            Layers::Tcp(layer) => layer.serialize_n(buffer, n),
-            Layers::Udp(layer) => layer.serialize_n(buffer, n),
+        return match self {
+            Layers::Ethernet(ref layer) => layer.serialize_n(buffer, n),
+            Layers::Arp(ref layer) => layer.serialize_n(buffer, n),
+            Layers::Ipv4(ref layer) => layer.serialize_n(buffer, n),
+            Layers::Tcp(ref layer) => layer.serialize_n(buffer, n),
+            Layers::Udp(ref layer) => layer.serialize_n(buffer, n),
         };
     }
 }

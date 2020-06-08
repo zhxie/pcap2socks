@@ -105,7 +105,7 @@ pub fn interfaces() -> Vec<Interface> {
                 .ips
                 .iter()
                 .map(|ip| match ip {
-                    IpNetwork::V4(ipv4) => {
+                    IpNetwork::V4(ref ipv4) => {
                         let ip = ipv4.ip();
                         if ip.is_unspecified() {
                             return Err(());
@@ -161,12 +161,12 @@ impl Indicator {
         let link = Layers::Ethernet(ethernet::Ethernet::parse(packet));
         let network = match packet.get_ethertype() {
             EtherTypes::Arp => match ArpPacket::new(packet.payload()) {
-                Some(arp_packet) => Some(Layers::Arp(arp::Arp::parse(&arp_packet))),
+                Some(ref arp_packet) => Some(Layers::Arp(arp::Arp::parse(arp_packet))),
                 None => None,
             },
             EtherTypes::Ipv4 => match Ipv4Packet::new(packet.payload()) {
-                Some(ipv4_packet) => {
-                    let this_ipv4 = ipv4::Ipv4::parse(&ipv4_packet);
+                Some(ref ipv4_packet) => {
+                    let this_ipv4 = ipv4::Ipv4::parse(ipv4_packet);
                     let src = this_ipv4.get_src();
                     let dst = this_ipv4.get_dst();
                     let this_ipv4 = Some(Layers::Ipv4(this_ipv4));
@@ -177,8 +177,8 @@ impl Indicator {
                         transport = match ipv4_packet.get_next_level_protocol() {
                             IpNextHeaderProtocols::Tcp => {
                                 match TcpPacket::new(ipv4_packet.payload()) {
-                                    Some(tcp_packet) => Some(Layers::Tcp(tcp::Tcp::parse(
-                                        &tcp_packet,
+                                    Some(ref tcp_packet) => Some(Layers::Tcp(tcp::Tcp::parse(
+                                        tcp_packet,
                                         IpAddr::V4(src),
                                         IpAddr::V4(dst),
                                     ))),
@@ -187,8 +187,8 @@ impl Indicator {
                             }
                             IpNextHeaderProtocols::Udp => {
                                 match UdpPacket::new(ipv4_packet.payload()) {
-                                    Some(udp_packet) => Some(Layers::Udp(udp::Udp::parse(
-                                        &udp_packet,
+                                    Some(ref udp_packet) => Some(Layers::Udp(udp::Udp::parse(
+                                        udp_packet,
                                         IpAddr::V4(src),
                                         IpAddr::V4(dst),
                                     ))),
@@ -216,7 +216,7 @@ impl Indicator {
     /// Creates a `Indicator` by the given frame.
     pub fn from(frame: &[u8]) -> Option<Indicator> {
         match EthernetPacket::new(frame) {
-            Some(packet) => Some(Indicator::parse(&packet)),
+            Some(ref packet) => Some(Indicator::parse(packet)),
             None => None,
         }
     }

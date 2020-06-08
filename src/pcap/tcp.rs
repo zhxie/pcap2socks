@@ -193,18 +193,18 @@ impl Tcp {
         if compute_checksum {
             let checksum;
             match self.src {
-                IpAddr::V4(src) => {
-                    if let IpAddr::V4(dst) = self.dst {
-                        checksum = tcp::ipv4_checksum(&packet.to_immutable(), &src, &dst);
+                IpAddr::V4(ref src) => {
+                    if let IpAddr::V4(ref dst) = self.dst {
+                        checksum = tcp::ipv4_checksum(&packet.to_immutable(), src, dst);
                     } else {
                         return Err(format!(
                             "source and destination's IP version is not matched"
                         ));
                     }
                 }
-                IpAddr::V6(src) => {
-                    if let IpAddr::V6(dst) = self.dst {
-                        checksum = tcp::ipv6_checksum(&packet.to_immutable(), &src, &dst);
+                IpAddr::V6(ref src) => {
+                    if let IpAddr::V6(ref dst) = self.dst {
+                        checksum = tcp::ipv6_checksum(&packet.to_immutable(), src, dst);
                     } else {
                         return Err(format!(
                             "source and destination's IP version is not matched"

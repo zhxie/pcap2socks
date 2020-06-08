@@ -14,7 +14,7 @@ pub fn parse() -> args::Flags {
 
 /// Sets the logger.
 pub fn set_logger(flags: &args::Flags) {
-    let level = match flags.vverbose {
+    let level = match &flags.vverbose {
         true => LevelFilter::Trace,
         false => match flags.verbose {
             true => LevelFilter::Debug,
@@ -26,7 +26,7 @@ pub fn set_logger(flags: &args::Flags) {
         .format(|buf, record| {
             let mut style = buf.style();
 
-            let level = match record.level() {
+            let level = match &record.level() {
                 Level::Error => style.set_bold(true).set_color(Color::Red).value("error: "),
                 Level::Warn => style
                     .set_bold(true)
@@ -42,13 +42,11 @@ pub fn set_logger(flags: &args::Flags) {
 
 /// Validate arguments and returns an `Opts`.
 pub fn validate(flags: &args::Flags) -> Result<args::Opts, String> {
-    match args::Opts::validate(flags) {
-        Ok(opts) => Ok(opts),
-        Err(e) => Err(e),
-    }
+    args::Opts::validate(flags)
 }
 
 pub mod pcap;
+pub mod socks;
 use pcap::layer::{self, Layer, Layers};
 use pcap::{arp, ethernet, Indicator, Interface};
 
@@ -81,14 +79,14 @@ pub fn interface(name: Option<String>) -> Result<Interface, String> {
 }
 
 pub fn proxy(
-    inter: Interface,
+    inter: &Interface,
     publish: Option<Ipv4Addr>,
     src: Ipv4Addr,
     dst: SocketAddrV4,
 ) -> Result<(), String> {
     let (tx, mut rx) = match inter.open() {
         Ok((tx, rx)) => (tx, rx),
-        Err(e) => return Err(format!("open pcap: {}", e)),
+        Err(ref e) => return Err(format!("open pcap: {}", e)),
     };
     let mutex_tx = Arc::new(Mutex::new(tx));
 
@@ -96,82 +94,83 @@ pub fn proxy(
     loop {
         match rx.next() {
             Ok(frame) => {
-                match Indicator::from(frame) {
-                    Some(indicator) => {
-                        trace!("receive from pcap: {}", indicator);
+                if let Some(indicator) = Indicator::from(frame) {
+                    trace!("receive from pcap: {}", indicator);
 
-                        match indicator.get_network_type() {
-                            Some(t) => {
-                                match t {
-                                    layer::LayerTypes::Arp => {
-                                        if let Some(publish) = publish {
-                                            let arp = indicator.get_arp().unwrap();
-                                            match arp.is_request_of(src, publish) {
-                                                true => {
-                                                    let new_arp =
-                                                        arp::Arp::reply(&arp, inter.hardware_addr);
-                                                    let new_ethernet = ethernet::Ethernet::new(
-                                                        new_arp.get_type(),
-                                                        new_arp.get_src_hardware_addr(),
-                                                        new_arp.get_dst_hardware_addr(),
-                                                    )
-                                                    .unwrap();
-
-                                                    let new_indicator = Indicator::new(
-                                                        Layers::Ethernet(new_ethernet),
-                                                        Some(Layers::Arp(new_arp)),
-                                                        None,
-                                                    );
-                                                    trace!("<- {}", new_indicator);
-
-                                                    // Serialize
-                                                    let size = new_indicator.get_size();
-                                                    let mut buffer = vec![0u8; size];
-                                                    match new_indicator.serialize(&mut buffer) {
-                                                        Ok(_) => {}
-                                                        Err(e) => {
-                                                            warn!("serialize: {}", e);
-                                                            continue;
-                                                        }
-                                                    };
-
-                                                    // Send
-                                                    match mutex_tx
-                                                        .clone()
-                                                        .lock()
-                                                        .unwrap()
-                                                        .send_to(&buffer, None)
-                                                    {
-                                                        Some(result) => match result {
-                                                            Ok(_) => debug!(
-                                                                "send to pcap: {} ({} Bytes)",
-                                                                new_indicator.brief(),
-                                                                size
-                                                            ),
-                                                            Err(e) => warn!("send to pcap: {}", e),
-                                                        },
-                                                        None => continue,
-                                                    }
-                                                }
-                                                false => continue,
-                                            };
-                                        }
-                                    }
-                                    layer::LayerTypes::Ipv4 => continue,
-                                    _ => continue,
+                    if let Some(t) = indicator.get_network_type() {
+                        match t {
+                            layer::LayerTypes::Arp => {
+                                if let Some(publish) = publish {
+                                    if let Err(e) = handle_arp(
+                                        &indicator,
+                                        &inter,
+                                        publish,
+                                        src,
+                                        mutex_tx.clone(),
+                                    ) {
+                                        warn!("{}", e);
+                                    };
                                 };
                             }
-                            None => continue,
+                            layer::LayerTypes::Ipv4 => {}
+                            _ => {}
                         };
-                    }
-                    None => continue,
+                    };
                 };
             }
-            Err(e) => {
+            Err(ref e) => {
                 if e.kind() != ErrorKind::TimedOut {
                     return Err(format!("handle pcap: {}", e));
                 }
             }
         }
     }
+}
+
+use pnet::datalink::DataLinkSender;
+
+fn handle_arp(
+    indicator: &Indicator,
+    inter: &Interface,
+    publish: Ipv4Addr,
+    src: Ipv4Addr,
+    tx: Arc<Mutex<Box<dyn DataLinkSender>>>,
+) -> Result<(), String> {
+    let arp = indicator.get_arp().unwrap();
+    if arp.is_request_of(src, publish) {
+        let new_arp = arp::Arp::reply(&arp, inter.hardware_addr);
+        let new_ethernet = ethernet::Ethernet::new(
+            new_arp.get_type(),
+            new_arp.get_src_hardware_addr(),
+            new_arp.get_dst_hardware_addr(),
+        )
+        .unwrap();
+
+        let new_indicator = Indicator::new(
+            Layers::Ethernet(new_ethernet),
+            Some(Layers::Arp(new_arp)),
+            None,
+        );
+        trace!("send to pcap {}", new_indicator);
+
+        // Serialize
+        let size = new_indicator.get_size();
+        let mut buffer = vec![0u8; size];
+        if let Err(e) = new_indicator.serialize(&mut buffer) {
+            return Err(format!("serialize: {}", e));
+        };
+
+        // Send
+        if let Some(result) = tx.lock().unwrap().send_to(&buffer, None) {
+            match result {
+                Ok(_) => {
+                    debug!("send to pcap: {} ({} Bytes)", new_indicator.brief(), size);
+                    return Ok(());
+                }
+                Err(ref e) => return Err(format!("send to pcap: {}", e)),
+            };
+        };
+    }
+
+    Ok(())
 }

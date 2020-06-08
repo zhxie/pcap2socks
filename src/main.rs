@@ -8,7 +8,7 @@ fn main() {
     // Validate arguments
     let opts = match lib::validate(&flags) {
         Ok(opts) => opts,
-        Err(e) => {
+        Err(ref e) => {
             error!("cannot parse arguements: {}", e);
             return;
         }
@@ -20,7 +20,7 @@ fn main() {
     // Interface
     let inter = match lib::interface(opts.inter) {
         Ok(inter) => inter,
-        Err(e) => {
+        Err(ref e) => {
             error!("cannot determine interface: {}", e);
             println!();
 
@@ -40,7 +40,7 @@ fn main() {
 
     // Proxy
     info!("Proxy {} to {}", opts.src, opts.dst);
-    if let Err(e) = lib::proxy(inter, opts.publish, opts.src, opts.dst) {
+    if let Err(e) = lib::proxy(&inter, opts.publish, opts.src, opts.dst) {
         error!("proxy: {}", e);
         return;
     }

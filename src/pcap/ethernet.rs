@@ -22,7 +22,14 @@ impl Ethernet {
                     payload: vec![],
                 },
             }),
-            LayerTypes::Ipv4 => None,
+            LayerTypes::Ipv4 => Some(Ethernet {
+                layer: ethernet::Ethernet {
+                    destination: dst,
+                    source: src,
+                    ethertype: EtherTypes::Ipv4,
+                    payload: vec![],
+                },
+            }),
             _ => None,
         }
     }
