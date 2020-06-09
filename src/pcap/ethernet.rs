@@ -1,4 +1,4 @@
-pub use super::layer::{Layer, LayerType, LayerTypes};
+pub use super::layer::{Layer, LayerType, LayerTypes, SerializeError, SerializeResult};
 use pnet::packet::ethernet::{self, EtherTypes, EthernetPacket, MutableEthernetPacket};
 use pnet::util::MacAddr;
 use std::clone::Clone;
@@ -53,12 +53,12 @@ impl Ethernet {
 
     /// Get the source of the layer.
     pub fn get_src(&self) -> MacAddr {
-        return self.layer.source;
+        self.layer.source
     }
 
     /// Get the destination of the layer.
     pub fn get_dst(&self) -> MacAddr {
-        return self.layer.destination;
+        self.layer.destination
     }
 }
 
@@ -83,18 +83,16 @@ impl Layer for Ethernet {
         EthernetPacket::packet_size(&self.layer)
     }
 
-    fn serialize(&self, buffer: &mut [u8]) -> Result<usize, String> {
-        let mut packet = match MutableEthernetPacket::new(buffer) {
-            Some(packet) => packet,
-            None => return Err(format!("buffer is too small")),
-        };
+    fn serialize(&self, buffer: &mut [u8]) -> SerializeResult {
+        let mut packet =
+            MutableEthernetPacket::new(buffer).ok_or(SerializeError::BufferTooSmallError)?;
 
         packet.populate(&self.layer);
 
         Ok(self.get_size())
     }
 
-    fn serialize_n(&self, buffer: &mut [u8], _: usize) -> Result<usize, String> {
+    fn serialize_n(&self, buffer: &mut [u8], _: usize) -> SerializeResult {
         self.serialize(buffer)
     }
 }

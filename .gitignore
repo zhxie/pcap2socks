@@ -3,5 +3,8 @@
 # Library required by building libpnet on Windows
 Packet.lib
 
+# Visual Studio Code directories
+.vscode/
+
 # CLion directories
 .idea/

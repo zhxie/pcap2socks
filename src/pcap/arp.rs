@@ -1,4 +1,4 @@
-pub use super::layer::{Layer, LayerType, LayerTypes};
+pub use super::layer::{Layer, LayerType, LayerTypes, SerializeError, SerializeResult};
 use pnet::datalink::MacAddr;
 use pnet::packet::arp::{self, ArpOperations, ArpPacket, MutableArpPacket};
 use std::clone::Clone;
@@ -120,18 +120,16 @@ impl Layer for Arp {
         ArpPacket::packet_size(&self.layer)
     }
 
-    fn serialize(&self, buffer: &mut [u8]) -> Result<usize, String> {
-        let mut packet = match MutableArpPacket::new(buffer) {
-            Some(packet) => packet,
-            None => return Err(format!("buffer is too small")),
-        };
+    fn serialize(&self, buffer: &mut [u8]) -> SerializeResult {
+        let mut packet =
+            MutableArpPacket::new(buffer).ok_or(SerializeError::BufferTooSmallError)?;
 
         packet.populate(&self.layer);
 
         Ok(self.get_size())
     }
 
-    fn serialize_n(&self, buffer: &mut [u8], _: usize) -> Result<usize, String> {
+    fn serialize_n(&self, buffer: &mut [u8], _: usize) -> SerializeResult {
         self.serialize(buffer)
     }
 }

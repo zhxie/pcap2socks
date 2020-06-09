@@ -1,4 +1,4 @@
-pub use super::layer::{Layer, LayerType, LayerTypes};
+pub use super::layer::{Layer, LayerType, LayerTypes, SerializeError, SerializeResult};
 use pnet::packet::udp::{self, MutableUdpPacket, UdpPacket};
 use std::clone::Clone;
 use std::fmt::{self, Display, Formatter};
@@ -78,11 +78,9 @@ impl Udp {
         fix_length: bool,
         n: usize,
         compute_checksum: bool,
-    ) -> Result<usize, String> {
-        let mut packet = match MutableUdpPacket::new(buffer) {
-            Some(packet) => packet,
-            None => return Err(format!("buffer is too small")),
-        };
+    ) -> SerializeResult {
+        let mut packet =
+            MutableUdpPacket::new(buffer).ok_or(SerializeError::BufferTooSmallError)?;
 
         packet.populate(&self.layer);
 
@@ -127,11 +125,11 @@ impl Layer for Udp {
         UdpPacket::packet_size(&self.layer)
     }
 
-    fn serialize(&self, buffer: &mut [u8]) -> Result<usize, String> {
+    fn serialize(&self, buffer: &mut [u8]) -> SerializeResult {
         self.serialize_internal(buffer, false, 0, true)
     }
 
-    fn serialize_n(&self, buffer: &mut [u8], n: usize) -> Result<usize, String> {
+    fn serialize_n(&self, buffer: &mut [u8], n: usize) -> SerializeResult {
         self.serialize_internal(buffer, true, n, true)
     }
 }

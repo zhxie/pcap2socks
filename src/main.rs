@@ -9,7 +9,7 @@ fn main() {
     let opts = match lib::validate(&flags) {
         Ok(opts) => opts,
         Err(ref e) => {
-            error!("cannot parse arguements: {}", e);
+            error!("parse: {}", e);
             return;
         }
     };
@@ -19,12 +19,9 @@ fn main() {
 
     // Interface
     let inter = match lib::interface(opts.inter) {
-        Ok(inter) => inter,
-        Err(ref e) => {
-            error!("cannot determine interface: {}", e);
-            println!();
-
-            println!("Available interfaces are listed below, use -i <INTERFACE> to designate:");
+        Some(inter) => inter,
+        None => {
+            println!("Cannot determine interface. Available interfaces are listed below, use -i <INTERFACE> to designate:");
             for inter in lib::interfaces().iter() {
                 println!("    {}", inter);
             }
@@ -40,14 +37,14 @@ fn main() {
 
     // Proxy
     info!("Proxy {} to {}", opts.src, opts.dst);
-    let mut proxy = match lib::Proxy::open(&inter, opts.publish, opts.src, opts.dst) {
+    let (mut proxy, mut rx) = match lib::Proxy::open(&inter, opts.publish, opts.src, opts.dst) {
         Ok(p) => p,
         Err(ref e) => {
-            error!("open proxy: {}", e);
+            error!("proxy: {}", e);
             return;
         }
     };
-    if let Err(ref e) = proxy.handle() {
-        error!("handle proxy: {}", e);
+    if let Err(ref e) = proxy.handle(&mut rx) {
+        error!("proxy: {}", e);
     }
 }

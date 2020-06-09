@@ -1,7 +1,11 @@
 use clap::{crate_description, crate_version, Clap};
 use std::clone::Clone;
-use std::net::{Ipv4Addr, SocketAddrV4};
+use std::error::Error;
+use std::fmt::{self, Display, Formatter};
+use std::net::{AddrParseError, Ipv4Addr, SocketAddrV4};
+use std::result;
 
+/// Represents the flags of the application.
 #[derive(Clap)]
 #[clap(
     version = crate_version!(),
@@ -37,6 +41,35 @@ pub fn parse() -> Flags {
     Flags::parse()
 }
 
+/// Represents an error when parse arguments.
+#[derive(Debug)]
+pub enum ParseError {
+    AddrParseError(AddrParseError),
+}
+
+impl Display for ParseError {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        match &self {
+            ParseError::AddrParseError(ref e) => write!(f, "parse: {}", e),
+        }
+    }
+}
+
+impl Error for ParseError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match &self {
+            ParseError::AddrParseError(ref e) => Some(e),
+        }
+    }
+}
+
+impl From<AddrParseError> for ParseError {
+    fn from(s: AddrParseError) -> Self {
+        ParseError::AddrParseError(s)
+    }
+}
+
+/// Represents the options of the application.
 pub struct Opts {
     pub verbose: bool,
     pub vverbose: bool,
@@ -45,6 +78,8 @@ pub struct Opts {
     pub src: Ipv4Addr,
     pub dst: SocketAddrV4,
 }
+
+type Result = result::Result<Opts, ParseError>;
 
 impl Opts {
     /// Creates a new empty `Opts`.
@@ -60,42 +95,15 @@ impl Opts {
     }
 
     /// Validates flags and creates a new `Opts`.
-    pub fn validate(flags: &Flags) -> Result<Opts, String> {
+    pub fn validate(flags: &Flags) -> Result {
         let verbose = flags.verbose;
         let vverbose = flags.vverbose;
         let mut publish = None;
         if let Some(p) = &flags.publish {
-            publish = match p.parse::<Ipv4Addr>() {
-                Ok(publish) => {
-                    if publish.is_unspecified() {
-                        return Err(format!("publish {} is an unspecified IP address", p));
-                    }
-                    Some(publish)
-                }
-                Err(e) => return Err(format!("parse publish {}: {}", p, e)),
-            };
+            publish = Some(p.parse()?);
         }
-        let src = match flags.src.parse::<Ipv4Addr>() {
-            Ok(addr) => {
-                if addr.is_unspecified() {
-                    return Err(format!("source {} is an unspecified IP address", addr));
-                }
-                addr
-            }
-            Err(e) => return Err(format!("parse source {}: {}", flags.src, e)),
-        };
-        let dst = match flags.dst.parse::<SocketAddrV4>() {
-            Ok(addr) => {
-                if addr.ip().is_unspecified() {
-                    return Err(format!(
-                        "destination {} is an unspecified IP address",
-                        addr.ip()
-                    ));
-                }
-                addr
-            }
-            Err(e) => return Err(format!("parse destination {}: {}", flags.dst, e)),
-        };
+        let src = flags.src.parse()?;
+        let dst = flags.dst.parse()?;
 
         Ok(Opts {
             verbose,

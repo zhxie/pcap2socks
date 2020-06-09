@@ -8,14 +8,102 @@ use pnet::packet::udp::UdpPacket;
 use pnet::packet::Packet;
 use std::clone::Clone;
 use std::cmp::{Eq, PartialEq};
+use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::hash::Hash;
+use std::io;
 use std::net::Ipv4Addr;
+use std::result;
+
+pub mod arp;
+pub mod ethernet;
+pub mod ipv4;
+pub mod layer;
+pub mod tcp;
+pub mod udp;
+use layer::{Layer, LayerType, LayerTypes, Layers, SerializeResult};
+
+/// Represents an error when handle pcap interfaces.
+#[derive(Debug)]
+pub enum PcapError {
+    OpenInterfaceError(io::Error),
+    SendError(io::Error),
+    ReceiveError(io::Error),
+    ReceiveTimeOutError(io::Error),
+}
+
+impl Display for PcapError {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        match &self {
+            PcapError::OpenInterfaceError(ref e) => write!(f, "open interface: {}", e),
+            PcapError::SendError(ref e) => write!(f, "send: {}", e),
+            PcapError::ReceiveError(ref e) => write!(f, "receive: {}", e),
+            PcapError::ReceiveTimeOutError(ref e) => write!(f, "receive: {}", e),
+        }
+    }
+}
+
+impl Error for PcapError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match &self {
+            PcapError::OpenInterfaceError(ref e) => Some(e),
+            PcapError::SendError(ref e) => Some(e),
+            PcapError::ReceiveError(ref e) => Some(e),
+            PcapError::ReceiveTimeOutError(ref e) => Some(e),
+        }
+    }
+}
+
+type Result<T> = result::Result<T, PcapError>;
 
 /// Represents the channel sending packets to the pcap.
-pub type Sender = Box<dyn DataLinkSender>;
+pub struct Sender {
+    tx: Box<dyn DataLinkSender>,
+}
+
+impl Sender {
+    /// Creates a new `Sender`.
+    pub fn new(tx: Box<dyn DataLinkSender>) -> Sender {
+        Sender { tx }
+    }
+
+    /// Send a packet.
+    pub fn send_to(&mut self, packet: &[u8]) -> Result<()> {
+        match self.tx.send_to(packet, None) {
+            Some(r) => match r {
+                Ok(_) => Ok(()),
+                Err(e) => Err(PcapError::SendError(e)),
+            },
+            None => Ok(()),
+        }
+    }
+}
+
 /// Represents the channel receiving packets from the pcap.
-pub type Receiver = Box<dyn DataLinkReceiver>;
+pub struct Receiver {
+    rx: Box<dyn DataLinkReceiver>,
+}
+
+impl Receiver {
+    /// Creates a new `Receiver`.
+    pub fn new(rx: Box<dyn DataLinkReceiver>) -> Receiver {
+        Receiver { rx }
+    }
+
+    /// Get the next frame in the channel.
+    pub fn next(&mut self) -> Result<&[u8]> {
+        match self.rx.next() {
+            Ok(frame) => Ok(frame),
+            Err(e) => {
+                if e.kind() == io::ErrorKind::TimedOut {
+                    Err(PcapError::ReceiveTimeOutError(e))
+                } else {
+                    Err(PcapError::ReceiveError(e))
+                }
+            }
+        }
+    }
+}
 
 /// Represents a network interface and its associated addresses.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -40,22 +128,23 @@ impl Interface {
     }
 
     // Opens the network interface for sending and receiving data.
-    pub fn open(&self) -> Result<(Sender, Receiver), String> {
+    pub fn open(&self) -> Result<(Sender, Receiver)> {
         let inters = datalink::interfaces();
-        let inter = match inters
+        let inter = inters
             .into_iter()
             .filter(|current_inter| current_inter.name == self.name)
             .next()
-        {
-            Some(int) => int,
-            _ => return Err(format!("unknown interface {}", self.name)),
-        };
-        let (tx, rx) = match datalink::channel(&inter, Default::default()) {
-            Ok(Channel::Ethernet(tx, rx)) => (tx, rx),
-            Ok(_) => return Err(format!("unhandled link layer type")),
-            Err(e) => return Err(format!("{}", e)),
-        };
-        Ok((tx, rx))
+            .ok_or(PcapError::OpenInterfaceError(io::Error::from(
+                io::ErrorKind::NotFound,
+            )))?;
+
+        match datalink::channel(&inter, Default::default()) {
+            Ok(Channel::Ethernet(tx, rx)) => Ok((Sender::new(tx), Receiver::new(rx))),
+            Ok(_) => Err(PcapError::OpenInterfaceError(io::Error::from(
+                io::ErrorKind::InvalidInput,
+            ))),
+            Err(e) => Err(PcapError::OpenInterfaceError(e)),
+        }
     }
 }
 
@@ -109,16 +198,10 @@ pub fn interfaces() -> Vec<Interface> {
                 .ips
                 .iter()
                 .map(|ip| match ip {
-                    ipnetwork::IpNetwork::V4(ref ipv4) => {
-                        let ip = ipv4.ip();
-                        if ip.is_unspecified() {
-                            return Err(());
-                        }
-                        Ok(ip)
-                    }
+                    ipnetwork::IpNetwork::V4(ref ipv4) => Ok(ipv4.ip()),
                     _ => Err(()),
                 })
-                .filter_map(Result::ok)
+                .filter_map(result::Result::ok)
                 .collect();
             if i.ip_addrs.len() <= 0 {
                 return Err(());
@@ -127,19 +210,11 @@ pub fn interfaces() -> Vec<Interface> {
 
             Ok(i)
         })
-        .filter_map(Result::ok)
+        .filter_map(result::Result::ok)
         .collect();
 
     ifs
 }
-
-pub mod arp;
-pub mod ethernet;
-pub mod ipv4;
-pub mod layer;
-pub mod tcp;
-pub mod udp;
-use layer::{Layer, LayerType, LayerTypes, Layers};
 
 /// Represents a packet indicator.
 #[derive(Debug)]
@@ -225,73 +300,67 @@ impl Indicator {
     /// Get the brief of the `Indicator`.
     pub fn brief(&self) -> String {
         match self.get_network_type() {
-            Some(t) => {
-                match t {
-                    LayerTypes::Arp => {
-                        let layer = self.get_arp().unwrap();
-                        return format!(
-                            "{}: {} -> {}",
-                            layer.get_type(),
-                            layer.get_src(),
-                            layer.get_dst()
-                        );
-                    }
-                    LayerTypes::Ipv4 => match self.get_transport_type() {
-                        Some(t) => {
-                            match t {
-                                LayerTypes::Tcp => {
-                                    let layer = self.get_tcp().unwrap();
-                                    return format!(
-                                        "{}: {}:{} -> {}:{}",
-                                        layer.get_type(),
-                                        layer.get_src_ip_addr(),
-                                        layer.get_src(),
-                                        layer.get_dst_ip_addr(),
-                                        layer.get_dst()
-                                    );
-                                }
-                                LayerTypes::Udp => {
-                                    let layer = self.get_udp().unwrap();
-                                    return format!(
-                                        "{}: {}:{} -> {}:{}",
-                                        layer.get_type(),
-                                        layer.get_src_ip_addr(),
-                                        layer.get_src(),
-                                        layer.get_dst_ip_addr(),
-                                        layer.get_dst()
-                                    );
-                                }
-                                _ => return format!("unexpected transport layer type"),
-                            };
-                        }
-                        None => {
-                            let layer = self.get_ipv4().unwrap();
-                            return format!(
-                                "{}: {} -> {}",
+            Some(t) => match t {
+                LayerTypes::Arp => {
+                    let layer = self.get_arp().unwrap();
+                    format!(
+                        "{}: {} -> {}",
+                        layer.get_type(),
+                        layer.get_src(),
+                        layer.get_dst()
+                    )
+                }
+                LayerTypes::Ipv4 => match self.get_transport_type() {
+                    Some(t) => match t {
+                        LayerTypes::Tcp => {
+                            let layer = self.get_tcp().unwrap();
+                            format!(
+                                "{}: {}:{} -> {}:{}",
                                 layer.get_type(),
+                                layer.get_src_ip_addr(),
                                 layer.get_src(),
+                                layer.get_dst_ip_addr(),
                                 layer.get_dst()
-                            );
+                            )
                         }
+                        LayerTypes::Udp => {
+                            let layer = self.get_udp().unwrap();
+                            format!(
+                                "{}: {}:{} -> {}:{}",
+                                layer.get_type(),
+                                layer.get_src_ip_addr(),
+                                layer.get_src(),
+                                layer.get_dst_ip_addr(),
+                                layer.get_dst()
+                            )
+                        }
+                        _ => format!("unexpected transport layer type"),
                     },
-                    _ => return format!("unexpected network layer type"),
-                };
-            }
-            None => {
-                match self.get_link_type() {
-                    LayerTypes::Ethernet => {
-                        let layer = self.get_ethernet().unwrap();
-                        return format!(
+                    None => {
+                        let layer = self.get_ipv4().unwrap();
+                        format!(
                             "{}: {} -> {}",
                             layer.get_type(),
                             layer.get_src(),
                             layer.get_dst()
-                        );
+                        )
                     }
-                    _ => return format!("unexpected link layer type"),
-                };
-            }
-        };
+                },
+                _ => format!("unexpected network layer type"),
+            },
+            None => match self.get_link_type() {
+                LayerTypes::Ethernet => {
+                    let layer = self.get_ethernet().unwrap();
+                    format!(
+                        "{}: {} -> {}",
+                        layer.get_type(),
+                        layer.get_src(),
+                        layer.get_dst()
+                    )
+                }
+                _ => format!("unexpected link layer type"),
+            },
+        }
     }
 
     /// Get The size of the `Indicator` when converted into a byte-array.
@@ -309,68 +378,46 @@ impl Indicator {
             size = size + transport.get_size();
         }
 
-        return size;
+        size
     }
 
     /// Serialize the `Indicator` into a byte-array.
-    pub fn serialize(&self, buffer: &mut [u8]) -> Result<usize, String> {
+    pub fn serialize(&self, buffer: &mut [u8]) -> SerializeResult {
         let mut begin = 0;
 
         // Link
-        match self.get_link().serialize(&mut buffer[begin..]) {
-            Ok(n) => begin = begin + n,
-            Err(e) => return Err(format!("serialize {}: {}", self.get_link_type(), e)),
-        };
+        begin = begin + self.get_link().serialize(&mut buffer[begin..])?;
         // Network
         if let Some(network) = self.get_network() {
-            match network.serialize(&mut buffer[begin..]) {
-                Ok(n) => begin = begin + n,
-                Err(e) => return Err(format!("serialize {}: {}", network.get_type(), e)),
-            };
-        };
+            begin = begin + network.serialize(&mut buffer[begin..])?;
+        }
         // Transport
         if let Some(transport) = self.get_transport() {
-            match transport.serialize(&mut buffer[begin..]) {
-                Ok(n) => begin = begin + n,
-                Err(e) => return Err(format!("serialize {}: {}", transport.get_type(), e)),
-            };
-        };
+            begin = begin + transport.serialize(&mut buffer[begin..])?;
+        }
 
         Ok(begin)
     }
 
     /// Recalculate the length and serialize the `Indicator` into a byte-array.
-    pub fn serialize_n(&self, buffer: &mut [u8], n: usize) -> Result<usize, String> {
+    pub fn serialize_n(&self, buffer: &mut [u8], n: usize) -> SerializeResult {
         let mut begin = 0;
         let mut total = n;
 
         // Link
-        match self.get_link().serialize_n(&mut buffer[begin..], total) {
-            Ok(n) => {
-                begin = begin + n;
-                total = total - n;
-            }
-            Err(e) => return Err(format!("serialize {}: {}", self.get_link_type(), e)),
-        };
+        let mut m = self.get_link().serialize_n(&mut buffer[begin..], total)?;
+        begin = begin + m;
+        total = total - m;
         // Network
         if let Some(network) = self.get_network() {
-            match network.serialize_n(&mut buffer[begin..], total) {
-                Ok(n) => {
-                    begin = begin + n;
-                    total = total - n;
-                }
-                Err(e) => return Err(format!("serialize {}: {}", network.get_type(), e)),
-            };
+            let mut m = network.serialize_n(&mut buffer[begin..], total)?;
+            begin = begin + m;
+            total = total - m;
         };
         // Transport
         if let Some(transport) = self.get_transport() {
-            match transport.serialize_n(&mut buffer[begin..], total) {
-                Ok(n) => {
-                    begin = begin + n;
-                    // total = total - n;
-                }
-                Err(e) => return Err(format!("serialize {}: {}", transport.get_type(), e)),
-            };
+            let mut m = transport.serialize_n(&mut buffer[begin..], total)?;
+            begin = begin + m;
         };
 
         Ok(begin)
@@ -494,36 +541,4 @@ impl Display for Indicator {
             link_string, network_string, transport_string
         )
     }
-}
-
-#[macro_export]
-macro_rules! serialize {
-    ( $b:expr, $( $layer:expr ),* ) => {{
-        let mut begin = 0;
-        $(
-            match $layer.serialize(&mut $b[begin..]) {
-                Ok(n) => begin = begin + n,
-                Err(e) => return Err(format!("serialize {}: {}", $layer.get_type(), e)),
-            };
-        )*
-        Ok(begin)
-    } as Result<usize, String>};
-}
-
-#[macro_export]
-macro_rules! serialize_n {
-    ( $b:expr, $n:expr, $( $layer:expr ),* ) => {{
-        let mut size = $n;
-        let mut begin = 0;
-        $(
-            match $layer.serialize_n(&mut $b[begin..], size) {
-                Ok(n) => {
-                    size = size - n;
-                    begin = begin + n;
-                },
-                Err(e) => return Err(format!("serialize {}: {}", $layer.get_type(), e)),
-            };
-        )*
-        Ok(begin)
-    } as Result<usize, String>};
 }

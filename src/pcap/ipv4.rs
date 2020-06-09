@@ -1,4 +1,4 @@
-pub use super::layer::{Layer, LayerType, LayerTypes};
+pub use super::layer::{Layer, LayerType, LayerTypes, SerializeError, SerializeResult};
 use pnet::packet::ip::IpNextHeaderProtocols;
 use pnet::packet::ipv4::{self, Ipv4Flags, Ipv4Packet, MutableIpv4Packet};
 use std::clone::Clone;
@@ -103,17 +103,15 @@ impl Ipv4 {
         }
     }
 
-    fn serialize_private(
+    fn serialize_internal(
         &self,
         buffer: &mut [u8],
         fix_length: bool,
         n: usize,
         compute_checksum: bool,
-    ) -> Result<usize, String> {
-        let mut packet = match MutableIpv4Packet::new(buffer) {
-            Some(packet) => packet,
-            None => return Err(format!("buffer is too small")),
-        };
+    ) -> SerializeResult {
+        let mut packet =
+            MutableIpv4Packet::new(buffer).ok_or(SerializeError::BufferTooSmallError)?;
 
         packet.populate(&self.layer);
 
@@ -192,11 +190,11 @@ impl Layer for Ipv4 {
         Ipv4Packet::packet_size(&self.layer)
     }
 
-    fn serialize(&self, buffer: &mut [u8]) -> Result<usize, String> {
-        self.serialize_private(buffer, false, 0, true)
+    fn serialize(&self, buffer: &mut [u8]) -> SerializeResult {
+        self.serialize_internal(buffer, false, 0, true)
     }
 
-    fn serialize_n(&self, buffer: &mut [u8], n: usize) -> Result<usize, String> {
-        self.serialize_private(buffer, true, n, true)
+    fn serialize_n(&self, buffer: &mut [u8], n: usize) -> SerializeResult {
+        self.serialize_internal(buffer, true, n, true)
     }
 }

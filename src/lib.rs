@@ -1,11 +1,76 @@
 use std::cell::RefCell;
-use std::io::{ErrorKind, Write};
+use std::error::Error;
+use std::fmt::{self, Display, Formatter};
+use std::io::Write;
 use std::net::{Ipv4Addr, SocketAddrV4};
-use std::rc::Rc;
+use std::result;
 use std::sync::{Arc, Mutex};
 
 pub mod args;
+pub mod pcap;
+pub mod socks;
+use crate::socks::{Socks5Datagram, SocksError};
+use args::ParseError;
 use log::{debug, trace, warn, Level, LevelFilter};
+use pcap::layer::{self, Layer, Layers, SerializeError};
+use pcap::{arp, ethernet, Indicator, Interface, PcapError, Receiver, Sender};
+
+/// Represents an error when run application.
+#[derive(Debug)]
+pub enum AppError {
+    ParseError(ParseError),
+    PcapError(PcapError),
+    SerializeError(SerializeError),
+    SocksError(SocksError),
+}
+
+impl Display for AppError {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        match &self {
+            AppError::ParseError(ref e) => write!(f, "parse: {}", e),
+            AppError::PcapError(ref e) => write!(f, "pcap: {}", e),
+            AppError::SerializeError(ref e) => write!(f, "serialize: {}", e),
+            AppError::SocksError(ref e) => write!(f, "socks: {}", e),
+        }
+    }
+}
+
+impl Error for AppError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match &self {
+            AppError::ParseError(ref e) => Some(e),
+            AppError::PcapError(ref e) => Some(e),
+            AppError::SerializeError(ref e) => Some(e),
+            AppError::SocksError(ref e) => Some(e),
+        }
+    }
+}
+
+impl From<ParseError> for AppError {
+    fn from(s: ParseError) -> Self {
+        AppError::ParseError(s)
+    }
+}
+
+impl From<PcapError> for AppError {
+    fn from(s: PcapError) -> Self {
+        AppError::PcapError(s)
+    }
+}
+
+impl From<SerializeError> for AppError {
+    fn from(s: SerializeError) -> Self {
+        AppError::SerializeError(s)
+    }
+}
+
+impl From<SocksError> for AppError {
+    fn from(s: SocksError) -> Self {
+        AppError::SocksError(s)
+    }
+}
+
+type Result<T> = result::Result<T, AppError>;
 
 /// Parses arguments and returns a `Flags`.
 pub fn parse() -> args::Flags {
@@ -43,15 +108,9 @@ pub fn set_logger(flags: &args::Flags) {
 }
 
 /// Validate arguments and returns an `Opts`.
-pub fn validate(flags: &args::Flags) -> Result<args::Opts, String> {
-    args::Opts::validate(flags)
+pub fn validate(flags: &args::Flags) -> Result<args::Opts> {
+    Ok(args::Opts::validate(flags)?)
 }
-
-pub mod pcap;
-pub mod socks;
-use crate::socks::Socks5Datagram;
-use pcap::layer::{self, Layer, Layers};
-use pcap::{arp, ethernet, Indicator, Interface, Receiver, Sender};
 
 /// Gets a list of available network interfaces for the current machine.
 pub fn interfaces() -> Vec<Interface> {
@@ -62,23 +121,21 @@ pub fn interfaces() -> Vec<Interface> {
 }
 
 /// Gets an available network iterface match the name.
-pub fn interface(name: Option<String>) -> Result<Interface, String> {
+pub fn interface(name: Option<String>) -> Option<Interface> {
     let mut inters = interfaces();
-    if inters.len() <= 0 {
-        return Err(String::from("no available interface"));
-    }
     if inters.len() > 1 {
         if let None = name {
-            return Err(String::from("multiple available interfaces"));
+            return None;
         }
     }
     if let Some(inter_name) = name {
         inters.retain(|current_inter| current_inter.name == inter_name);
-        if inters.len() <= 0 {
-            return Err(format!("unknown interface {}", inter_name));
-        }
     }
-    Ok(inters[0].clone())
+    if inters.len() <= 0 {
+        return None;
+    }
+
+    Some(inters[0].clone())
 }
 
 const INITIAL_PORT: u16 = 32768;
@@ -90,7 +147,6 @@ pub struct Proxy {
     src: Ipv4Addr,
     dst: SocketAddrV4,
     tx: Arc<Mutex<Sender>>,
-    rx: Receiver,
     ipv4_identification: u16,
     tcp_sequence: u32,
     tcp_acknowledgement: u32,
@@ -107,27 +163,26 @@ impl Proxy {
         publish: Option<Ipv4Addr>,
         src: Ipv4Addr,
         dst: SocketAddrV4,
-    ) -> Result<Proxy, String> {
-        let (tx, rx) = match inter.open() {
-            Ok((tx, rx)) => (tx, rx),
-            Err(ref e) => return Err(format!("open pcap: {}", e)),
-        };
+    ) -> Result<(Proxy, Receiver)> {
+        let (tx, rx) = inter.open()?;
 
-        Ok(Proxy {
-            hardware_addr: inter.hardware_addr,
-            publish,
-            src,
-            dst,
-            tx: Arc::new(Mutex::new(tx)),
+        Ok((
+            Proxy {
+                hardware_addr: inter.hardware_addr,
+                publish,
+                src,
+                dst,
+                tx: Arc::new(Mutex::new(tx)),
+                ipv4_identification: 0,
+                tcp_sequence: 0,
+                tcp_acknowledgement: 0,
+                next_udp_port: INITIAL_PORT,
+                datagrams: (0..u16::MAX).map(|_| None).collect(),
+                datagram_local_to_remote_map: vec![0; u16::MAX as usize],
+                datagram_remote_to_local_map: vec![0; u16::MAX as usize],
+            },
             rx,
-            ipv4_identification: 0,
-            tcp_sequence: 0,
-            tcp_acknowledgement: 0,
-            next_udp_port: INITIAL_PORT,
-            datagrams: (0..u16::MAX).map(|_| None).collect(),
-            datagram_local_to_remote_map: vec![u16::MAX; 0],
-            datagram_remote_to_local_map: vec![u16::MAX; 0],
-        })
+        ))
     }
 
     /// Get the sender of the `Proxy`.
@@ -136,15 +191,15 @@ impl Proxy {
     }
 
     // Handles the proxy.
-    pub fn handle(&mut self) -> Result<(), String> {
+    pub fn handle(&mut self, rx: &mut Receiver) -> Result<()> {
         loop {
-            let frame = match self.rx.next() {
+            let frame = match rx.next() {
                 Ok(frame) => frame,
-                Err(ref e) => {
-                    if e.kind() != ErrorKind::TimedOut {
-                        return Err(format!("handle pcap: {}", e));
+                Err(e) => {
+                    if let pcap::PcapError::ReceiveTimeOutError(_) = e {
+                        continue;
                     }
-                    continue;
+                    return Err(AppError::from(e));
                 }
             };
 
@@ -170,10 +225,17 @@ impl Proxy {
         }
     }
 
-    fn handle_arp(&self, indicator: &Indicator) -> Result<(), String> {
+    fn handle_arp(&self, indicator: &Indicator) -> Result<()> {
         if let Some(publish) = self.publish {
             if let Some(arp) = indicator.get_arp() {
                 if arp.is_request_of(self.src, publish) {
+                    debug!(
+                        "receive from pcap: {} ({} Bytes)",
+                        indicator.brief(),
+                        indicator.get_size()
+                    );
+
+                    // Reply
                     let new_arp = arp::Arp::reply(&arp, self.hardware_addr);
                     let new_ethernet = ethernet::Ethernet::new(
                         new_arp.get_type(),
@@ -187,22 +249,15 @@ impl Proxy {
                         None,
                     );
                     trace!("send to pcap {}", new_indicator);
+
                     // Serialize
                     let size = new_indicator.get_size();
                     let mut buffer = vec![0u8; size];
-                    if let Err(e) = new_indicator.serialize(&mut buffer) {
-                        return Err(format!("serialize: {}", e));
-                    };
+                    new_indicator.serialize(&mut buffer)?;
+
                     // Send
-                    if let Some(result) = self.get_tx().lock().unwrap().send_to(&buffer, None) {
-                        match result {
-                            Ok(_) => {
-                                debug!("send to pcap: {} ({} Bytes)", new_indicator.brief(), size);
-                                return Ok(());
-                            }
-                            Err(ref e) => return Err(format!("send to pcap: {}", e)),
-                        };
-                    };
+                    self.get_tx().lock().unwrap().send_to(&buffer)?;
+                    debug!("send to pcap: {} ({} Bytes)", new_indicator.brief(), size);
                 }
             };
         };
@@ -210,35 +265,23 @@ impl Proxy {
         Ok(())
     }
 
-    fn handle_ipv4(&mut self, indicator: &Indicator, buffer: &[u8]) -> Result<(), String> {
+    fn handle_ipv4(&mut self, indicator: &Indicator, buffer: &[u8]) -> Result<()> {
         if let Some(ref ipv4) = indicator.get_ipv4() {
             if ipv4.get_src() == self.src {
+                debug!(
+                    "receive from pcap: {} ({} Bytes)",
+                    indicator.brief(),
+                    buffer.len()
+                );
+
                 if ipv4.is_fragment() {
                     // Fragment
                 } else {
                     if let Some(t) = indicator.get_transport_type() {
                         match t {
                             layer::LayerTypes::Tcp => {}
-                            layer::LayerTypes::Udp => {
-                                if let Some(r) = self.handle_udp(indicator, ipv4.get_src()) {
-                                    match r {
-                                        Ok((local_port, dst_port)) => {
-                                            if let Some(datagram) = &self.datagrams
-                                                [(local_port - INITIAL_PORT) as usize]
-                                            {
-                                                if let Err(ref e) = datagram.send_to(
-                                                    &buffer[indicator.get_size()..],
-                                                    SocketAddrV4::new(ipv4.get_dst(), dst_port),
-                                                ) {
-                                                    return Err(format!("handle {}: {}", t, e));
-                                                }
-                                            }
-                                        }
-                                        Err(e) => return Err(format!("handle {}: {}", t, e)),
-                                    };
-                                }
-                            }
-                            _ => return Err(format!("unhandled transport layer type")),
+                            layer::LayerTypes::Udp => self.handle_udp(indicator, buffer)?,
+                            _ => {}
                         };
                     }
                 }
@@ -248,29 +291,36 @@ impl Proxy {
         Ok(())
     }
 
-    fn handle_udp(
-        &mut self,
-        indicator: &Indicator,
-        src: Ipv4Addr,
-    ) -> Option<Result<(u16, u16), String>> {
+    fn handle_udp(&mut self, indicator: &Indicator, buffer: &[u8]) -> Result<()> {
         if let Some(ref udp) = indicator.get_udp() {
             let port = self.get_local_udp_port(udp.get_src());
 
-            self.datagrams[port as usize] = match socks::Socks5Datagram::bind(
-                SocketAddrV4::new(self.src, udp.get_src()),
-                SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port),
-                self.dst,
-            ) {
-                Ok(datagram) => Some(datagram),
-                Err(ref e) => {
-                    return Some(Err(format!("bind datagram: {}", e)));
-                }
+            // Bind
+            if let None = self.datagrams[port as usize] {
+                self.datagrams[port as usize] = match socks::Socks5Datagram::bind(
+                    SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port),
+                    self.dst,
+                ) {
+                    Ok(datagram) => Some(datagram),
+                    Err(e) => return Err(AppError::from(e)),
+                };
             };
 
-            return Some(Ok((port, udp.get_dst())));
+            // Send
+            self.datagrams[port as usize].as_ref().unwrap().send_to(
+                &buffer[indicator.get_size()..],
+                SocketAddrV4::new(udp.get_dst_ip_addr(), udp.get_dst()),
+            )?;
+            debug!(
+                "send to SOCKS: {}: {} -> {} ({} Bytes)",
+                udp.get_type(),
+                SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port),
+                self.dst,
+                buffer.len() - indicator.get_size()
+            );
         }
 
-        None
+        Ok(())
     }
 
     /// Get the remote UDP port according to the given local UDP port.
@@ -289,6 +339,7 @@ impl Proxy {
             self.datagram_local_to_remote_map[self.next_udp_port as usize] = remote_port;
             self.datagram_remote_to_local_map[remote_port as usize] = self.next_udp_port;
 
+            // To next port
             self.next_udp_port = self.next_udp_port + 1;
             if self.next_udp_port > u16::MAX {
                 self.next_udp_port = INITIAL_PORT;
