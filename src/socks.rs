@@ -1,4 +1,5 @@
 use socks::{self, TargetAddr};
+use socks::{Socks5Datagram, Socks5Stream};
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::io;
@@ -37,15 +38,15 @@ type Result<T> = result::Result<T, SocksError>;
 
 /// Represents a SOCKS5 UDP client.
 #[derive(Debug)]
-pub struct Socks5Datagram {
-    datagram: socks::Socks5Datagram,
+pub struct SocksDatagram {
+    datagram: Socks5Datagram,
 }
 
-impl Socks5Datagram {
+impl SocksDatagram {
     /// Creates a UDP socket bound to the specified address which will have its traffic routed through the specified proxy.
-    pub fn bind(local_src: SocketAddrV4, dst: SocketAddrV4) -> Result<Socks5Datagram> {
-        match socks::Socks5Datagram::bind(dst, local_src) {
-            Ok(datagram) => Ok(Socks5Datagram { datagram }),
+    pub fn bind(local_src: SocketAddrV4, dst: SocketAddrV4) -> Result<SocksDatagram> {
+        match Socks5Datagram::bind(dst, local_src) {
+            Ok(datagram) => Ok(SocksDatagram { datagram }),
             Err(e) => Err(SocksError::BindError(e)),
         }
     }

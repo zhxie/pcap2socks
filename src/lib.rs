@@ -1,4 +1,3 @@
-use std::cell::RefCell;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::io::Write;
@@ -9,7 +8,7 @@ use std::sync::{Arc, Mutex};
 pub mod args;
 pub mod pcap;
 pub mod socks;
-use crate::socks::{Socks5Datagram, SocksError};
+use crate::socks::{SocksDatagram, SocksError};
 use args::ParseError;
 use log::{debug, trace, warn, Level, LevelFilter};
 use pcap::layer::{self, Layer, Layers, SerializeError};
@@ -151,7 +150,7 @@ pub struct Proxy {
     tcp_sequence: u32,
     tcp_acknowledgement: u32,
     next_udp_port: u16,
-    datagrams: Vec<Option<Socks5Datagram>>,
+    datagrams: Vec<Option<SocksDatagram>>,
     datagram_remote_to_local_map: Vec<u16>,
     datagram_local_to_remote_map: Vec<u16>,
 }
@@ -297,7 +296,7 @@ impl Proxy {
 
             // Bind
             if let None = self.datagrams[port as usize] {
-                self.datagrams[port as usize] = match socks::Socks5Datagram::bind(
+                self.datagrams[port as usize] = match SocksDatagram::bind(
                     SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port),
                     self.dst,
                 ) {

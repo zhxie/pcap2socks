@@ -334,7 +334,7 @@ impl Indicator {
                                 layer.get_dst()
                             )
                         }
-                        _ => format!("unexpected transport layer type"),
+                        _ => unreachable!(),
                     },
                     None => {
                         let layer = self.get_ipv4().unwrap();
@@ -346,7 +346,7 @@ impl Indicator {
                         )
                     }
                 },
-                _ => format!("unexpected network layer type"),
+                _ => unreachable!(),
             },
             None => match self.get_link_type() {
                 LayerTypes::Ethernet => {
@@ -358,7 +358,7 @@ impl Indicator {
                         layer.get_dst()
                     )
                 }
-                _ => format!("unexpected link layer type"),
+                _ => unreachable!(),
             },
         }
     }
@@ -405,18 +405,18 @@ impl Indicator {
         let mut total = n;
 
         // Link
-        let mut m = self.get_link().serialize_n(&mut buffer[begin..], total)?;
+        let m = self.get_link().serialize_n(&mut buffer[begin..], total)?;
         begin = begin + m;
         total = total - m;
         // Network
         if let Some(network) = self.get_network() {
-            let mut m = network.serialize_n(&mut buffer[begin..], total)?;
+            let m = network.serialize_n(&mut buffer[begin..], total)?;
             begin = begin + m;
             total = total - m;
         };
         // Transport
         if let Some(transport) = self.get_transport() {
-            let mut m = transport.serialize_n(&mut buffer[begin..], total)?;
+            let m = transport.serialize_n(&mut buffer[begin..], total)?;
             begin = begin + m;
         };
 
