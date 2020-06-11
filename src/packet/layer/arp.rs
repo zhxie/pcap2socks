@@ -1,6 +1,7 @@
 pub use super::{Layer, LayerType, LayerTypes};
 use pnet::datalink::MacAddr;
-use pnet::packet::arp::{self, ArpOperations, ArpPacket, MutableArpPacket};
+use pnet::packet::arp::{self, ArpHardwareTypes, ArpOperations, ArpPacket, MutableArpPacket};
+use pnet::packet::ethernet::EtherTypes;
 use std::clone::Clone;
 use std::fmt::{self, Display, Formatter};
 use std::io;
@@ -13,6 +14,29 @@ pub struct Arp {
 }
 
 impl Arp {
+    /// Creates a `Arp` represents an ARP reply.
+    pub fn new_reply(
+        src_hardware_addr: MacAddr,
+        src_ip_addr: Ipv4Addr,
+        dst_hardware_addr: MacAddr,
+        dst_ip_addr: Ipv4Addr,
+    ) -> Arp {
+        Arp {
+            layer: arp::Arp {
+                hardware_type: ArpHardwareTypes::Ethernet,
+                protocol_type: EtherTypes::Ipv4,
+                hw_addr_len: 6,
+                proto_addr_len: 4,
+                operation: ArpOperations::Reply,
+                sender_hw_addr: src_hardware_addr,
+                sender_proto_addr: src_ip_addr,
+                target_hw_addr: dst_hardware_addr,
+                target_proto_addr: dst_ip_addr,
+                payload: vec![],
+            },
+        }
+    }
+
     /// Creates an `Arp` according to the given `Arp`.
     pub fn from(arp: arp::Arp) -> Arp {
         Arp { layer: arp }

@@ -17,7 +17,7 @@ use packet::layer::tcp::Tcp;
 use packet::layer::udp::Udp;
 use packet::layer::{Layer, LayerType, LayerTypes, Layers};
 use packet::Indicator;
-use pcap::{Interface, Receiver, Sender};
+use pcap::{HardwareAddr, Interface, Receiver, Sender};
 
 /// Sets the logger.
 pub fn set_logger(flags: &args::Flags) {
@@ -77,9 +77,195 @@ pub fn interface(name: Option<String>) -> Option<Interface> {
 
 const INITIAL_PORT: u16 = 32768;
 
+/// Represents the channel downstream traffic to the source in pcap.
+pub struct Downstreamer {
+    tx: Sender,
+    src_hardware_addr: HardwareAddr,
+    local_hardware_addr: HardwareAddr,
+    src_ip_addr: Ipv4Addr,
+    local_ip_addr: Ipv4Addr,
+    ipv4_identification_map: HashMap<Ipv4Addr, u16>,
+    tcp_sequence_map: HashMap<SocketAddrV4, u32>,
+    tcp_acknowledgement_map: HashMap<SocketAddrV4, u32>,
+}
+
+impl Downstreamer {
+    /// Construct a new `Downstreamer`.
+    pub fn new(
+        tx: Sender,
+        local_hardware_addr: HardwareAddr,
+        src_ip_addr: Ipv4Addr,
+        local_ip_addr: Ipv4Addr,
+    ) -> Downstreamer {
+        Downstreamer {
+            tx,
+            src_hardware_addr: pcap::HARDWARE_ADDR_UNSPECIFIED,
+            local_hardware_addr,
+            src_ip_addr,
+            local_ip_addr,
+            ipv4_identification_map: HashMap::new(),
+            tcp_sequence_map: HashMap::new(),
+            tcp_acknowledgement_map: HashMap::new(),
+        }
+    }
+
+    /// Sets the source hardware address.
+    pub fn set_src_hardware_addr(&mut self, hardware_addr: HardwareAddr) {
+        trace!("set source hardware address to {}", hardware_addr);
+        self.src_hardware_addr = hardware_addr;
+    }
+
+    /// Sets the local IP address.
+    pub fn set_local_ip_addr(&mut self, ip_addr: Ipv4Addr) {
+        trace!("set local IP address to {}", ip_addr);
+        self.local_ip_addr = ip_addr;
+    }
+
+    /// Sends an ARP reply packet.
+    pub fn send_arp_reply(&mut self) -> io::Result<()> {
+        // ARP
+        let arp = Arp::new_reply(
+            self.local_hardware_addr,
+            self.local_ip_addr,
+            self.src_hardware_addr,
+            self.src_ip_addr,
+        );
+
+        // Ethernet
+        let ethernet = Ethernet::new(
+            arp.get_type(),
+            arp.get_src_hardware_addr(),
+            arp.get_dst_hardware_addr(),
+        )
+        .unwrap();
+
+        // Indicator
+        let indicator = Indicator::new(Layers::Ethernet(ethernet), Some(Layers::Arp(arp)), None);
+        trace!("send to pcap {}", indicator);
+
+        // Send
+        self.send(&indicator)
+    }
+
+    /// Sends an UDP packet.
+    pub fn send_udp(&mut self, dst: SocketAddrV4, src_port: u16, payload: &[u8]) -> io::Result<()> {
+        todo!();
+    }
+
+    fn send(&mut self, indicator: &Indicator) -> io::Result<()> {
+        // Serialize
+        let size = indicator.get_size();
+        let mut buffer = vec![0u8; size];
+        indicator.serialize(&mut buffer)?;
+
+        // Send
+        self.tx.send_to(&buffer, None).unwrap_or(Ok(()))?;
+        debug!("send to pcap: {} ({} Bytes)", indicator.brief(), size);
+
+        Ok(())
+    }
+}
+
+/// Represents the channel upstream traffic to the proxy of SOCKS or loopback to the source in pcap.
+pub struct Upstreamer {
+    tx: Arc<Mutex<Downstreamer>>,
+    is_tx_src_hardware_addr_set: bool,
+    src_ip_addr: Ipv4Addr,
+    local_ip_addr: Option<Ipv4Addr>,
+    remote_ip_addr: SocketAddrV4,
+}
+
+impl Upstreamer {
+    /// Construct a new `Upstreamer`.
+    pub fn new(
+        tx: Arc<Mutex<Downstreamer>>,
+        src_ip_addr: Ipv4Addr,
+        local_ip_addr: Option<Ipv4Addr>,
+        remote_ip_addr: SocketAddrV4,
+    ) -> Upstreamer {
+        let upstreamer = Upstreamer {
+            tx,
+            is_tx_src_hardware_addr_set: false,
+            src_ip_addr,
+            local_ip_addr,
+            remote_ip_addr,
+        };
+        if let Some(local_ip_addr) = local_ip_addr {
+            upstreamer
+                .tx
+                .lock()
+                .unwrap()
+                .set_local_ip_addr(local_ip_addr);
+        }
+
+        upstreamer
+    }
+
+    /// Opens an `Interface` for upstream.
+    pub fn open(&mut self, rx: &mut Receiver) -> io::Result<()> {
+        loop {
+            match rx.next() {
+                Ok(frame) => {
+                    if let Some(ref indicator) = Indicator::from(frame) {
+                        trace!("receive from pcap: {}", indicator);
+
+                        if let Some(t) = indicator.get_network_type() {
+                            match t {
+                                LayerTypes::Arp => {
+                                    if let Err(ref e) = self.handle_arp(indicator) {
+                                        warn!("handle {}: {}", t, e);
+                                    }
+                                }
+                                LayerTypes::Ipv4 => {}
+                                _ => unreachable!(),
+                            }
+                        }
+                    };
+                }
+                Err(e) => {
+                    if e.kind() == io::ErrorKind::TimedOut {
+                        continue;
+                    }
+                    return Err(e);
+                }
+            };
+        }
+    }
+
+    fn handle_arp(&self, indicator: &Indicator) -> io::Result<()> {
+        if let Some(local_ip_addr) = self.local_ip_addr {
+            if let Some(arp) = indicator.get_arp() {
+                if arp.is_request_of(self.src_ip_addr, local_ip_addr) {
+                    debug!(
+                        "receive from pcap: {} ({} Bytes)",
+                        indicator.brief(),
+                        indicator.get_size()
+                    );
+
+                    // Set downstreamer's hardware address
+                    if !self.is_tx_src_hardware_addr_set {
+                        self.tx
+                            .lock()
+                            .unwrap()
+                            .set_src_hardware_addr(arp.get_src_hardware_addr());
+                    }
+
+                    self.tx.lock().unwrap().send_arp_reply()?
+                }
+            };
+        };
+
+        Ok(())
+    }
+
+    fn get_tx(&self) -> Arc<Mutex<Downstreamer>> {
+        Arc::clone(&self.tx)
+    }
+}
+
 /// Represents the proxy redirects pcap traffic to SOCKS.
 pub struct Proxy {
-    hardware_addr: pnet::datalink::MacAddr,
+    hardware_addr: HardwareAddr,
     publish: Option<Ipv4Addr>,
     src: Ipv4Addr,
     dst: SocketAddrV4,

@@ -4,6 +4,10 @@ use std::fmt::{self, Display, Formatter};
 use std::io;
 use std::net::Ipv4Addr;
 
+pub type HardwareAddr = pnet::datalink::MacAddr;
+
+pub const HARDWARE_ADDR_UNSPECIFIED: HardwareAddr = pnet::datalink::MacAddr(0, 0, 0, 0, 0, 0);
+
 pub type Sender = Box<dyn DataLinkSender>;
 pub type Receiver = Box<dyn DataLinkReceiver>;
 

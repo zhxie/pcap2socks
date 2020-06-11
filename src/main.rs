@@ -1,5 +1,6 @@
 use log::{error, info};
 use pcap2socks as lib;
+use std::sync::{Arc, Mutex};
 
 fn main() {
     // Parse arguments
@@ -37,14 +38,21 @@ fn main() {
 
     // Proxy
     info!("Proxy {} to {}", opts.src, opts.dst);
-    let (mut proxy, mut rx) = match lib::Proxy::open(&inter, opts.publish, opts.src, opts.dst) {
-        Ok(p) => p,
+    let (mut tx, mut rx) = match inter.open() {
+        Ok((tx, rx)) => (tx, rx),
         Err(ref e) => {
             error!("{}", e);
             return;
         }
     };
-    if let Err(ref e) = proxy.handle(&mut rx) {
+    let downstreamer = lib::Downstreamer::new(tx, inter.hardware_addr, opts.src, inter.ip_addrs[0]);
+    let mut upstreamer = lib::Upstreamer::new(
+        Arc::new(Mutex::new(downstreamer)),
+        opts.src,
+        opts.publish,
+        opts.dst,
+    );
+    if let Err(ref e) = upstreamer.open(&mut rx) {
         error!("{}", e);
     }
 }
