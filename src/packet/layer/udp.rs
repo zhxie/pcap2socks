@@ -1,7 +1,8 @@
-pub use super::layer::{Layer, LayerType, LayerTypes, SerializeError, SerializeResult};
+pub use super::{Layer, LayerType, LayerTypes};
 use pnet::packet::udp::{self, MutableUdpPacket, UdpPacket};
 use std::clone::Clone;
 use std::fmt::{self, Display, Formatter};
+use std::io;
 use std::net::Ipv4Addr;
 
 /// Represents an UDP packet.
@@ -52,35 +53,15 @@ impl Udp {
         }
     }
 
-    /// Get the source IP address of the layer.
-    pub fn get_src_ip_addr(&self) -> Ipv4Addr {
-        self.src
-    }
-
-    /// Get the destination IP address of the layer.
-    pub fn get_dst_ip_addr(&self) -> Ipv4Addr {
-        self.dst
-    }
-
-    /// Get the source of the layer.
-    pub fn get_src(&self) -> u16 {
-        self.layer.source
-    }
-
-    /// Get the destination of the layer.
-    pub fn get_dst(&self) -> u16 {
-        self.layer.destination
-    }
-
     fn serialize_internal(
         &self,
         buffer: &mut [u8],
         fix_length: bool,
         n: usize,
         compute_checksum: bool,
-    ) -> SerializeResult {
-        let mut packet =
-            MutableUdpPacket::new(buffer).ok_or(SerializeError::BufferTooSmallError)?;
+    ) -> io::Result<usize> {
+        let mut packet = MutableUdpPacket::new(buffer)
+            .ok_or(io::Error::new(io::ErrorKind::WriteZero, "buffer too small"))?;
 
         packet.populate(&self.layer);
 
@@ -100,6 +81,26 @@ impl Udp {
         }
 
         Ok(self.get_size() + n)
+    }
+
+    /// Get the source IP address of the layer.
+    pub fn get_src_ip_addr(&self) -> Ipv4Addr {
+        self.src
+    }
+
+    /// Get the destination IP address of the layer.
+    pub fn get_dst_ip_addr(&self) -> Ipv4Addr {
+        self.dst
+    }
+
+    /// Get the source of the layer.
+    pub fn get_src(&self) -> u16 {
+        self.layer.source
+    }
+
+    /// Get the destination of the layer.
+    pub fn get_dst(&self) -> u16 {
+        self.layer.destination
     }
 }
 
@@ -125,11 +126,11 @@ impl Layer for Udp {
         UdpPacket::packet_size(&self.layer)
     }
 
-    fn serialize(&self, buffer: &mut [u8]) -> SerializeResult {
+    fn serialize(&self, buffer: &mut [u8]) -> io::Result<usize> {
         self.serialize_internal(buffer, false, 0, true)
     }
 
-    fn serialize_n(&self, buffer: &mut [u8], n: usize) -> SerializeResult {
+    fn serialize_n(&self, buffer: &mut [u8], n: usize) -> io::Result<usize> {
         self.serialize_internal(buffer, true, n, true)
     }
 }

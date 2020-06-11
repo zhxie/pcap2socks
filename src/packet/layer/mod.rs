@@ -1,9 +1,14 @@
 use std::clone::Clone;
 use std::cmp::{Eq, PartialEq};
-use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::hash::Hash;
-use std::result;
+use std::io;
+
+pub mod arp;
+pub mod ethernet;
+pub mod ipv4;
+pub mod tcp;
+pub mod udp;
 
 /// Represents the type of the layer.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -43,24 +48,6 @@ pub mod LayerTypes {
     pub const Udp: LayerType = LayerType(4);
 }
 
-/// Represents an error when serialize layers.
-#[derive(Debug)]
-pub enum SerializeError {
-    BufferTooSmallError,
-}
-
-impl Display for SerializeError {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        match &self {
-            SerializeError::BufferTooSmallError => write!(f, "buffer too small"),
-        }
-    }
-}
-
-impl Error for SerializeError {}
-
-pub type SerializeResult = result::Result<usize, SerializeError>;
-
 /// Represents a layer.
 pub trait Layer: Display {
     // Get the type of the `Layer`.
@@ -70,17 +57,11 @@ pub trait Layer: Display {
     fn get_size(&self) -> usize;
 
     // Serialize the `Layer` into a byte-array.
-    fn serialize(&self, buffer: &mut [u8]) -> SerializeResult;
+    fn serialize(&self, buffer: &mut [u8]) -> io::Result<usize>;
 
     // Recalculate the length and serialize the `Layer` into a byte-array.
-    fn serialize_n(&self, buffer: &mut [u8], n: usize) -> SerializeResult;
+    fn serialize_n(&self, buffer: &mut [u8], n: usize) -> io::Result<usize>;
 }
-
-use super::arp;
-use super::ethernet;
-use super::ipv4;
-use super::tcp;
-use super::udp;
 
 #[derive(Debug, Clone)]
 pub enum Layers {
@@ -124,7 +105,7 @@ impl Layer for Layers {
         }
     }
 
-    fn serialize(&self, buffer: &mut [u8]) -> SerializeResult {
+    fn serialize(&self, buffer: &mut [u8]) -> io::Result<usize> {
         match self {
             Layers::Ethernet(ref layer) => layer.serialize(buffer),
             Layers::Arp(ref layer) => layer.serialize(buffer),
@@ -134,7 +115,7 @@ impl Layer for Layers {
         }
     }
 
-    fn serialize_n(&self, buffer: &mut [u8], n: usize) -> SerializeResult {
+    fn serialize_n(&self, buffer: &mut [u8], n: usize) -> io::Result<usize> {
         match self {
             Layers::Ethernet(ref layer) => layer.serialize_n(buffer, n),
             Layers::Arp(ref layer) => layer.serialize_n(buffer, n),

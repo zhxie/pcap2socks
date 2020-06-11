@@ -1,4 +1,3 @@
-use pnet::datalink::{self, Channel, DataLinkReceiver, DataLinkSender, MacAddr};
 use pnet::packet::arp::ArpPacket;
 use pnet::packet::ethernet::{EtherTypes, EthernetPacket};
 use pnet::packet::ip::IpNextHeaderProtocols;
@@ -6,215 +5,16 @@ use pnet::packet::ipv4::{Ipv4Flags, Ipv4Packet};
 use pnet::packet::tcp::TcpPacket;
 use pnet::packet::udp::UdpPacket;
 use pnet::packet::Packet;
-use std::clone::Clone;
-use std::cmp::{Eq, PartialEq};
-use std::error::Error;
 use std::fmt::{self, Display, Formatter};
-use std::hash::Hash;
 use std::io;
-use std::net::Ipv4Addr;
-use std::result;
 
-pub mod arp;
-pub mod ethernet;
-pub mod ipv4;
 pub mod layer;
-pub mod tcp;
-pub mod udp;
-use layer::{Layer, LayerType, LayerTypes, Layers, SerializeResult};
-
-/// Represents an error when handle pcap interfaces.
-#[derive(Debug)]
-pub enum PcapError {
-    OpenInterfaceError(io::Error),
-    SendError(io::Error),
-    ReceiveError(io::Error),
-    ReceiveTimeOutError(io::Error),
-}
-
-impl Display for PcapError {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        match &self {
-            PcapError::OpenInterfaceError(ref e) => write!(f, "open interface: {}", e),
-            PcapError::SendError(ref e) => write!(f, "send: {}", e),
-            PcapError::ReceiveError(ref e) => write!(f, "receive: {}", e),
-            PcapError::ReceiveTimeOutError(ref e) => write!(f, "receive: {}", e),
-        }
-    }
-}
-
-impl Error for PcapError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match &self {
-            PcapError::OpenInterfaceError(ref e) => Some(e),
-            PcapError::SendError(ref e) => Some(e),
-            PcapError::ReceiveError(ref e) => Some(e),
-            PcapError::ReceiveTimeOutError(ref e) => Some(e),
-        }
-    }
-}
-
-type Result<T> = result::Result<T, PcapError>;
-
-/// Represents the channel sending packets to the pcap.
-pub struct Sender {
-    tx: Box<dyn DataLinkSender>,
-}
-
-impl Sender {
-    /// Creates a new `Sender`.
-    pub fn new(tx: Box<dyn DataLinkSender>) -> Sender {
-        Sender { tx }
-    }
-
-    /// Send a packet.
-    pub fn send_to(&mut self, packet: &[u8]) -> Result<()> {
-        match self.tx.send_to(packet, None) {
-            Some(r) => match r {
-                Ok(_) => Ok(()),
-                Err(e) => Err(PcapError::SendError(e)),
-            },
-            None => Ok(()),
-        }
-    }
-}
-
-/// Represents the channel receiving packets from the pcap.
-pub struct Receiver {
-    rx: Box<dyn DataLinkReceiver>,
-}
-
-impl Receiver {
-    /// Creates a new `Receiver`.
-    pub fn new(rx: Box<dyn DataLinkReceiver>) -> Receiver {
-        Receiver { rx }
-    }
-
-    /// Get the next frame in the channel.
-    pub fn next(&mut self) -> Result<&[u8]> {
-        match self.rx.next() {
-            Ok(frame) => Ok(frame),
-            Err(e) => {
-                if e.kind() == io::ErrorKind::TimedOut {
-                    Err(PcapError::ReceiveTimeOutError(e))
-                } else {
-                    Err(PcapError::ReceiveError(e))
-                }
-            }
-        }
-    }
-}
-
-/// Represents a network interface and its associated addresses.
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub struct Interface {
-    pub name: String,
-    pub alias: Option<String>,
-    pub hardware_addr: MacAddr,
-    pub ip_addrs: Vec<Ipv4Addr>,
-    pub is_loopback: bool,
-}
-
-impl Interface {
-    /// Construct a new empty `Interface`.
-    pub fn new() -> Interface {
-        Interface {
-            name: String::new(),
-            alias: None,
-            hardware_addr: MacAddr::zero(),
-            ip_addrs: vec![],
-            is_loopback: false,
-        }
-    }
-
-    // Opens the network interface for sending and receiving data.
-    pub fn open(&self) -> Result<(Sender, Receiver)> {
-        let inters = datalink::interfaces();
-        let inter = inters
-            .into_iter()
-            .filter(|current_inter| current_inter.name == self.name)
-            .next()
-            .ok_or(PcapError::OpenInterfaceError(io::Error::from(
-                io::ErrorKind::NotFound,
-            )))?;
-
-        match datalink::channel(&inter, Default::default()) {
-            Ok(Channel::Ethernet(tx, rx)) => Ok((Sender::new(tx), Receiver::new(rx))),
-            Ok(_) => Err(PcapError::OpenInterfaceError(io::Error::from(
-                io::ErrorKind::InvalidInput,
-            ))),
-            Err(e) => Err(PcapError::OpenInterfaceError(e)),
-        }
-    }
-}
-
-impl Display for Interface {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        let name;
-        if let Some(alias) = &self.alias {
-            name = format!("{} ({})", self.name, alias);
-        } else {
-            name = self.name.clone();
-        }
-
-        let hardware_addr = format!(" [{}]", self.hardware_addr);
-
-        let ip_addrs = format!(
-            "{}",
-            self.ip_addrs
-                .iter()
-                .map(|ip_addr| { ip_addr.to_string() })
-                .collect::<Vec<String>>()
-                .join(", ")
-        );
-
-        let mut flags = String::new();
-        if self.is_loopback {
-            flags = String::from(" (Loopback)");
-        }
-
-        write!(f, "{}{}{}: {}", name, hardware_addr, flags, ip_addrs)
-    }
-}
-
-/// Gets a list of available network interfaces for the current machine.
-pub fn interfaces() -> Vec<Interface> {
-    let inters = datalink::interfaces();
-
-    let ifs: Vec<Interface> = inters
-        .iter()
-        .map(|inter| {
-            /*if !inter.is_up() {
-                return Err(());
-            }*/
-
-            let mut i = Interface::new();
-            i.name = inter.name.clone();
-            i.hardware_addr = match inter.mac {
-                Some(mac) => mac,
-                None => return Err(()),
-            };
-            i.ip_addrs = inter
-                .ips
-                .iter()
-                .map(|ip| match ip {
-                    ipnetwork::IpNetwork::V4(ref ipv4) => Ok(ipv4.ip()),
-                    _ => Err(()),
-                })
-                .filter_map(result::Result::ok)
-                .collect();
-            if i.ip_addrs.len() <= 0 {
-                return Err(());
-            }
-            i.is_loopback = inter.is_loopback();
-
-            Ok(i)
-        })
-        .filter_map(result::Result::ok)
-        .collect();
-
-    ifs
-}
+use layer::arp::Arp;
+use layer::ethernet::Ethernet;
+use layer::ipv4::Ipv4;
+use layer::tcp::Tcp;
+use layer::udp::Udp;
+use layer::{Layer, LayerType, LayerTypes, Layers};
 
 /// Represents a packet indicator.
 #[derive(Debug)]
@@ -238,15 +38,15 @@ impl Indicator {
     pub fn parse(packet: &EthernetPacket) -> Indicator {
         let mut transport = None;
 
-        let link = Layers::Ethernet(ethernet::Ethernet::parse(packet));
+        let link = Layers::Ethernet(Ethernet::parse(packet));
         let network = match packet.get_ethertype() {
             EtherTypes::Arp => match ArpPacket::new(packet.payload()) {
-                Some(ref arp_packet) => Some(Layers::Arp(arp::Arp::parse(arp_packet))),
+                Some(ref arp_packet) => Some(Layers::Arp(Arp::parse(arp_packet))),
                 None => None,
             },
             EtherTypes::Ipv4 => match Ipv4Packet::new(packet.payload()) {
                 Some(ref ipv4_packet) => {
-                    let this_ipv4 = ipv4::Ipv4::parse(ipv4_packet);
+                    let this_ipv4 = Ipv4::parse(ipv4_packet);
                     let src = this_ipv4.get_src();
                     let dst = this_ipv4.get_dst();
                     let this_ipv4 = Some(Layers::Ipv4(this_ipv4));
@@ -258,7 +58,7 @@ impl Indicator {
                             IpNextHeaderProtocols::Tcp => {
                                 match TcpPacket::new(ipv4_packet.payload()) {
                                     Some(ref tcp_packet) => {
-                                        Some(Layers::Tcp(tcp::Tcp::parse(tcp_packet, src, dst)))
+                                        Some(Layers::Tcp(Tcp::parse(tcp_packet, src, dst)))
                                     }
                                     None => None,
                                 }
@@ -266,7 +66,7 @@ impl Indicator {
                             IpNextHeaderProtocols::Udp => {
                                 match UdpPacket::new(ipv4_packet.payload()) {
                                     Some(ref udp_packet) => {
-                                        Some(Layers::Udp(udp::Udp::parse(udp_packet, src, dst)))
+                                        Some(Layers::Udp(Udp::parse(udp_packet, src, dst)))
                                     }
                                     None => None,
                                 }
@@ -382,7 +182,7 @@ impl Indicator {
     }
 
     /// Serialize the `Indicator` into a byte-array.
-    pub fn serialize(&self, buffer: &mut [u8]) -> SerializeResult {
+    pub fn serialize(&self, buffer: &mut [u8]) -> io::Result<usize> {
         let mut begin = 0;
 
         // Link
@@ -400,7 +200,7 @@ impl Indicator {
     }
 
     /// Recalculate the length and serialize the `Indicator` into a byte-array.
-    pub fn serialize_n(&self, buffer: &mut [u8], n: usize) -> SerializeResult {
+    pub fn serialize_n(&self, buffer: &mut [u8], n: usize) -> io::Result<usize> {
         let mut begin = 0;
         let mut total = n;
 
@@ -434,7 +234,7 @@ impl Indicator {
     }
 
     /// Get the `Ethernet`.
-    pub fn get_ethernet(&self) -> Option<&ethernet::Ethernet> {
+    pub fn get_ethernet(&self) -> Option<&Ethernet> {
         if let Layers::Ethernet(layer) = &self.get_link() {
             return Some(layer);
         }
@@ -461,7 +261,7 @@ impl Indicator {
     }
 
     /// Get the ARP.
-    pub fn get_arp(&self) -> Option<&arp::Arp> {
+    pub fn get_arp(&self) -> Option<&Arp> {
         if let Some(layer) = self.get_network() {
             if let Layers::Arp(layer) = layer {
                 return Some(layer);
@@ -472,7 +272,7 @@ impl Indicator {
     }
 
     /// Get the IPv4.
-    pub fn get_ipv4(&self) -> Option<&ipv4::Ipv4> {
+    pub fn get_ipv4(&self) -> Option<&Ipv4> {
         if let Some(layer) = self.get_network() {
             if let Layers::Ipv4(layer) = layer {
                 return Some(layer);
@@ -501,7 +301,7 @@ impl Indicator {
     }
 
     /// Get the TCP.
-    pub fn get_tcp(&self) -> Option<&tcp::Tcp> {
+    pub fn get_tcp(&self) -> Option<&Tcp> {
         if let Some(layer) = self.get_transport() {
             if let Layers::Tcp(layer) = layer {
                 return Some(layer);
@@ -512,7 +312,7 @@ impl Indicator {
     }
 
     /// Get the UDP.
-    pub fn get_udp(&self) -> Option<&udp::Udp> {
+    pub fn get_udp(&self) -> Option<&Udp> {
         if let Some(layer) = self.get_transport() {
             if let Layers::Udp(layer) = layer {
                 return Some(layer);

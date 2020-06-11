@@ -69,6 +69,8 @@ impl From<AddrParseError> for ParseError {
     }
 }
 
+type Result = result::Result<Opts, ParseError>;
+
 /// Represents the options of the application.
 pub struct Opts {
     pub verbose: bool,
@@ -78,8 +80,6 @@ pub struct Opts {
     pub src: Ipv4Addr,
     pub dst: SocketAddrV4,
 }
-
-type Result = result::Result<Opts, ParseError>;
 
 impl Opts {
     /// Creates a new empty `Opts`.

@@ -5,6 +5,9 @@ fn main() {
     // Parse arguments
     let flags = lib::parse();
 
+    // Log
+    lib::set_logger(&flags);
+
     // Validate arguments
     let opts = match lib::validate(&flags) {
         Ok(opts) => opts,
@@ -13,9 +16,6 @@ fn main() {
             return;
         }
     };
-
-    // Log
-    lib::set_logger(&flags);
 
     // Interface
     let inter = match lib::interface(opts.inter) {

@@ -1,8 +1,9 @@
-pub use super::layer::{Layer, LayerType, LayerTypes, SerializeError, SerializeResult};
+pub use super::{Layer, LayerType, LayerTypes};
 use pnet::datalink::MacAddr;
 use pnet::packet::arp::{self, ArpOperations, ArpPacket, MutableArpPacket};
 use std::clone::Clone;
 use std::fmt::{self, Display, Formatter};
+use std::io;
 use std::net::Ipv4Addr;
 
 /// Represents an ARP layer.
@@ -120,16 +121,16 @@ impl Layer for Arp {
         ArpPacket::packet_size(&self.layer)
     }
 
-    fn serialize(&self, buffer: &mut [u8]) -> SerializeResult {
-        let mut packet =
-            MutableArpPacket::new(buffer).ok_or(SerializeError::BufferTooSmallError)?;
+    fn serialize(&self, buffer: &mut [u8]) -> io::Result<usize> {
+        let mut packet = MutableArpPacket::new(buffer)
+            .ok_or(io::Error::new(io::ErrorKind::WriteZero, "buffer too small"))?;
 
         packet.populate(&self.layer);
 
         Ok(self.get_size())
     }
 
-    fn serialize_n(&self, buffer: &mut [u8], _: usize) -> SerializeResult {
+    fn serialize_n(&self, buffer: &mut [u8], _: usize) -> io::Result<usize> {
         self.serialize(buffer)
     }
 }

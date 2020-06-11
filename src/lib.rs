@@ -1,35 +1,39 @@
+use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
-use std::io::Write;
+use std::io::{self, Write};
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::result;
 use std::sync::{Arc, Mutex};
 
 pub mod args;
+pub mod packet;
 pub mod pcap;
 pub mod socks;
-use crate::socks::{SocksDatagram, SocksError};
+use crate::socks::SocksDatagram;
 use args::ParseError;
 use log::{debug, trace, warn, Level, LevelFilter};
-use pcap::layer::{self, Layer, Layers, SerializeError};
-use pcap::{arp, ethernet, Indicator, Interface, PcapError, Receiver, Sender};
+use packet::layer::arp::Arp;
+use packet::layer::ethernet::Ethernet;
+use packet::layer::ipv4::Ipv4;
+use packet::layer::tcp::Tcp;
+use packet::layer::udp::Udp;
+use packet::layer::{Layer, LayerType, LayerTypes, Layers};
+use packet::Indicator;
+use pcap::{Interface, Receiver, Sender};
 
 /// Represents an error when run application.
 #[derive(Debug)]
 pub enum AppError {
     ParseError(ParseError),
-    PcapError(PcapError),
-    SerializeError(SerializeError),
-    SocksError(SocksError),
+    IoError(io::Error),
 }
 
 impl Display for AppError {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         match &self {
             AppError::ParseError(ref e) => write!(f, "parse: {}", e),
-            AppError::PcapError(ref e) => write!(f, "pcap: {}", e),
-            AppError::SerializeError(ref e) => write!(f, "serialize: {}", e),
-            AppError::SocksError(ref e) => write!(f, "socks: {}", e),
+            AppError::IoError(ref e) => write!(f, "io: {}", e),
         }
     }
 }
@@ -38,9 +42,7 @@ impl Error for AppError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match &self {
             AppError::ParseError(ref e) => Some(e),
-            AppError::PcapError(ref e) => Some(e),
-            AppError::SerializeError(ref e) => Some(e),
-            AppError::SocksError(ref e) => Some(e),
+            AppError::IoError(ref e) => Some(e),
         }
     }
 }
@@ -51,21 +53,9 @@ impl From<ParseError> for AppError {
     }
 }
 
-impl From<PcapError> for AppError {
-    fn from(s: PcapError) -> Self {
-        AppError::PcapError(s)
-    }
-}
-
-impl From<SerializeError> for AppError {
-    fn from(s: SerializeError) -> Self {
-        AppError::SerializeError(s)
-    }
-}
-
-impl From<SocksError> for AppError {
-    fn from(s: SocksError) -> Self {
-        AppError::SocksError(s)
+impl From<io::Error> for AppError {
+    fn from(s: io::Error) -> Self {
+        AppError::IoError(s)
     }
 }
 
@@ -195,7 +185,7 @@ impl Proxy {
             let frame = match rx.next() {
                 Ok(frame) => frame,
                 Err(e) => {
-                    if let pcap::PcapError::ReceiveTimeOutError(_) = e {
+                    if e.kind() == io::ErrorKind::TimedOut {
                         continue;
                     }
                     return Err(AppError::from(e));
@@ -207,12 +197,12 @@ impl Proxy {
 
                 if let Some(t) = indicator.get_network_type() {
                     match t {
-                        layer::LayerTypes::Arp => {
+                        LayerTypes::Arp => {
                             if let Err(ref e) = self.handle_arp(indicator) {
                                 warn!("handle {}: {}", t, e);
                             };
                         }
-                        layer::LayerTypes::Ipv4 => {
+                        LayerTypes::Ipv4 => {
                             if let Err(ref e) = self.handle_ipv4(indicator, frame) {
                                 warn!("handle {}: {}", t, e);
                             };
@@ -235,8 +225,8 @@ impl Proxy {
                     );
 
                     // Reply
-                    let new_arp = arp::Arp::reply(&arp, self.hardware_addr);
-                    let new_ethernet = ethernet::Ethernet::new(
+                    let new_arp = Arp::reply(&arp, self.hardware_addr);
+                    let new_ethernet = Ethernet::new(
                         new_arp.get_type(),
                         new_arp.get_src_hardware_addr(),
                         new_arp.get_dst_hardware_addr(),
@@ -255,7 +245,11 @@ impl Proxy {
                     new_indicator.serialize(&mut buffer)?;
 
                     // Send
-                    self.get_tx().lock().unwrap().send_to(&buffer)?;
+                    self.get_tx()
+                        .lock()
+                        .unwrap()
+                        .send_to(&buffer, None)
+                        .unwrap_or(Ok(()))?;
                     debug!("send to pcap: {} ({} Bytes)", new_indicator.brief(), size);
                 }
             };
@@ -278,8 +272,8 @@ impl Proxy {
                 } else {
                     if let Some(t) = indicator.get_transport_type() {
                         match t {
-                            layer::LayerTypes::Tcp => {}
-                            layer::LayerTypes::Udp => self.handle_udp(indicator, buffer)?,
+                            LayerTypes::Tcp => {}
+                            LayerTypes::Udp => self.handle_udp(indicator, buffer)?,
                             _ => {}
                         };
                     }

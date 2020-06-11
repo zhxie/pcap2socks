@@ -1,7 +1,8 @@
-pub use super::layer::{Layer, LayerType, LayerTypes, SerializeError, SerializeResult};
+pub use super::{Layer, LayerType, LayerTypes};
 use pnet::packet::tcp::{self, MutableTcpPacket, TcpFlags, TcpPacket};
 use std::clone::Clone;
 use std::fmt::{self, Display, Formatter};
+use std::io;
 use std::net::Ipv4Addr;
 
 /// Represents a TCP packet.
@@ -115,6 +116,36 @@ impl Tcp {
         }
     }
 
+    fn serialize_internal(
+        &self,
+        buffer: &mut [u8],
+        fix_length: bool,
+        _: usize,
+        compute_checksum: bool,
+    ) -> io::Result<usize> {
+        let mut packet = MutableTcpPacket::new(buffer)
+            .ok_or(io::Error::new(io::ErrorKind::WriteZero, "buffer too small"))?;
+
+        packet.populate(&self.layer);
+
+        // Fix length
+        if fix_length {
+            packet.set_data_offset((self.get_size() / 4) as u8);
+        }
+
+        // Compute checksum
+        if compute_checksum {
+            let checksum = tcp::ipv4_checksum(
+                &packet.to_immutable(),
+                &self.get_src_ip_addr(),
+                &self.get_dst_ip_addr(),
+            );
+            packet.set_checksum(checksum);
+        }
+
+        Ok(self.get_size())
+    }
+
     /// Get the source IP address of the layer.
     pub fn get_src_ip_addr(&self) -> Ipv4Addr {
         self.src
@@ -169,36 +200,6 @@ impl Tcp {
     pub fn is_rst_or_fin(&self) -> bool {
         self.is_rst() || self.is_fin()
     }
-
-    fn serialize_internal(
-        &self,
-        buffer: &mut [u8],
-        fix_length: bool,
-        _: usize,
-        compute_checksum: bool,
-    ) -> SerializeResult {
-        let mut packet =
-            MutableTcpPacket::new(buffer).ok_or(SerializeError::BufferTooSmallError)?;
-
-        packet.populate(&self.layer);
-
-        // Fix length
-        if fix_length {
-            packet.set_data_offset((self.get_size() / 4) as u8);
-        }
-
-        // Compute checksum
-        if compute_checksum {
-            let checksum = tcp::ipv4_checksum(
-                &packet.to_immutable(),
-                &self.get_src_ip_addr(),
-                &self.get_dst_ip_addr(),
-            );
-            packet.set_checksum(checksum);
-        }
-
-        Ok(self.get_size())
-    }
 }
 
 impl Display for Tcp {
@@ -248,11 +249,11 @@ impl Layer for Tcp {
         TcpPacket::packet_size(&self.layer)
     }
 
-    fn serialize(&self, buffer: &mut [u8]) -> SerializeResult {
+    fn serialize(&self, buffer: &mut [u8]) -> io::Result<usize> {
         self.serialize_internal(buffer, false, 0, true)
     }
 
-    fn serialize_n(&self, buffer: &mut [u8], n: usize) -> SerializeResult {
+    fn serialize_n(&self, buffer: &mut [u8], n: usize) -> io::Result<usize> {
         self.serialize_internal(buffer, true, n, true)
     }
 }
