@@ -3,16 +3,16 @@ use pcap2socks as lib;
 
 fn main() {
     // Parse arguments
-    let flags = lib::parse();
+    let flags = lib::args::parse();
 
     // Log
     lib::set_logger(&flags);
 
     // Validate arguments
-    let opts = match lib::validate(&flags) {
+    let opts = match lib::args::Opts::validate(&flags) {
         Ok(opts) => opts,
         Err(ref e) => {
-            error!("parse: {}", e);
+            error!("{}", e);
             return;
         }
     };
@@ -40,11 +40,11 @@ fn main() {
     let (mut proxy, mut rx) = match lib::Proxy::open(&inter, opts.publish, opts.src, opts.dst) {
         Ok(p) => p,
         Err(ref e) => {
-            error!("proxy: {}", e);
+            error!("{}", e);
             return;
         }
     };
     if let Err(ref e) = proxy.handle(&mut rx) {
-        error!("proxy: {}", e);
+        error!("{}", e);
     }
 }

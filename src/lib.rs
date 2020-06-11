@@ -1,9 +1,7 @@
 use std::collections::HashMap;
-use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::io::{self, Write};
 use std::net::{Ipv4Addr, SocketAddrV4};
-use std::result;
 use std::sync::{Arc, Mutex};
 
 pub mod args;
@@ -11,7 +9,6 @@ pub mod packet;
 pub mod pcap;
 pub mod socks;
 use crate::socks::SocksDatagram;
-use args::ParseError;
 use log::{debug, trace, warn, Level, LevelFilter};
 use packet::layer::arp::Arp;
 use packet::layer::ethernet::Ethernet;
@@ -21,50 +18,6 @@ use packet::layer::udp::Udp;
 use packet::layer::{Layer, LayerType, LayerTypes, Layers};
 use packet::Indicator;
 use pcap::{Interface, Receiver, Sender};
-
-/// Represents an error when run application.
-#[derive(Debug)]
-pub enum AppError {
-    ParseError(ParseError),
-    IoError(io::Error),
-}
-
-impl Display for AppError {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        match &self {
-            AppError::ParseError(ref e) => write!(f, "parse: {}", e),
-            AppError::IoError(ref e) => write!(f, "io: {}", e),
-        }
-    }
-}
-
-impl Error for AppError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match &self {
-            AppError::ParseError(ref e) => Some(e),
-            AppError::IoError(ref e) => Some(e),
-        }
-    }
-}
-
-impl From<ParseError> for AppError {
-    fn from(s: ParseError) -> Self {
-        AppError::ParseError(s)
-    }
-}
-
-impl From<io::Error> for AppError {
-    fn from(s: io::Error) -> Self {
-        AppError::IoError(s)
-    }
-}
-
-type Result<T> = result::Result<T, AppError>;
-
-/// Parses arguments and returns a `Flags`.
-pub fn parse() -> args::Flags {
-    args::parse()
-}
 
 /// Sets the logger.
 pub fn set_logger(flags: &args::Flags) {
@@ -94,11 +47,6 @@ pub fn set_logger(flags: &args::Flags) {
             writeln!(buf, "{}{}", level, record.args())
         })
         .init();
-}
-
-/// Validate arguments and returns an `Opts`.
-pub fn validate(flags: &args::Flags) -> Result<args::Opts> {
-    Ok(args::Opts::validate(flags)?)
 }
 
 /// Gets a list of available network interfaces for the current machine.
@@ -152,7 +100,7 @@ impl Proxy {
         publish: Option<Ipv4Addr>,
         src: Ipv4Addr,
         dst: SocketAddrV4,
-    ) -> Result<(Proxy, Receiver)> {
+    ) -> io::Result<(Proxy, Receiver)> {
         let (tx, rx) = inter.open()?;
 
         Ok((
@@ -180,7 +128,7 @@ impl Proxy {
     }
 
     // Handles the proxy.
-    pub fn handle(&mut self, rx: &mut Receiver) -> Result<()> {
+    pub fn handle(&mut self, rx: &mut Receiver) -> io::Result<()> {
         loop {
             let frame = match rx.next() {
                 Ok(frame) => frame,
@@ -188,7 +136,7 @@ impl Proxy {
                     if e.kind() == io::ErrorKind::TimedOut {
                         continue;
                     }
-                    return Err(AppError::from(e));
+                    return Err(e);
                 }
             };
 
@@ -214,7 +162,7 @@ impl Proxy {
         }
     }
 
-    fn handle_arp(&self, indicator: &Indicator) -> Result<()> {
+    fn handle_arp(&self, indicator: &Indicator) -> io::Result<()> {
         if let Some(publish) = self.publish {
             if let Some(arp) = indicator.get_arp() {
                 if arp.is_request_of(self.src, publish) {
@@ -258,7 +206,7 @@ impl Proxy {
         Ok(())
     }
 
-    fn handle_ipv4(&mut self, indicator: &Indicator, buffer: &[u8]) -> Result<()> {
+    fn handle_ipv4(&mut self, indicator: &Indicator, buffer: &[u8]) -> io::Result<()> {
         if let Some(ref ipv4) = indicator.get_ipv4() {
             if ipv4.get_src() == self.src {
                 debug!(
@@ -284,7 +232,7 @@ impl Proxy {
         Ok(())
     }
 
-    fn handle_udp(&mut self, indicator: &Indicator, buffer: &[u8]) -> Result<()> {
+    fn handle_udp(&mut self, indicator: &Indicator, buffer: &[u8]) -> io::Result<()> {
         if let Some(ref udp) = indicator.get_udp() {
             let port = self.get_local_udp_port(udp.get_src());
 
@@ -295,7 +243,7 @@ impl Proxy {
                     self.dst,
                 ) {
                     Ok(datagram) => Some(datagram),
-                    Err(e) => return Err(AppError::from(e)),
+                    Err(e) => return Err(e),
                 };
             };
 
