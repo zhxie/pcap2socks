@@ -59,8 +59,13 @@ pub trait Layer: Display {
     // Serialize the `Layer` into a byte-array.
     fn serialize(&self, buffer: &mut [u8]) -> io::Result<usize>;
 
-    // Recalculate the length and serialize the `Layer` into a byte-array.
-    fn serialize_n(&self, buffer: &mut [u8], n: usize) -> io::Result<usize>;
+    // Serialize the `Layer` into a byte-array with payload.
+    fn serialize_with_payload(
+        &self,
+        buffer: &mut [u8],
+        payload: &[u8],
+        n: usize,
+    ) -> io::Result<usize>;
 }
 
 #[derive(Debug, Clone)]
@@ -115,13 +120,18 @@ impl Layer for Layers {
         }
     }
 
-    fn serialize_n(&self, buffer: &mut [u8], n: usize) -> io::Result<usize> {
+    fn serialize_with_payload(
+        &self,
+        buffer: &mut [u8],
+        payload: &[u8],
+        n: usize,
+    ) -> io::Result<usize> {
         match self {
-            Layers::Ethernet(ref layer) => layer.serialize_n(buffer, n),
-            Layers::Arp(ref layer) => layer.serialize_n(buffer, n),
-            Layers::Ipv4(ref layer) => layer.serialize_n(buffer, n),
-            Layers::Tcp(ref layer) => layer.serialize_n(buffer, n),
-            Layers::Udp(ref layer) => layer.serialize_n(buffer, n),
+            Layers::Ethernet(ref layer) => layer.serialize_with_payload(buffer, payload, n),
+            Layers::Arp(ref layer) => layer.serialize_with_payload(buffer, payload, n),
+            Layers::Ipv4(ref layer) => layer.serialize_with_payload(buffer, payload, n),
+            Layers::Tcp(ref layer) => layer.serialize_with_payload(buffer, payload, n),
+            Layers::Udp(ref layer) => layer.serialize_with_payload(buffer, payload, n),
         }
     }
 }

@@ -93,7 +93,12 @@ impl Layer for Ethernet {
         Ok(self.get_size())
     }
 
-    fn serialize_n(&self, buffer: &mut [u8], _: usize) -> io::Result<usize> {
+    fn serialize_with_payload(
+        &self,
+        buffer: &mut [u8],
+        payload: &[u8],
+        n: usize,
+    ) -> io::Result<usize> {
         self.serialize(buffer)
     }
 }

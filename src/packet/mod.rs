@@ -199,24 +199,26 @@ impl Indicator {
         Ok(begin)
     }
 
-    /// Recalculate the length and serialize the `Indicator` into a byte-array.
-    pub fn serialize_n(&self, buffer: &mut [u8], n: usize) -> io::Result<usize> {
+    /// Serialize the `Indicator` into a byte-array with payload.
+    pub fn serialize_with_payload(&self, buffer: &mut [u8], payload: &[u8]) -> io::Result<usize> {
         let mut begin = 0;
-        let mut total = n;
+        let mut total = self.get_size() + payload.len();
 
         // Link
-        let m = self.get_link().serialize_n(&mut buffer[begin..], total)?;
+        let m = self
+            .get_link()
+            .serialize_with_payload(&mut buffer[begin..], payload, total)?;
         begin = begin + m;
         total = total - m;
         // Network
         if let Some(network) = self.get_network() {
-            let m = network.serialize_n(&mut buffer[begin..], total)?;
+            let m = network.serialize_with_payload(&mut buffer[begin..], payload, total)?;
             begin = begin + m;
             total = total - m;
         };
         // Transport
         if let Some(transport) = self.get_transport() {
-            let m = transport.serialize_n(&mut buffer[begin..], total)?;
+            let m = transport.serialize_with_payload(&mut buffer[begin..], payload, total)?;
             begin = begin + m;
         };
 

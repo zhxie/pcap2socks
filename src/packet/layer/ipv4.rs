@@ -195,7 +195,12 @@ impl Layer for Ipv4 {
         self.serialize_internal(buffer, false, 0, true)
     }
 
-    fn serialize_n(&self, buffer: &mut [u8], n: usize) -> io::Result<usize> {
+    fn serialize_with_payload(
+        &self,
+        buffer: &mut [u8],
+        payload: &[u8],
+        n: usize,
+    ) -> io::Result<usize> {
         self.serialize_internal(buffer, true, n, true)
     }
 }

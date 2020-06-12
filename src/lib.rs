@@ -201,8 +201,7 @@ impl Downstreamer {
         // Serialize
         let size = indicator.get_size();
         let mut buffer = vec![0u8; size + payload.len()];
-        indicator.serialize_n(&mut buffer, indicator.get_size() + payload.len())?;
-        buffer[size..].copy_from_slice(payload);
+        indicator.serialize_with_payload(&mut buffer, payload)?;
 
         // Send
         self.tx.send_to(&buffer, None).unwrap_or(Ok(()))?;

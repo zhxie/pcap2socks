@@ -53,36 +53,6 @@ impl Udp {
         }
     }
 
-    fn serialize_internal(
-        &self,
-        buffer: &mut [u8],
-        fix_length: bool,
-        n: usize,
-        compute_checksum: bool,
-    ) -> io::Result<usize> {
-        let mut packet = MutableUdpPacket::new(buffer)
-            .ok_or(io::Error::new(io::ErrorKind::WriteZero, "buffer too small"))?;
-
-        packet.populate(&self.layer);
-
-        // Fix length
-        if fix_length {
-            packet.set_length(n as u16);
-        }
-
-        // Compute checksum
-        if compute_checksum {
-            let checksum = udp::ipv4_checksum(
-                &packet.to_immutable(),
-                &self.get_src_ip_addr(),
-                &self.get_dst_ip_addr(),
-            );
-            packet.set_checksum(checksum);
-        }
-
-        Ok(self.get_size() + n)
-    }
-
     /// Get the source IP address of the layer.
     pub fn get_src_ip_addr(&self) -> Ipv4Addr {
         self.src
@@ -127,10 +97,47 @@ impl Layer for Udp {
     }
 
     fn serialize(&self, buffer: &mut [u8]) -> io::Result<usize> {
-        self.serialize_internal(buffer, false, 0, true)
+        let mut packet = MutableUdpPacket::new(buffer)
+            .ok_or(io::Error::new(io::ErrorKind::WriteZero, "buffer too small"))?;
+
+        packet.populate(&self.layer);
+
+        // Compute checksum
+        let checksum = udp::ipv4_checksum(
+            &packet.to_immutable(),
+            &self.get_src_ip_addr(),
+            &self.get_dst_ip_addr(),
+        );
+        packet.set_checksum(checksum);
+
+        Ok(self.get_size())
     }
 
-    fn serialize_n(&self, buffer: &mut [u8], n: usize) -> io::Result<usize> {
-        self.serialize_internal(buffer, true, n, true)
+    fn serialize_with_payload(
+        &self,
+        buffer: &mut [u8],
+        payload: &[u8],
+        n: usize,
+    ) -> io::Result<usize> {
+        let mut packet = MutableUdpPacket::new(buffer)
+            .ok_or(io::Error::new(io::ErrorKind::WriteZero, "buffer too small"))?;
+
+        packet.populate(&self.layer);
+
+        // Copies payload
+        packet.set_payload(payload);
+
+        // Fix length
+        packet.set_length(n as u16);
+
+        // Compute checksum
+        let checksum = udp::ipv4_checksum(
+            &packet.to_immutable(),
+            &self.get_src_ip_addr(),
+            &self.get_dst_ip_addr(),
+        );
+        packet.set_checksum(checksum);
+
+        Ok(self.get_size() + n)
     }
 }
