@@ -3,6 +3,7 @@ use std::fmt::{self, Display, Formatter};
 use std::io::{self, Write};
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::{Arc, Mutex};
+use std::thread::{self, JoinHandle};
 
 pub mod args;
 pub mod packet;
@@ -76,6 +77,7 @@ pub fn interface(name: Option<String>) -> Option<Interface> {
 }
 
 const INITIAL_PORT: u16 = 32768;
+const PORT_COUNT: usize = 32;
 
 /// Represents the channel downstream traffic to the source in pcap.
 pub struct Downstreamer {
@@ -149,7 +151,37 @@ impl Downstreamer {
 
     /// Sends an UDP packet.
     pub fn send_udp(&mut self, dst: SocketAddrV4, src_port: u16, payload: &[u8]) -> io::Result<()> {
-        todo!();
+        // UDP
+        let udp = Udp::new(dst.ip().clone(), self.src_ip_addr, dst.port(), src_port);
+
+        // IPv4 sequence
+        if !self.ipv4_identification_map.contains_key(dst.ip()) {
+            self.ipv4_identification_map.insert(dst.ip().clone(), 0);
+        }
+        let ipv4_identification = self.ipv4_identification_map.get(dst.ip()).unwrap();
+        self.ipv4_identification_map
+            .insert(dst.ip().clone(), ipv4_identification + 1);
+
+        // IPv4
+        let ipv4 = Ipv4::new(0, udp.get_type(), dst.ip().clone(), self.src_ip_addr).unwrap();
+
+        // Ethernet
+        let ethernet = Ethernet::new(
+            ipv4.get_type(),
+            self.local_hardware_addr,
+            self.src_hardware_addr,
+        )
+        .unwrap();
+
+        // Indicator
+        let indicator = Indicator::new(
+            Layers::Ethernet(ethernet),
+            Some(Layers::Ipv4(ipv4)),
+            Some(Layers::Udp(udp)),
+        );
+
+        // Send
+        self.send_with_payload(&indicator, payload)
     }
 
     fn send(&mut self, indicator: &Indicator) -> io::Result<()> {
@@ -157,6 +189,20 @@ impl Downstreamer {
         let size = indicator.get_size();
         let mut buffer = vec![0u8; size];
         indicator.serialize(&mut buffer)?;
+
+        // Send
+        self.tx.send_to(&buffer, None).unwrap_or(Ok(()))?;
+        debug!("send to pcap: {} ({} Bytes)", indicator.brief(), size);
+
+        Ok(())
+    }
+
+    fn send_with_payload(&mut self, indicator: &Indicator, payload: &[u8]) -> io::Result<()> {
+        // Serialize
+        let size = indicator.get_size();
+        let mut buffer = vec![0u8; size + payload.len()];
+        indicator.serialize_n(&mut buffer, indicator.get_size() + payload.len())?;
+        buffer[size..].copy_from_slice(payload);
 
         // Send
         self.tx.send_to(&buffer, None).unwrap_or(Ok(()))?;
@@ -172,7 +218,11 @@ pub struct Upstreamer {
     is_tx_src_hardware_addr_set: bool,
     src_ip_addr: Ipv4Addr,
     local_ip_addr: Option<Ipv4Addr>,
-    remote_ip_addr: SocketAddrV4,
+    remote: SocketAddrV4,
+    next_udp_port: u16,
+    datagrams: Vec<Option<DatagramWorker>>,
+    datagram_map: Vec<u16>,
+    datagram_reverse_map: Vec<u16>,
 }
 
 impl Upstreamer {
@@ -181,14 +231,18 @@ impl Upstreamer {
         tx: Arc<Mutex<Downstreamer>>,
         src_ip_addr: Ipv4Addr,
         local_ip_addr: Option<Ipv4Addr>,
-        remote_ip_addr: SocketAddrV4,
+        remote: SocketAddrV4,
     ) -> Upstreamer {
         let upstreamer = Upstreamer {
             tx,
             is_tx_src_hardware_addr_set: false,
             src_ip_addr,
             local_ip_addr,
-            remote_ip_addr,
+            remote,
+            next_udp_port: INITIAL_PORT,
+            datagrams: (0..PORT_COUNT).map(|_| None).collect(),
+            datagram_map: vec![0u16; u16::MAX as usize],
+            datagram_reverse_map: vec![0u16; PORT_COUNT],
         };
         if let Some(local_ip_addr) = local_ip_addr {
             upstreamer
@@ -216,7 +270,11 @@ impl Upstreamer {
                                         warn!("handle {}: {}", t, e);
                                     }
                                 }
-                                LayerTypes::Ipv4 => {}
+                                LayerTypes::Ipv4 => {
+                                    if let Err(ref e) = self.handle_ipv4(indicator, frame) {
+                                        warn!("handle {}: {}", t, e);
+                                    }
+                                }
                                 _ => unreachable!(),
                             }
                         }
@@ -250,16 +308,179 @@ impl Upstreamer {
                             .set_src_hardware_addr(arp.get_src_hardware_addr());
                     }
 
+                    // Send
                     self.tx.lock().unwrap().send_arp_reply()?
                 }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn handle_ipv4(&mut self, indicator: &Indicator, buffer: &[u8]) -> io::Result<()> {
+        if let Some(ref ipv4) = indicator.get_ipv4() {
+            if ipv4.get_src() == self.src_ip_addr {
+                debug!(
+                    "receive from pcap: {} ({} Bytes)",
+                    indicator.brief(),
+                    indicator.get_size()
+                );
+                // Set downstreamer's hardware address
+                if !self.is_tx_src_hardware_addr_set {
+                    self.tx
+                        .lock()
+                        .unwrap()
+                        .set_src_hardware_addr(indicator.get_ethernet().unwrap().get_src());
+                }
+
+                if ipv4.is_fragment() {
+                    // Fragment
+                } else {
+                    if let Some(t) = indicator.get_transport_type() {
+                        match t {
+                            LayerTypes::Tcp => {}
+                            LayerTypes::Udp => self.handle_udp(indicator, buffer)?,
+                            _ => unreachable!(),
+                        };
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn handle_udp(&mut self, indicator: &Indicator, buffer: &[u8]) -> io::Result<()> {
+        if let Some(ref udp) = indicator.get_udp() {
+            let port = self.get_local_udp_port(udp.get_src());
+            let index = (port - INITIAL_PORT) as usize;
+
+            // Bind
+            let create_new = match self.datagrams[index] {
+                Some(ref worker) => worker.get_src_port() != udp.get_src(),
+                None => true,
             };
-        };
+            if create_new {
+                self.datagrams[index] = Some(DatagramWorker::new_and_open(
+                    self.get_tx(),
+                    udp.get_src(),
+                    port,
+                    self.remote,
+                )?);
+            }
+
+            // Send
+            self.datagrams[index].as_mut().unwrap().send_to(
+                &buffer[indicator.get_size()..],
+                SocketAddrV4::new(udp.get_dst_ip_addr(), udp.get_dst()),
+            )?;
+        }
 
         Ok(())
     }
 
     fn get_tx(&self) -> Arc<Mutex<Downstreamer>> {
         Arc::clone(&self.tx)
+    }
+
+    fn get_local_udp_port(&mut self, src_port: u16) -> u16 {
+        if self.datagram_map[src_port as usize] == 0 {
+            if self.datagram_reverse_map[(self.next_udp_port - INITIAL_PORT) as usize] != 0 {
+                self.datagram_map[self.datagram_reverse_map
+                    [(self.next_udp_port - INITIAL_PORT) as usize]
+                    as usize] = 0;
+            }
+            self.datagram_map[src_port as usize] = self.next_udp_port;
+            self.datagram_reverse_map[(self.next_udp_port - INITIAL_PORT) as usize] = src_port;
+
+            // To next port
+            self.next_udp_port = self.next_udp_port + 1;
+            if self.next_udp_port >= INITIAL_PORT + PORT_COUNT as u16 {
+                self.next_udp_port = INITIAL_PORT;
+            }
+        }
+
+        self.datagram_map[src_port as usize]
+    }
+}
+
+pub struct DatagramWorker {
+    tx: Arc<Mutex<Downstreamer>>,
+    src_port: u16,
+    local_port: u16,
+    datagram: Arc<SocksDatagram>,
+    thread: JoinHandle<()>,
+}
+
+impl DatagramWorker {
+    /// Construct a new `DatagramWorker` and open it.
+    pub fn new_and_open(
+        tx: Arc<Mutex<Downstreamer>>,
+        src_port: u16,
+        local_port: u16,
+        remote: SocketAddrV4,
+    ) -> io::Result<DatagramWorker> {
+        let datagram =
+            SocksDatagram::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, local_port), remote)?;
+
+        let a_datagram = Arc::new(datagram);
+        let a_datagram_cloned = Arc::clone(&a_datagram);
+        let tx_cloned = Arc::clone(&tx);
+        let thread = thread::spawn(move || {
+            let mut buffer = [0u8; u16::MAX as usize];
+            loop {
+                match a_datagram_cloned.recv_from(&mut buffer) {
+                    Ok((size, addr)) => {
+                        debug!(
+                            "receive from socks: {}: {} -> {} ({} Bytes)",
+                            "UDP", addr, local_port, size
+                        );
+                        if let Err(ref e) =
+                            tx_cloned
+                                .lock()
+                                .unwrap()
+                                .send_udp(addr, src_port, &buffer[..size])
+                        {
+                            warn!("handle {}: {}", "UDP", e);
+                        }
+                    }
+                    Err(ref e) => {
+                        if e.kind() == io::ErrorKind::TimedOut {
+                            continue;
+                        }
+                        warn!("socks: {}", e);
+                        return;
+                    }
+                }
+            }
+        });
+
+        Ok(DatagramWorker {
+            tx,
+            src_port,
+            local_port,
+            datagram: a_datagram,
+            thread: thread,
+        })
+    }
+
+    /// Sends data on the SOCKS to the destination.
+    pub fn send_to(&mut self, buffer: &[u8], dst: SocketAddrV4) -> io::Result<usize> {
+        debug!(
+            "send to socks {}: {} -> {} ({} Bytes)",
+            "UDP",
+            self.local_port,
+            dst,
+            buffer.len()
+        );
+
+        // Send
+        self.datagram.send_to(buffer, dst)
+    }
+
+    /// Get the source port of the SOCKS.
+    pub fn get_src_port(&self) -> u16 {
+        self.src_port
     }
 }
 

@@ -67,7 +67,7 @@ impl Udp {
 
         // Fix length
         if fix_length {
-            packet.set_length((self.get_size() + n) as u16);
+            packet.set_length(n as u16);
         }
 
         // Compute checksum

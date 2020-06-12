@@ -120,7 +120,7 @@ impl Ipv4 {
         if fix_length {
             let header_length = self.get_size();
             packet.set_header_length((header_length / 4) as u8);
-            packet.set_total_length((header_length + n) as u16);
+            packet.set_total_length(n as u16);
         }
 
         // Compute checksum
