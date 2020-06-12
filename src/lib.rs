@@ -220,7 +220,11 @@ impl Downstreamer {
 
         // Send
         self.tx.send_to(&buffer, None).unwrap_or(Ok(()))?;
-        debug!("send to pcap: {} ({} Bytes)", indicator.brief(), size);
+        debug!(
+            "send to pcap: {} ({} Bytes)",
+            indicator.brief(),
+            size + payload.len()
+        );
 
         Ok(())
     }
@@ -337,7 +341,7 @@ impl Upstreamer {
                 debug!(
                     "receive from pcap: {} ({} Bytes)",
                     indicator.brief(),
-                    indicator.get_size()
+                    indicator.get_size() + buffer.len()
                 );
                 // Set downstreamer's hardware address
                 if !self.is_tx_src_hardware_addr_set {
