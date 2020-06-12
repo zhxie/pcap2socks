@@ -157,9 +157,16 @@ impl Downstreamer {
         if !self.ipv4_identification_map.contains_key(dst.ip()) {
             self.ipv4_identification_map.insert(dst.ip().clone(), 0);
         }
+        let ipv4_identification = self.ipv4_identification_map.get(dst.ip()).unwrap();
 
         // IPv4
-        let ipv4 = Ipv4::new(0, udp.get_type(), dst.ip().clone(), self.src_ip_addr).unwrap();
+        let ipv4 = Ipv4::new(
+            *ipv4_identification,
+            udp.get_type(),
+            dst.ip().clone(),
+            self.src_ip_addr,
+        )
+        .unwrap();
 
         // Ethernet
         let ethernet = Ethernet::new(
