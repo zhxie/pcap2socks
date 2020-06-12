@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::fmt::{self, Display, Formatter};
 use std::io::{self, Write};
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::{Arc, Mutex};
@@ -154,13 +153,10 @@ impl Downstreamer {
         // UDP
         let udp = Udp::new(dst.ip().clone(), self.src_ip_addr, dst.port(), src_port);
 
-        // IPv4 sequence
+        // IPv4 identification
         if !self.ipv4_identification_map.contains_key(dst.ip()) {
             self.ipv4_identification_map.insert(dst.ip().clone(), 0);
         }
-        let ipv4_identification = self.ipv4_identification_map.get(dst.ip()).unwrap();
-        self.ipv4_identification_map
-            .insert(dst.ip().clone(), ipv4_identification + 1);
 
         // IPv4
         let ipv4 = Ipv4::new(0, udp.get_type(), dst.ip().clone(), self.src_ip_addr).unwrap();
@@ -181,7 +177,19 @@ impl Downstreamer {
         );
 
         // Send
-        self.send_with_payload(&indicator, payload)
+        match self.send_with_payload(&indicator, payload) {
+            Ok(()) => {
+                // Update IPv4 identification
+                let ipv4_identification_entry = self
+                    .ipv4_identification_map
+                    .entry(dst.ip().clone())
+                    .or_insert(0);
+                *ipv4_identification_entry += 1;
+
+                return Ok(());
+            }
+            Err(e) => Err(e),
+        }
     }
 
     fn send(&mut self, indicator: &Indicator) -> io::Result<()> {

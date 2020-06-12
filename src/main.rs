@@ -38,7 +38,7 @@ fn main() {
 
     // Proxy
     info!("Proxy {} to {}", opts.src, opts.dst);
-    let (mut tx, mut rx) = match inter.open() {
+    let (tx, mut rx) = match inter.open() {
         Ok((tx, rx)) => (tx, rx),
         Err(ref e) => {
             error!("{}", e);
