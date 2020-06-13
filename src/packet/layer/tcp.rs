@@ -219,11 +219,14 @@ impl Layer for Tcp {
         TcpPacket::packet_size(&self.layer)
     }
 
-    fn serialize(&self, buffer: &mut [u8]) -> io::Result<usize> {
+    fn serialize(&self, buffer: &mut [u8], _: usize) -> io::Result<usize> {
         let mut packet = MutableTcpPacket::new(buffer)
             .ok_or(io::Error::new(io::ErrorKind::WriteZero, "buffer too small"))?;
 
         packet.populate(&self.layer);
+
+        // Fix length
+        packet.set_data_offset((self.get_size() / 4) as u8);
 
         // Compute checksum
         let checksum = tcp::ipv4_checksum(

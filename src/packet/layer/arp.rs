@@ -145,7 +145,7 @@ impl Layer for Arp {
         ArpPacket::packet_size(&self.layer)
     }
 
-    fn serialize(&self, buffer: &mut [u8]) -> io::Result<usize> {
+    fn serialize(&self, buffer: &mut [u8], _: usize) -> io::Result<usize> {
         let mut packet = MutableArpPacket::new(buffer)
             .ok_or(io::Error::new(io::ErrorKind::WriteZero, "buffer too small"))?;
 
@@ -154,7 +154,7 @@ impl Layer for Arp {
         Ok(self.get_size())
     }
 
-    fn serialize_with_payload(&self, buffer: &mut [u8], _: &[u8], _: usize) -> io::Result<usize> {
-        self.serialize(buffer)
+    fn serialize_with_payload(&self, buffer: &mut [u8], _: &[u8], n: usize) -> io::Result<usize> {
+        self.serialize(buffer, n)
     }
 }

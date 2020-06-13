@@ -104,34 +104,6 @@ impl Ipv4 {
         }
     }
 
-    fn serialize_internal(
-        &self,
-        buffer: &mut [u8],
-        fix_length: bool,
-        n: usize,
-        compute_checksum: bool,
-    ) -> io::Result<usize> {
-        let mut packet = MutableIpv4Packet::new(buffer)
-            .ok_or(io::Error::new(io::ErrorKind::WriteZero, "buffer too small"))?;
-
-        packet.populate(&self.layer);
-
-        // Fix length
-        if fix_length {
-            let header_length = self.get_size();
-            packet.set_header_length((header_length / 4) as u8);
-            packet.set_total_length(n as u16);
-        }
-
-        // Compute checksum
-        if compute_checksum {
-            let checksum = ipv4::checksum(&packet.to_immutable());
-            packet.set_checksum(checksum);
-        }
-
-        Ok(self.get_size())
-    }
-
     /// Get the identification of the layer.
     pub fn get_identification(&self) -> u16 {
         self.layer.identification
@@ -191,11 +163,25 @@ impl Layer for Ipv4 {
         Ipv4Packet::packet_size(&self.layer)
     }
 
-    fn serialize(&self, buffer: &mut [u8]) -> io::Result<usize> {
-        self.serialize_internal(buffer, false, 0, true)
+    fn serialize(&self, buffer: &mut [u8], n: usize) -> io::Result<usize> {
+        let mut packet = MutableIpv4Packet::new(buffer)
+            .ok_or(io::Error::new(io::ErrorKind::WriteZero, "buffer too small"))?;
+
+        packet.populate(&self.layer);
+
+        // Fix length
+        let header_length = self.get_size();
+        packet.set_header_length((header_length / 4) as u8);
+        packet.set_total_length(n as u16);
+
+        // Compute checksum
+        let checksum = ipv4::checksum(&packet.to_immutable());
+        packet.set_checksum(checksum);
+
+        Ok(self.get_size())
     }
 
     fn serialize_with_payload(&self, buffer: &mut [u8], _: &[u8], n: usize) -> io::Result<usize> {
-        self.serialize_internal(buffer, true, n, true)
+        self.serialize(buffer, n)
     }
 }

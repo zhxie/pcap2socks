@@ -96,11 +96,14 @@ impl Layer for Udp {
         UdpPacket::packet_size(&self.layer)
     }
 
-    fn serialize(&self, buffer: &mut [u8]) -> io::Result<usize> {
+    fn serialize(&self, buffer: &mut [u8], n: usize) -> io::Result<usize> {
         let mut packet = MutableUdpPacket::new(buffer)
             .ok_or(io::Error::new(io::ErrorKind::WriteZero, "buffer too small"))?;
 
         packet.populate(&self.layer);
+
+        // Fix length
+        packet.set_length(n as u16);
 
         // Compute checksum
         let checksum = udp::ipv4_checksum(

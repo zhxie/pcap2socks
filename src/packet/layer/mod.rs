@@ -57,7 +57,7 @@ pub trait Layer: Display {
     fn get_size(&self) -> usize;
 
     // Serialize the `Layer` into a byte-array.
-    fn serialize(&self, buffer: &mut [u8]) -> io::Result<usize>;
+    fn serialize(&self, buffer: &mut [u8], n: usize) -> io::Result<usize>;
 
     // Serialize the `Layer` into a byte-array with payload.
     fn serialize_with_payload(
@@ -110,13 +110,13 @@ impl Layer for Layers {
         }
     }
 
-    fn serialize(&self, buffer: &mut [u8]) -> io::Result<usize> {
+    fn serialize(&self, buffer: &mut [u8], n: usize) -> io::Result<usize> {
         match self {
-            Layers::Ethernet(ref layer) => layer.serialize(buffer),
-            Layers::Arp(ref layer) => layer.serialize(buffer),
-            Layers::Ipv4(ref layer) => layer.serialize(buffer),
-            Layers::Tcp(ref layer) => layer.serialize(buffer),
-            Layers::Udp(ref layer) => layer.serialize(buffer),
+            Layers::Ethernet(ref layer) => layer.serialize(buffer, n),
+            Layers::Arp(ref layer) => layer.serialize(buffer, n),
+            Layers::Ipv4(ref layer) => layer.serialize(buffer, n),
+            Layers::Tcp(ref layer) => layer.serialize(buffer, n),
+            Layers::Udp(ref layer) => layer.serialize(buffer, n),
         }
     }
 

@@ -1,7 +1,23 @@
 use socks::{self, TargetAddr};
 use socks::{Socks5Datagram, Socks5Stream};
-use std::io;
-use std::net::{SocketAddr, SocketAddrV4};
+use std::io::{self, BufReader, BufWriter};
+use std::net::{SocketAddr, SocketAddrV4, TcpStream};
+
+/// Connects to a target server through a SOCKS5 proxy.
+pub fn connect(
+    remote: SocketAddrV4,
+    dst: SocketAddrV4,
+) -> io::Result<(BufReader<TcpStream>, BufWriter<TcpStream>)> {
+    let stream = Socks5Stream::connect(remote, dst)?;
+
+    let s = stream.into_inner();
+    let s_cloned = s.try_clone()?;
+
+    let reader = BufReader::with_capacity(u16::MAX as usize, s);
+    let writer = BufWriter::with_capacity(u16::MAX as usize, s_cloned);
+
+    Ok((reader, writer))
+}
 
 /// Represents a SOCKS5 UDP client.
 #[derive(Debug)]
@@ -11,8 +27,8 @@ pub struct SocksDatagram {
 
 impl SocksDatagram {
     /// Creates a UDP socket bound to the specified address which will have its traffic routed through the specified proxy.
-    pub fn bind(local_src: SocketAddrV4, dst: SocketAddrV4) -> io::Result<SocksDatagram> {
-        let datagram = Socks5Datagram::bind(dst, local_src)?;
+    pub fn bind(local_src: SocketAddrV4, remote: SocketAddrV4) -> io::Result<SocksDatagram> {
+        let datagram = Socks5Datagram::bind(remote, local_src)?;
 
         Ok(SocksDatagram { datagram })
     }
