@@ -1062,8 +1062,7 @@ pub struct StreamWorker {
     src_port: u16,
     dst: SocketAddrV4,
     stream: TcpStream,
-    #[allow(dead_code)]
-    thread: JoinHandle<()>,
+    thread: Option<JoinHandle<()>>,
     is_closed: Arc<AtomicBool>,
     is_last_ack: bool,
 }
@@ -1127,7 +1126,7 @@ impl StreamWorker {
             src_port,
             dst,
             stream,
-            thread,
+            thread: Some(thread),
             is_closed: a_is_closed,
             is_last_ack: false,
         })
@@ -1174,13 +1173,21 @@ impl StreamWorker {
     }
 }
 
+impl Drop for StreamWorker {
+    fn drop(&mut self) {
+        self.close();
+        if let Some(thread) = self.thread.take() {
+            thread.join().unwrap();
+        }
+    }
+}
+
 /// Represents a worker of a SOCKS5 UDP client.
 pub struct DatagramWorker {
     src_port: u16,
     local_port: u16,
     datagram: Arc<SocksDatagram>,
-    #[allow(dead_code)]
-    thread: JoinHandle<()>,
+    thread: Option<JoinHandle<()>>,
     is_closed: Arc<AtomicBool>,
 }
 
@@ -1240,7 +1247,7 @@ impl DatagramWorker {
             src_port,
             local_port,
             datagram: a_datagram,
-            thread: thread,
+            thread: Some(thread),
             is_closed: a_is_closed,
         })
     }
@@ -1272,5 +1279,14 @@ impl DatagramWorker {
     /// Returns if the worker is closed.
     pub fn is_closed(&self) -> bool {
         self.is_closed.load(Ordering::Relaxed)
+    }
+}
+
+impl Drop for DatagramWorker {
+    fn drop(&mut self) {
+        self.close();
+        if let Some(thread) = self.thread.take() {
+            thread.join().unwrap();
+        }
     }
 }
