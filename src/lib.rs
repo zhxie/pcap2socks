@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::io::{self, BufWriter, Read, Write};
+use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, SocketAddrV4, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -896,7 +896,7 @@ impl Upstreamer {
 pub struct StreamWorker {
     src_port: u16,
     dst: SocketAddrV4,
-    writer: BufWriter<TcpStream>,
+    stream: TcpStream,
     #[allow(dead_code)]
     thread: JoinHandle<()>,
     is_closed: Arc<AtomicBool>,
@@ -911,7 +911,8 @@ impl StreamWorker {
         dst: SocketAddrV4,
         remote: SocketAddrV4,
     ) -> io::Result<StreamWorker> {
-        let (mut reader, writer) = socks::connect(remote, dst)?;
+        let stream = socks::connect(remote, dst)?;
+        let mut stream_cloned = stream.try_clone()?;
 
         let is_closed = AtomicBool::new(false);
         let a_is_closed = Arc::new(is_closed);
@@ -922,7 +923,7 @@ impl StreamWorker {
                 if a_is_closed_cloned.load(Ordering::Relaxed) {
                     return;
                 }
-                match reader.read(&mut buffer) {
+                match stream_cloned.read(&mut buffer) {
                     Ok(size) => {
                         if a_is_closed_cloned.load(Ordering::Relaxed) {
                             return;
@@ -960,7 +961,7 @@ impl StreamWorker {
         Ok(StreamWorker {
             src_port,
             dst,
-            writer,
+            stream,
             thread,
             is_closed: a_is_closed,
             is_last_ack: false,
@@ -978,7 +979,7 @@ impl StreamWorker {
         );
 
         // Send
-        self.writer.write_all(buffer)
+        self.stream.write_all(buffer)
     }
 
     /// Closes the worker.

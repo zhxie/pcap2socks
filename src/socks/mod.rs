@@ -1,22 +1,13 @@
 use socks::{self, TargetAddr};
 use socks::{Socks5Datagram, Socks5Stream};
-use std::io::{self, BufReader, BufWriter};
+use std::io;
 use std::net::{SocketAddr, SocketAddrV4, TcpStream};
 
 /// Connects to a target server through a SOCKS5 proxy.
-pub fn connect(
-    remote: SocketAddrV4,
-    dst: SocketAddrV4,
-) -> io::Result<(BufReader<TcpStream>, BufWriter<TcpStream>)> {
+pub fn connect(remote: SocketAddrV4, dst: SocketAddrV4) -> io::Result<TcpStream> {
     let stream = Socks5Stream::connect(remote, dst)?;
 
-    let s = stream.into_inner();
-    let s_cloned = s.try_clone()?;
-
-    let reader = BufReader::with_capacity(u16::MAX as usize, s);
-    let writer = BufWriter::with_capacity(u16::MAX as usize, s_cloned);
-
-    Ok((reader, writer))
+    Ok(stream.into_inner())
 }
 
 /// Represents a SOCKS5 UDP client.
