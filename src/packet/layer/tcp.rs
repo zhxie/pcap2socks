@@ -64,6 +64,27 @@ impl Tcp {
         tcp
     }
 
+    /// Creates a `Tcp` represents a TCP ACK/FIN.
+    pub fn new_ack_fin(
+        src_ip_addr: Ipv4Addr,
+        dst_ip_addr: Ipv4Addr,
+        src: u16,
+        dst: u16,
+        sequence: u32,
+        acknowledgement: u32,
+    ) -> Tcp {
+        let mut tcp = Tcp::new_ack(
+            src_ip_addr,
+            dst_ip_addr,
+            src,
+            dst,
+            sequence,
+            acknowledgement,
+        );
+        tcp.layer.flags = TcpFlags::ACK | TcpFlags::FIN;
+        tcp
+    }
+
     /// Creates a `Tcp` represents a TCP RST.
     pub fn new_rst(
         src_ip_addr: Ipv4Addr,

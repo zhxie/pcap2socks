@@ -345,7 +345,7 @@ impl Downstreamer {
         src_port: u16,
         sequence: u32,
     ) -> io::Result<()> {
-        // TCP sequence & acknowledgement
+        // TCP acknowledgement
         let key = (src_port, dst);
         self.tcp_acknowledgement_map.insert(key, sequence);
 
@@ -409,6 +409,73 @@ impl Downstreamer {
         }
     }
 
+    /// Sends an TCP ACK/FIN packet.
+    pub fn send_tcp_ack_fin(
+        &mut self,
+        dst: SocketAddrV4,
+        src_port: u16,
+        sequence: u32,
+    ) -> io::Result<()> {
+        // TCP acknowledgement
+        let key = (src_port, dst);
+        self.tcp_acknowledgement_map.insert(key, sequence);
+
+        // TCP
+        let tcp = Tcp::new_ack_fin(
+            dst.ip().clone(),
+            self.src_ip_addr,
+            dst.port(),
+            src_port,
+            *self.tcp_sequence_map.get(&key).or(Some(&0)).unwrap(),
+            *self.tcp_acknowledgement_map.get(&key).unwrap(),
+        );
+
+        // IPv4 identification
+        if !self.ipv4_identification_map.contains_key(dst.ip()) {
+            self.ipv4_identification_map.insert(dst.ip().clone(), 0);
+        }
+        let ipv4_identification = self.ipv4_identification_map.get(dst.ip()).unwrap();
+
+        // IPv4
+        let ipv4 = Ipv4::new(
+            *ipv4_identification,
+            tcp.get_type(),
+            dst.ip().clone(),
+            self.src_ip_addr,
+        )
+        .unwrap();
+
+        // Ethernet
+        let ethernet = Ethernet::new(
+            ipv4.get_type(),
+            self.local_hardware_addr,
+            self.src_hardware_addr,
+        )
+        .unwrap();
+
+        // Indicator
+        let indicator = Indicator::new(
+            Layers::Ethernet(ethernet),
+            Some(Layers::Ipv4(ipv4)),
+            Some(Layers::Tcp(tcp)),
+        );
+
+        // Send
+        match self.send(&indicator) {
+            Ok(()) => {
+                // Update IPv4 identification
+                let ipv4_identification_entry = self
+                    .ipv4_identification_map
+                    .entry(dst.ip().clone())
+                    .or_insert(0);
+                *ipv4_identification_entry += 1;
+
+                return Ok(());
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     /// Sends an TCP RST packet.
     pub fn send_tcp_rst(
         &mut self,
@@ -416,7 +483,7 @@ impl Downstreamer {
         src_port: u16,
         sequence: u32,
     ) -> io::Result<()> {
-        // TCP sequence & acknowledgement
+        // TCP acknowledgement
         let key = (src_port, dst);
         self.tcp_acknowledgement_map.insert(key, sequence);
 
@@ -661,7 +728,11 @@ impl Upstreamer {
 
             if tcp.is_ack() {
                 let is_ok = match self.streams[index] {
-                    Some(ref stream) => {
+                    Some(ref mut stream) => {
+                        if stream.is_closed() && stream.is_last_ack() {
+                            stream.set_last_ack(false);
+                            return Ok(());
+                        }
                         stream.get_src_port_and_dst() == (tcp.get_src(), dst) && !stream.is_closed()
                     }
                     None => false,
@@ -738,7 +809,7 @@ impl Upstreamer {
                         return Err(e);
                     }
                 }
-            } else if tcp.is_rst_or_fin() {
+            } else if tcp.is_rst() {
                 let is_ok = match self.streams[index] {
                     Some(ref stream) => {
                         stream.get_src_port_and_dst() == (tcp.get_src(), dst) && !stream.is_closed()
@@ -749,11 +820,32 @@ impl Upstreamer {
                 if is_ok {
                     self.streams[index].as_mut().unwrap().close();
                 }
-                // Send RST
-                self.tx
-                    .lock()
-                    .unwrap()
-                    .send_tcp_rst(dst, tcp.get_src(), tcp.get_sequence())?;
+            } else if tcp.is_fin() {
+                let is_ok = match self.streams[index] {
+                    Some(ref stream) => {
+                        stream.get_src_port_and_dst() == (tcp.get_src(), dst) && !stream.is_closed()
+                    }
+                    None => false,
+                };
+
+                if is_ok {
+                    self.streams[index].as_mut().unwrap().set_last_ack(true);
+                    self.streams[index].as_mut().unwrap().close();
+
+                    // Send ACK/FIN
+                    self.tx.lock().unwrap().send_tcp_ack_fin(
+                        dst,
+                        tcp.get_src(),
+                        tcp.get_sequence() + 1,
+                    )?;
+                } else {
+                    // Send RST
+                    self.tx.lock().unwrap().send_tcp_rst(
+                        dst,
+                        tcp.get_src(),
+                        tcp.get_sequence() + 1,
+                    )?;
+                }
             }
         }
 
@@ -845,6 +937,7 @@ pub struct StreamWorker {
     #[allow(dead_code)]
     thread: JoinHandle<()>,
     is_closed: Arc<AtomicBool>,
+    is_last_ack: bool,
 }
 
 impl StreamWorker {
@@ -864,12 +957,12 @@ impl StreamWorker {
         let thread = thread::spawn(move || {
             let mut buffer = [0u8; u16::MAX as usize];
             loop {
-                if !a_is_closed_cloned.load(Ordering::Relaxed) {
+                if a_is_closed_cloned.load(Ordering::Relaxed) {
                     return;
                 }
                 match reader.read(&mut buffer) {
                     Ok(size) => {
-                        if !a_is_closed_cloned.load(Ordering::Relaxed) {
+                        if a_is_closed_cloned.load(Ordering::Relaxed) {
                             return;
                         }
                         debug!(
@@ -905,6 +998,7 @@ impl StreamWorker {
             writer,
             thread,
             is_closed: a_is_closed,
+            is_last_ack: false,
         })
     }
 
@@ -927,6 +1021,12 @@ impl StreamWorker {
         self.is_closed.store(true, Ordering::Relaxed);
     }
 
+    /// Set the state LAST_ACK of the worker.
+    pub fn set_last_ack(&mut self, value: bool) {
+        self.close();
+        self.is_last_ack = value;
+    }
+
     /// Get the source port and the destination of the SOCKS5 TCP client.
     pub fn get_src_port_and_dst(&self) -> (u16, SocketAddrV4) {
         (self.src_port, self.dst)
@@ -935,6 +1035,11 @@ impl StreamWorker {
     /// Returns if the worker is closed.
     pub fn is_closed(&self) -> bool {
         self.is_closed.load(Ordering::Relaxed)
+    }
+
+    /// Returns if the worker is in state LAST_ACK.
+    pub fn is_last_ack(&self) -> bool {
+        self.is_last_ack
     }
 }
 
@@ -967,12 +1072,12 @@ impl DatagramWorker {
         let thread = thread::spawn(move || {
             let mut buffer = [0u8; u16::MAX as usize];
             loop {
-                if !a_is_closed_cloned.load(Ordering::Relaxed) {
+                if a_is_closed_cloned.load(Ordering::Relaxed) {
                     return;
                 }
                 match a_datagram_cloned.recv_from(&mut buffer) {
                     Ok((size, addr)) => {
-                        if !a_is_closed_cloned.load(Ordering::Relaxed) {
+                        if a_is_closed_cloned.load(Ordering::Relaxed) {
                             return;
                         }
                         debug!(
