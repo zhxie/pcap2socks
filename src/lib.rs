@@ -581,10 +581,7 @@ pub struct Upstreamer {
     src_ip_addr: Ipv4Addr,
     local_ip_addr: Option<Ipv4Addr>,
     remote: SocketAddrV4,
-    next_tcp_port: u16,
-    streams: Vec<Option<StreamWorker>>,
-    stream_map: HashMap<(u16, SocketAddrV4), u16>,
-    stream_reverse_map: Vec<Option<(u16, SocketAddrV4)>>,
+    streams: HashMap<(u16, SocketAddrV4), StreamWorker>,
     next_udp_port: u16,
     datagrams: Vec<Option<DatagramWorker>>,
     datagram_map: Vec<u16>,
@@ -605,10 +602,7 @@ impl Upstreamer {
             src_ip_addr,
             local_ip_addr,
             remote,
-            next_tcp_port: INITIAL_PORT,
-            streams: (0..PORT_COUNT).map(|_| None).collect(),
-            stream_map: HashMap::new(),
-            stream_reverse_map: (0..PORT_COUNT).map(|_| None).collect(),
+            streams: HashMap::new(),
             next_udp_port: INITIAL_PORT,
             datagrams: (0..PORT_COUNT).map(|_| None).collect(),
             datagram_map: vec![0u16; u16::MAX as usize],
@@ -723,26 +717,24 @@ impl Upstreamer {
     fn handle_tcp(&mut self, indicator: &Indicator, buffer: &[u8]) -> io::Result<()> {
         if let Some(ref tcp) = indicator.get_tcp() {
             let dst = SocketAddrV4::new(tcp.get_dst_ip_addr(), tcp.get_dst());
-            let port = self.get_local_tcp_port(tcp.get_src(), dst);
-            let index = (port - INITIAL_PORT) as usize;
+            let key = (tcp.get_src(), dst);
+            let mut is_alive = false;
+            let mut is_last_ack = false;
+            match self.streams.get(&key) {
+                Some(ref stream) => {
+                    is_alive = !stream.is_closed();
+                    is_last_ack = stream.is_last_ack();
+                }
+                None => {}
+            };
 
             if tcp.is_ack() {
-                let is_ok = match self.streams[index] {
-                    Some(ref mut stream) => {
-                        if stream.is_closed() && stream.is_last_ack() {
-                            stream.set_last_ack(false);
-                            return Ok(());
-                        }
-                        stream.get_src_port_and_dst() == (tcp.get_src(), dst) && !stream.is_closed()
-                    }
-                    None => false,
-                };
-
-                if is_ok {
+                if is_alive {
                     if buffer.len() > indicator.get_size() {
                         // Send
-                        match self.streams[index]
-                            .as_mut()
+                        match self
+                            .streams
+                            .get_mut(&key)
                             .unwrap()
                             .send(&buffer[indicator.get_size()..])
                         {
@@ -770,21 +762,27 @@ impl Upstreamer {
                         }
                     }
                 } else {
-                    // Send RST
-                    self.tx
-                        .lock()
-                        .unwrap()
-                        .send_tcp_rst(dst, tcp.get_src(), tcp.get_sequence())?;
+                    if is_last_ack {
+                        self.streams.get_mut(&key).unwrap().set_last_ack(false);
+                    } else {
+                        // Send RST
+                        self.tx.lock().unwrap().send_tcp_rst(
+                            dst,
+                            tcp.get_src(),
+                            tcp.get_sequence(),
+                        )?;
+                    }
                 }
             } else if tcp.is_syn() {
-                // Connect
-                if let Some(ref mut stream) = self.streams[index] {
-                    stream.close()
+                // Close before reconnect
+                if is_alive {
+                    self.streams.get_mut(&key).unwrap().close();
                 }
-                self.streams[index] = match StreamWorker::new_and_open(
+
+                // Connect
+                let stream = match StreamWorker::new_and_open(
                     self.get_tx(),
                     tcp.get_src(),
-                    port,
                     dst,
                     self.remote,
                 ) {
@@ -796,7 +794,7 @@ impl Upstreamer {
                             tcp.get_sequence() + 1,
                         )?;
 
-                        Some(stream)
+                        stream
                     }
                     Err(e) => {
                         // Send RST
@@ -808,29 +806,17 @@ impl Upstreamer {
 
                         return Err(e);
                     }
-                }
-            } else if tcp.is_rst() {
-                let is_ok = match self.streams[index] {
-                    Some(ref stream) => {
-                        stream.get_src_port_and_dst() == (tcp.get_src(), dst) && !stream.is_closed()
-                    }
-                    None => false,
                 };
 
-                if is_ok {
-                    self.streams[index].as_mut().unwrap().close();
+                self.streams.insert(key, stream);
+            } else if tcp.is_rst() {
+                if is_alive {
+                    self.streams.get_mut(&key).unwrap().close();
                 }
             } else if tcp.is_fin() {
-                let is_ok = match self.streams[index] {
-                    Some(ref stream) => {
-                        stream.get_src_port_and_dst() == (tcp.get_src(), dst) && !stream.is_closed()
-                    }
-                    None => false,
-                };
-
-                if is_ok {
-                    self.streams[index].as_mut().unwrap().set_last_ack(true);
-                    self.streams[index].as_mut().unwrap().close();
+                if is_alive {
+                    self.streams.get_mut(&key).unwrap().set_last_ack(true);
+                    self.streams.get_mut(&key).unwrap().close();
 
                     // Send ACK/FIN
                     self.tx.lock().unwrap().send_tcp_ack_fin(
@@ -885,28 +871,6 @@ impl Upstreamer {
         Arc::clone(&self.tx)
     }
 
-    fn get_local_tcp_port(&mut self, src_port: u16, dst: SocketAddrV4) -> u16 {
-        let key = (src_port, dst);
-
-        if !self.stream_map.contains_key(&key) {
-            let index = (self.next_tcp_port - INITIAL_PORT) as usize;
-
-            if let Some(ref prev) = self.stream_reverse_map[index] {
-                self.stream_map.remove(prev);
-            }
-            self.stream_map.insert(key, self.next_tcp_port);
-            self.stream_reverse_map[index] = Some(key);
-
-            // To next port
-            self.next_tcp_port = self.next_tcp_port + 1;
-            if self.next_tcp_port >= INITIAL_PORT + PORT_COUNT as u16 {
-                self.next_tcp_port = INITIAL_PORT;
-            }
-        }
-
-        *self.stream_map.get(&key).unwrap()
-    }
-
     fn get_local_udp_port(&mut self, src_port: u16) -> u16 {
         if self.datagram_map[src_port as usize] == 0 {
             let index = (self.next_udp_port - INITIAL_PORT) as usize;
@@ -931,7 +895,6 @@ impl Upstreamer {
 /// Represents a worker of a SOCKS5 TCP client.
 pub struct StreamWorker {
     src_port: u16,
-    local_port: u16,
     dst: SocketAddrV4,
     writer: BufWriter<TcpStream>,
     #[allow(dead_code)]
@@ -945,7 +908,6 @@ impl StreamWorker {
     pub fn new_and_open(
         tx: Arc<Mutex<Downstreamer>>,
         src_port: u16,
-        local_port: u16,
         dst: SocketAddrV4,
         remote: SocketAddrV4,
     ) -> io::Result<StreamWorker> {
@@ -965,9 +927,13 @@ impl StreamWorker {
                         if a_is_closed_cloned.load(Ordering::Relaxed) {
                             return;
                         }
+                        if size == 0 {
+                            a_is_closed_cloned.store(true, Ordering::Relaxed);
+                            return;
+                        }
                         debug!(
                             "receive from SOCKS: {}: {} -> {} ({} Bytes)",
-                            "TCP", dst, local_port, size
+                            "TCP", dst, 0, size
                         );
 
                         // Send
@@ -993,7 +959,6 @@ impl StreamWorker {
 
         Ok(StreamWorker {
             src_port,
-            local_port,
             dst,
             writer,
             thread,
@@ -1007,7 +972,7 @@ impl StreamWorker {
         debug!(
             "send to SOCKS {}: {} -> {} ({} Bytes)",
             "TCP",
-            self.local_port,
+            "0",
             self.dst,
             buffer.len()
         );
