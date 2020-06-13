@@ -1,3 +1,4 @@
+use std::cmp::min;
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, SocketAddrV4, TcpStream};
@@ -78,6 +79,7 @@ pub fn interface(name: Option<String>) -> Option<Interface> {
 
 const INITIAL_PORT: u16 = 32768;
 const PORT_COUNT: usize = 64;
+const MSS: u32 = 1200;
 
 /// Represents the channel downstream traffic to the source in pcap.
 pub struct Downstreamer {
@@ -167,11 +169,11 @@ impl Downstreamer {
         if !self.ipv4_identification_map.contains_key(dst.ip()) {
             self.ipv4_identification_map.insert(dst.ip().clone(), 0);
         }
-        let ipv4_identification = self.ipv4_identification_map.get(dst.ip()).unwrap();
+        let ipv4_identification = *self.ipv4_identification_map.get(dst.ip()).unwrap();
 
         // IPv4
         let ipv4 = Ipv4::new(
-            *ipv4_identification,
+            ipv4_identification,
             udp.get_type(),
             dst.ip().clone(),
             self.src_ip_addr,
@@ -186,27 +188,130 @@ impl Downstreamer {
         )
         .unwrap();
 
-        // Indicator
-        let indicator = Indicator::new(
-            Layers::Ethernet(ethernet),
-            Some(Layers::Ipv4(ipv4)),
-            Some(Layers::Udp(udp)),
-        );
+        // Fragmentation
+        let ipv4_header_size = ipv4.get_size();
+        let udp_header_size = udp.get_size();
+        let t = udp.get_type();
+        if MSS < (ipv4_header_size + udp_header_size + payload.len()) as u32 {
+            let size = udp_header_size + payload.len();
+            let mut n = 0;
 
-        // Send
-        match self.send_with_payload(&indicator, payload) {
-            Ok(()) => {
-                // Update IPv4 identification
-                let ipv4_identification_entry = self
-                    .ipv4_identification_map
-                    .entry(dst.ip().clone())
-                    .or_insert(0);
-                *ipv4_identification_entry += 1;
+            // First fragmentation with UDP layer
+            {
+                let mut length = min(size - n, MSS as usize - ipv4_header_size);
+                let mut remain = size - n - length;
 
-                return Ok(());
+                // Alignment
+                if remain > 0 {
+                    length = length / 8 * 8;
+                    remain = size - n - length;
+                }
+
+                // Leave at least 8 Bytes for last fragment
+                if remain > 0 && remain < 8 {
+                    length = length - 8;
+                }
+
+                // IPv4
+                let ipv4 = Ipv4::new_more_fragment(
+                    ipv4_identification,
+                    t,
+                    (n / 8) as u16,
+                    dst.ip().clone(),
+                    self.src_ip_addr,
+                )
+                .unwrap();
+
+                // Indicator
+                let indicator = Indicator::new(
+                    Layers::Ethernet(ethernet.clone()),
+                    Some(Layers::Ipv4(ipv4)),
+                    Some(Layers::Udp(udp)),
+                );
+
+                // Send
+                self.send_with_payload(&indicator, &payload[..length - udp_header_size])?;
+
+                n = n + length;
             }
-            Err(e) => Err(e),
+
+            // Other fragmentations
+            loop {
+                let mut length = min(size - n, MSS as usize - ipv4_header_size);
+                let mut remain = size - n - length;
+
+                // Alignment
+                if remain > 0 {
+                    length = length / 8 * 8;
+                    remain = size - n - length;
+                }
+
+                // Leave at least 8 Bytes for last fragment
+                if remain > 0 && remain < 8 {
+                    length = length - 8;
+                    remain = size - n - length;
+                }
+
+                // IPv4
+                let ipv4;
+                if remain > 0 {
+                    ipv4 = Ipv4::new_more_fragment(
+                        ipv4_identification,
+                        t,
+                        (n / 8) as u16,
+                        dst.ip().clone(),
+                        self.src_ip_addr,
+                    )
+                    .unwrap();
+                } else {
+                    ipv4 = Ipv4::new_last_fragment(
+                        ipv4_identification,
+                        t,
+                        (n / 8) as u16,
+                        dst.ip().clone(),
+                        self.src_ip_addr,
+                    )
+                    .unwrap();
+                }
+
+                // Indicator
+                let indicator = Indicator::new(
+                    Layers::Ethernet(ethernet.clone()),
+                    Some(Layers::Ipv4(ipv4)),
+                    None,
+                );
+
+                // Send
+                self.send_with_payload(
+                    &indicator,
+                    &payload[n - udp_header_size..n + length - udp_header_size],
+                )?;
+
+                n = n + length;
+                if remain == 0 {
+                    break;
+                }
+            }
+        } else {
+            // Indicator
+            let indicator = Indicator::new(
+                Layers::Ethernet(ethernet),
+                Some(Layers::Ipv4(ipv4)),
+                Some(Layers::Udp(udp)),
+            );
+
+            // Send
+            self.send_with_payload(&indicator, payload)?;
         }
+
+        // Update IPv4 identification
+        let ipv4_identification_entry = self
+            .ipv4_identification_map
+            .entry(dst.ip().clone())
+            .or_insert(0);
+        *ipv4_identification_entry += 1;
+
+        Ok(())
     }
 
     /// Sends an TCP ACK packet.
@@ -232,11 +337,11 @@ impl Downstreamer {
         if !self.ipv4_identification_map.contains_key(dst.ip()) {
             self.ipv4_identification_map.insert(dst.ip().clone(), 0);
         }
-        let ipv4_identification = self.ipv4_identification_map.get(dst.ip()).unwrap();
+        let ipv4_identification = *self.ipv4_identification_map.get(dst.ip()).unwrap();
 
         // IPv4
         let ipv4 = Ipv4::new(
-            *ipv4_identification,
+            ipv4_identification,
             tcp.get_type(),
             dst.ip().clone(),
             self.src_ip_addr,
@@ -251,19 +356,54 @@ impl Downstreamer {
         )
         .unwrap();
 
-        // Indicator
-        let indicator = Indicator::new(
-            Layers::Ethernet(ethernet),
-            Some(Layers::Ipv4(ipv4)),
-            Some(Layers::Tcp(tcp)),
-        );
+        // Segmentation
+        let header_size = ipv4.get_size() + tcp.get_size();
+        let max_payload_size = MSS as usize - header_size;
+        if MSS < (header_size + payload.len()) as u32 {
+            let mut i = 0;
+            loop {
+                // TCP
+                let tcp = Tcp::new_ack(
+                    dst.ip().clone(),
+                    self.src_ip_addr,
+                    dst.port(),
+                    src_port,
+                    *self.tcp_sequence_map.get(&key).or(Some(&0)).unwrap(),
+                    *self.tcp_acknowledgement_map.get(&key).unwrap(),
+                );
 
-        // Send
-        match self.send_with_payload(&indicator, payload) {
-            Ok(()) => {
+                // IPv4 identification
+                if !self.ipv4_identification_map.contains_key(dst.ip()) {
+                    self.ipv4_identification_map.insert(dst.ip().clone(), 0);
+                }
+                let ipv4_identification = *self.ipv4_identification_map.get(dst.ip()).unwrap();
+
+                // IPv4
+                let ipv4 = Ipv4::new(
+                    ipv4_identification,
+                    tcp.get_type(),
+                    dst.ip().clone(),
+                    self.src_ip_addr,
+                )
+                .unwrap();
+
+                // Indicator
+                let indicator = Indicator::new(
+                    Layers::Ethernet(ethernet.clone()),
+                    Some(Layers::Ipv4(ipv4)),
+                    Some(Layers::Tcp(tcp)),
+                );
+
+                // Send
+                let length = min(max_payload_size, payload.len() - i * max_payload_size);
+                self.send_with_payload(
+                    &indicator,
+                    &payload[i * max_payload_size..i * max_payload_size + length],
+                )?;
+
                 // Update TCP sequence
                 let tcp_sequence_entry = self.tcp_sequence_map.entry(key).or_insert(0);
-                *tcp_sequence_entry += payload.len() as u32;
+                *tcp_sequence_entry += length as u32;
 
                 // Update IPv4 identification
                 let ipv4_identification_entry = self
@@ -272,10 +412,35 @@ impl Downstreamer {
                     .or_insert(0);
                 *ipv4_identification_entry += 1;
 
-                return Ok(());
+                i += 1;
+                if max_payload_size * i >= payload.len() {
+                    break;
+                }
             }
-            Err(e) => Err(e),
+        } else {
+            // Indicator
+            let indicator = Indicator::new(
+                Layers::Ethernet(ethernet),
+                Some(Layers::Ipv4(ipv4)),
+                Some(Layers::Tcp(tcp)),
+            );
+
+            // Send
+            self.send_with_payload(&indicator, payload)?;
+
+            // Update TCP sequence
+            let tcp_sequence_entry = self.tcp_sequence_map.entry(key).or_insert(0);
+            *tcp_sequence_entry += payload.len() as u32;
+
+            // Update IPv4 identification
+            let ipv4_identification_entry = self
+                .ipv4_identification_map
+                .entry(dst.ip().clone())
+                .or_insert(0);
+            *ipv4_identification_entry += 1;
         }
+
+        Ok(())
     }
 
     /// Sends an TCP ACK packet without payload.

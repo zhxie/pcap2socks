@@ -11,7 +11,7 @@ pub mod tcp;
 pub mod udp;
 
 /// Represents the type of the layer.
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct LayerType(u8);
 
 impl Display for LayerType {
