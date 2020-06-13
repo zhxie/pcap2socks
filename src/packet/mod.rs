@@ -184,17 +184,23 @@ impl Indicator {
     /// Serialize the `Indicator` into a byte-array.
     pub fn serialize(&self, buffer: &mut [u8]) -> io::Result<usize> {
         let mut begin = 0;
+        let mut total = self.get_size();
 
         // Link
-        begin = begin + self.get_link().serialize(&mut buffer[begin..])?;
+        let m = self.get_link().serialize(&mut buffer[begin..], total)?;
+        begin = begin + m;
+        total = total - m;
         // Network
         if let Some(network) = self.get_network() {
-            begin = begin + network.serialize(&mut buffer[begin..])?;
-        }
+            let m = network.serialize(&mut buffer[begin..], total)?;
+            begin = begin + m;
+            total = total - m;
+        };
         // Transport
         if let Some(transport) = self.get_transport() {
-            begin = begin + transport.serialize(&mut buffer[begin..])?;
-        }
+            let m = transport.serialize(&mut buffer[begin..], total)?;
+            begin = begin + m;
+        };
 
         Ok(begin)
     }

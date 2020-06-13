@@ -1,6 +1,7 @@
 use std::collections::HashMap;
-use std::io::{self, Write};
-use std::net::{Ipv4Addr, SocketAddrV4};
+use std::io::{self, BufReader, BufWriter, Read, Write};
+use std::net::{Ipv4Addr, SocketAddrV4, TcpStream};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
@@ -76,7 +77,7 @@ pub fn interface(name: Option<String>) -> Option<Interface> {
 }
 
 const INITIAL_PORT: u16 = 32768;
-const PORT_COUNT: usize = 32;
+const PORT_COUNT: usize = 64;
 
 /// Represents the channel downstream traffic to the source in pcap.
 pub struct Downstreamer {
@@ -86,8 +87,8 @@ pub struct Downstreamer {
     src_ip_addr: Ipv4Addr,
     local_ip_addr: Ipv4Addr,
     ipv4_identification_map: HashMap<Ipv4Addr, u16>,
-    tcp_sequence_map: HashMap<SocketAddrV4, u32>,
-    tcp_acknowledgement_map: HashMap<SocketAddrV4, u32>,
+    tcp_sequence_map: HashMap<(u16, SocketAddrV4), u32>,
+    tcp_acknowledgement_map: HashMap<(u16, SocketAddrV4), u32>,
 }
 
 impl Downstreamer {
@@ -120,6 +121,15 @@ impl Downstreamer {
     pub fn set_local_ip_addr(&mut self, ip_addr: Ipv4Addr) {
         trace!("set local IP address to {}", ip_addr);
         self.local_ip_addr = ip_addr;
+    }
+
+    /// Adds TCP acknowledgement to an TCP connection.
+    pub fn add_tcp_acknowledgement(&mut self, dst: SocketAddrV4, src_port: u16, n: u32) {
+        let entry = self
+            .tcp_acknowledgement_map
+            .entry((src_port, dst))
+            .or_insert(0);
+        *entry += n;
     }
 
     /// Sends an ARP reply packet.
@@ -199,6 +209,273 @@ impl Downstreamer {
         }
     }
 
+    /// Sends an TCP ACK packet.
+    pub fn send_tcp_ack(
+        &mut self,
+        dst: SocketAddrV4,
+        src_port: u16,
+        payload: &[u8],
+    ) -> io::Result<()> {
+        let key = (src_port, dst);
+
+        // TCP
+        let tcp = Tcp::new_ack(
+            dst.ip().clone(),
+            self.src_ip_addr,
+            dst.port(),
+            src_port,
+            *self.tcp_sequence_map.get(&key).or(Some(&0)).unwrap(),
+            *self.tcp_acknowledgement_map.get(&key).unwrap(),
+        );
+
+        // IPv4 identification
+        if !self.ipv4_identification_map.contains_key(dst.ip()) {
+            self.ipv4_identification_map.insert(dst.ip().clone(), 0);
+        }
+        let ipv4_identification = self.ipv4_identification_map.get(dst.ip()).unwrap();
+
+        // IPv4
+        let ipv4 = Ipv4::new(
+            *ipv4_identification,
+            tcp.get_type(),
+            dst.ip().clone(),
+            self.src_ip_addr,
+        )
+        .unwrap();
+
+        // Ethernet
+        let ethernet = Ethernet::new(
+            ipv4.get_type(),
+            self.local_hardware_addr,
+            self.src_hardware_addr,
+        )
+        .unwrap();
+
+        // Indicator
+        let indicator = Indicator::new(
+            Layers::Ethernet(ethernet),
+            Some(Layers::Ipv4(ipv4)),
+            Some(Layers::Tcp(tcp)),
+        );
+
+        // Send
+        match self.send_with_payload(&indicator, payload) {
+            Ok(()) => {
+                // Update TCP sequence
+                let tcp_sequence_entry = self.tcp_sequence_map.entry(key).or_insert(0);
+                *tcp_sequence_entry += payload.len() as u32;
+
+                // Update IPv4 identification
+                let ipv4_identification_entry = self
+                    .ipv4_identification_map
+                    .entry(dst.ip().clone())
+                    .or_insert(0);
+                *ipv4_identification_entry += 1;
+
+                return Ok(());
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Sends an TCP ACK packet without payload.
+    pub fn send_tcp_ack_0(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()> {
+        let key = (src_port, dst);
+
+        // TCP
+        let tcp = Tcp::new_ack(
+            dst.ip().clone(),
+            self.src_ip_addr,
+            dst.port(),
+            src_port,
+            *self.tcp_sequence_map.get(&key).or(Some(&0)).unwrap(),
+            *self.tcp_acknowledgement_map.get(&key).unwrap(),
+        );
+
+        // IPv4 identification
+        if !self.ipv4_identification_map.contains_key(dst.ip()) {
+            self.ipv4_identification_map.insert(dst.ip().clone(), 0);
+        }
+        let ipv4_identification = self.ipv4_identification_map.get(dst.ip()).unwrap();
+
+        // IPv4
+        let ipv4 = Ipv4::new(
+            *ipv4_identification,
+            tcp.get_type(),
+            dst.ip().clone(),
+            self.src_ip_addr,
+        )
+        .unwrap();
+
+        // Ethernet
+        let ethernet = Ethernet::new(
+            ipv4.get_type(),
+            self.local_hardware_addr,
+            self.src_hardware_addr,
+        )
+        .unwrap();
+
+        // Indicator
+        let indicator = Indicator::new(
+            Layers::Ethernet(ethernet),
+            Some(Layers::Ipv4(ipv4)),
+            Some(Layers::Tcp(tcp)),
+        );
+
+        // Send
+        match self.send(&indicator) {
+            Ok(()) => {
+                // Update IPv4 identification
+                let ipv4_identification_entry = self
+                    .ipv4_identification_map
+                    .entry(dst.ip().clone())
+                    .or_insert(0);
+                *ipv4_identification_entry += 1;
+
+                return Ok(());
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Sends an TCP ACK/SYN packet.
+    pub fn send_tcp_ack_syn(
+        &mut self,
+        dst: SocketAddrV4,
+        src_port: u16,
+        sequence: u32,
+    ) -> io::Result<()> {
+        // TCP sequence & acknowledgement
+        let key = (src_port, dst);
+        self.tcp_acknowledgement_map.insert(key, sequence);
+
+        // TCP
+        let tcp = Tcp::new_ack_syn(
+            dst.ip().clone(),
+            self.src_ip_addr,
+            dst.port(),
+            src_port,
+            *self.tcp_sequence_map.get(&key).or(Some(&0)).unwrap(),
+            *self.tcp_acknowledgement_map.get(&key).unwrap(),
+        );
+
+        // IPv4 identification
+        if !self.ipv4_identification_map.contains_key(dst.ip()) {
+            self.ipv4_identification_map.insert(dst.ip().clone(), 0);
+        }
+        let ipv4_identification = self.ipv4_identification_map.get(dst.ip()).unwrap();
+
+        // IPv4
+        let ipv4 = Ipv4::new(
+            *ipv4_identification,
+            tcp.get_type(),
+            dst.ip().clone(),
+            self.src_ip_addr,
+        )
+        .unwrap();
+
+        // Ethernet
+        let ethernet = Ethernet::new(
+            ipv4.get_type(),
+            self.local_hardware_addr,
+            self.src_hardware_addr,
+        )
+        .unwrap();
+
+        // Indicator
+        let indicator = Indicator::new(
+            Layers::Ethernet(ethernet),
+            Some(Layers::Ipv4(ipv4)),
+            Some(Layers::Tcp(tcp)),
+        );
+
+        // Send
+        match self.send(&indicator) {
+            Ok(()) => {
+                // Update TCP sequence
+                let tcp_sequence_entry = self.tcp_sequence_map.entry(key).or_insert(0);
+                *tcp_sequence_entry += 1;
+
+                // Update IPv4 identification
+                let ipv4_identification_entry = self
+                    .ipv4_identification_map
+                    .entry(dst.ip().clone())
+                    .or_insert(0);
+                *ipv4_identification_entry += 1;
+
+                return Ok(());
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Sends an TCP RST packet.
+    pub fn send_tcp_rst(
+        &mut self,
+        dst: SocketAddrV4,
+        src_port: u16,
+        sequence: u32,
+    ) -> io::Result<()> {
+        // TCP sequence & acknowledgement
+        let key = (src_port, dst);
+        self.tcp_acknowledgement_map.insert(key, sequence);
+
+        // TCP
+        let tcp = Tcp::new_rst(
+            dst.ip().clone(),
+            self.src_ip_addr,
+            dst.port(),
+            src_port,
+            *self.tcp_sequence_map.get(&key).or(Some(&0)).unwrap(),
+            *self.tcp_acknowledgement_map.get(&key).unwrap(),
+        );
+
+        // IPv4 identification
+        if !self.ipv4_identification_map.contains_key(dst.ip()) {
+            self.ipv4_identification_map.insert(dst.ip().clone(), 0);
+        }
+        let ipv4_identification = self.ipv4_identification_map.get(dst.ip()).unwrap();
+
+        // IPv4
+        let ipv4 = Ipv4::new(
+            *ipv4_identification,
+            tcp.get_type(),
+            dst.ip().clone(),
+            self.src_ip_addr,
+        )
+        .unwrap();
+
+        // Ethernet
+        let ethernet = Ethernet::new(
+            ipv4.get_type(),
+            self.local_hardware_addr,
+            self.src_hardware_addr,
+        )
+        .unwrap();
+
+        // Indicator
+        let indicator = Indicator::new(
+            Layers::Ethernet(ethernet),
+            Some(Layers::Ipv4(ipv4)),
+            Some(Layers::Tcp(tcp)),
+        );
+
+        // Send
+        match self.send(&indicator) {
+            Ok(()) => {
+                // Update IPv4 identification
+                let ipv4_identification_entry = self
+                    .ipv4_identification_map
+                    .entry(dst.ip().clone())
+                    .or_insert(0);
+                *ipv4_identification_entry += 1;
+
+                return Ok(());
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     fn send(&mut self, indicator: &Indicator) -> io::Result<()> {
         // Serialize
         let size = indicator.get_size();
@@ -237,6 +514,10 @@ pub struct Upstreamer {
     src_ip_addr: Ipv4Addr,
     local_ip_addr: Option<Ipv4Addr>,
     remote: SocketAddrV4,
+    next_tcp_port: u16,
+    streams: Vec<Option<StreamWorker>>,
+    stream_map: HashMap<(u16, SocketAddrV4), u16>,
+    stream_reverse_map: Vec<Option<(u16, SocketAddrV4)>>,
     next_udp_port: u16,
     datagrams: Vec<Option<DatagramWorker>>,
     datagram_map: Vec<u16>,
@@ -257,6 +538,10 @@ impl Upstreamer {
             src_ip_addr,
             local_ip_addr,
             remote,
+            next_tcp_port: INITIAL_PORT,
+            streams: (0..PORT_COUNT).map(|_| None).collect(),
+            stream_map: HashMap::new(),
+            stream_reverse_map: (0..PORT_COUNT).map(|_| None).collect(),
             next_udp_port: INITIAL_PORT,
             datagrams: (0..PORT_COUNT).map(|_| None).collect(),
             datagram_map: vec![0u16; u16::MAX as usize],
@@ -356,12 +641,119 @@ impl Upstreamer {
                 } else {
                     if let Some(t) = indicator.get_transport_type() {
                         match t {
-                            LayerTypes::Tcp => {}
+                            LayerTypes::Tcp => self.handle_tcp(indicator, buffer)?,
                             LayerTypes::Udp => self.handle_udp(indicator, buffer)?,
                             _ => unreachable!(),
                         };
                     }
                 }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn handle_tcp(&mut self, indicator: &Indicator, buffer: &[u8]) -> io::Result<()> {
+        if let Some(ref tcp) = indicator.get_tcp() {
+            let dst = SocketAddrV4::new(tcp.get_dst_ip_addr(), tcp.get_dst());
+            let port = self.get_local_tcp_port(tcp.get_src(), dst);
+            let index = (port - INITIAL_PORT) as usize;
+
+            if tcp.is_ack() {
+                let is_ok = match self.streams[index] {
+                    Some(ref stream) => {
+                        stream.get_src_port_and_dst() == (tcp.get_src(), dst) && !stream.is_closed()
+                    }
+                    None => false,
+                };
+
+                if is_ok {
+                    if buffer.len() > indicator.get_size() {
+                        // Send
+                        match self.streams[index]
+                            .as_mut()
+                            .unwrap()
+                            .send(&buffer[indicator.get_size()..])
+                        {
+                            Ok(_) => {
+                                // Update TCP acknowledgement
+                                self.tx.lock().unwrap().add_tcp_acknowledgement(
+                                    dst,
+                                    tcp.get_src(),
+                                    (buffer.len() - indicator.get_size()) as u32,
+                                );
+
+                                // Send ACK0
+                                self.tx.lock().unwrap().send_tcp_ack_0(dst, tcp.get_src())?;
+                            }
+                            Err(e) => {
+                                // Send RST
+                                self.tx.lock().unwrap().send_tcp_rst(
+                                    dst,
+                                    tcp.get_src(),
+                                    tcp.get_sequence(),
+                                )?;
+
+                                return Err(e);
+                            }
+                        }
+                    }
+                } else {
+                    // Send RST
+                    self.tx
+                        .lock()
+                        .unwrap()
+                        .send_tcp_rst(dst, tcp.get_src(), tcp.get_sequence())?;
+                }
+            } else if tcp.is_syn() {
+                // Connect
+                if let Some(ref mut stream) = self.streams[index] {
+                    stream.close()
+                }
+                self.streams[index] = match StreamWorker::new_and_open(
+                    self.get_tx(),
+                    tcp.get_src(),
+                    port,
+                    dst,
+                    self.remote,
+                ) {
+                    Ok(stream) => {
+                        // Send ACK/SYN
+                        self.tx.lock().unwrap().send_tcp_ack_syn(
+                            dst,
+                            tcp.get_src(),
+                            tcp.get_sequence() + 1,
+                        )?;
+
+                        Some(stream)
+                    }
+                    Err(e) => {
+                        // Send RST
+                        self.tx.lock().unwrap().send_tcp_rst(
+                            dst,
+                            tcp.get_src(),
+                            tcp.get_sequence() + 1,
+                        )?;
+
+                        return Err(e);
+                    }
+                }
+            } else if tcp.is_rst_or_fin() {
+                let is_ok = match self.streams[index] {
+                    Some(ref stream) => {
+                        stream.get_src_port_and_dst() == (tcp.get_src(), dst) && !stream.is_closed()
+                    }
+                    None => false,
+                };
+
+                if is_ok {
+                    self.streams[index].as_mut().unwrap().close();
+                }
+                // Send RST
+                self.tx
+                    .lock()
+                    .unwrap()
+                    .send_tcp_rst(dst, tcp.get_src(), tcp.get_sequence())?;
             }
         }
 
@@ -375,7 +767,7 @@ impl Upstreamer {
 
             // Bind
             let create_new = match self.datagrams[index] {
-                Some(ref worker) => worker.get_src_port() != udp.get_src(),
+                Some(ref worker) => worker.get_src_port() != udp.get_src() || worker.is_closed(),
                 None => true,
             };
             if create_new {
@@ -401,15 +793,37 @@ impl Upstreamer {
         Arc::clone(&self.tx)
     }
 
+    fn get_local_tcp_port(&mut self, src_port: u16, dst: SocketAddrV4) -> u16 {
+        let key = (src_port, dst);
+
+        if !self.stream_map.contains_key(&key) {
+            let index = (self.next_tcp_port - INITIAL_PORT) as usize;
+
+            if let Some(ref prev) = self.stream_reverse_map[index] {
+                self.stream_map.remove(prev);
+            }
+            self.stream_map.insert(key, self.next_tcp_port);
+            self.stream_reverse_map[index] = Some(key);
+
+            // To next port
+            self.next_tcp_port = self.next_tcp_port + 1;
+            if self.next_tcp_port >= INITIAL_PORT + PORT_COUNT as u16 {
+                self.next_tcp_port = INITIAL_PORT;
+            }
+        }
+
+        *self.stream_map.get(&key).unwrap()
+    }
+
     fn get_local_udp_port(&mut self, src_port: u16) -> u16 {
         if self.datagram_map[src_port as usize] == 0 {
-            if self.datagram_reverse_map[(self.next_udp_port - INITIAL_PORT) as usize] != 0 {
-                self.datagram_map[self.datagram_reverse_map
-                    [(self.next_udp_port - INITIAL_PORT) as usize]
-                    as usize] = 0;
+            let index = (self.next_udp_port - INITIAL_PORT) as usize;
+
+            if self.datagram_reverse_map[index] != 0 {
+                self.datagram_map[self.datagram_reverse_map[index] as usize] = 0;
             }
             self.datagram_map[src_port as usize] = self.next_udp_port;
-            self.datagram_reverse_map[(self.next_udp_port - INITIAL_PORT) as usize] = src_port;
+            self.datagram_reverse_map[index] = src_port;
 
             // To next port
             self.next_udp_port = self.next_udp_port + 1;
@@ -422,12 +836,114 @@ impl Upstreamer {
     }
 }
 
+/// Represents a worker of a SOCKS5 TCP client.
+pub struct StreamWorker {
+    src_port: u16,
+    local_port: u16,
+    dst: SocketAddrV4,
+    writer: BufWriter<TcpStream>,
+    thread: JoinHandle<()>,
+    is_closed: Arc<AtomicBool>,
+}
+
+impl StreamWorker {
+    /// Construct a new `StreamWorker` and open it.
+    pub fn new_and_open(
+        tx: Arc<Mutex<Downstreamer>>,
+        src_port: u16,
+        local_port: u16,
+        dst: SocketAddrV4,
+        remote: SocketAddrV4,
+    ) -> io::Result<StreamWorker> {
+        let (mut reader, writer) = socks::connect(remote, dst)?;
+
+        let is_closed = AtomicBool::new(false);
+        let a_is_closed = Arc::new(is_closed);
+        let a_is_closed_cloned = Arc::clone(&a_is_closed);
+        let thread = thread::spawn(move || {
+            let mut buffer = [0u8; u16::MAX as usize];
+            loop {
+                if !a_is_closed_cloned.load(Ordering::Relaxed) {
+                    return;
+                }
+                match reader.read(&mut buffer) {
+                    Ok(size) => {
+                        if !a_is_closed_cloned.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        debug!(
+                            "receive from SOCKS: {}: {} -> {} ({} Bytes)",
+                            "TCP", dst, local_port, size
+                        );
+
+                        // Send
+                        if let Err(ref e) =
+                            tx.lock()
+                                .unwrap()
+                                .send_tcp_ack(dst, src_port, &buffer[..size])
+                        {
+                            warn!("handle {}: {}", "TCP", e);
+                        }
+                    }
+                    Err(ref e) => {
+                        if e.kind() == io::ErrorKind::TimedOut {
+                            continue;
+                        }
+                        warn!("SOCKS: {}", e);
+                        a_is_closed_cloned.store(true, Ordering::Relaxed);
+                        return;
+                    }
+                }
+            }
+        });
+
+        Ok(StreamWorker {
+            src_port,
+            local_port,
+            dst,
+            writer,
+            thread,
+            is_closed: a_is_closed,
+        })
+    }
+
+    /// Sends data on the SOCKS5 in TCP to the destination.
+    pub fn send(&mut self, buffer: &[u8]) -> io::Result<()> {
+        debug!(
+            "send to SOCKS {}: {} -> {} ({} Bytes)",
+            "TCP",
+            self.local_port,
+            self.dst,
+            buffer.len()
+        );
+
+        // Send
+        self.writer.write_all(buffer)
+    }
+
+    /// Closes the worker.
+    pub fn close(&mut self) {
+        self.is_closed.store(true, Ordering::Relaxed);
+    }
+
+    /// Get the source port and the destination of the SOCKS5 TCP client.
+    pub fn get_src_port_and_dst(&self) -> (u16, SocketAddrV4) {
+        (self.src_port, self.dst)
+    }
+
+    /// Returns if the worker is closed.
+    pub fn is_closed(&self) -> bool {
+        self.is_closed.load(Ordering::Relaxed)
+    }
+}
+
+/// Represents a worker of a SOCKS5 UDP client.
 pub struct DatagramWorker {
-    tx: Arc<Mutex<Downstreamer>>,
     src_port: u16,
     local_port: u16,
     datagram: Arc<SocksDatagram>,
     thread: JoinHandle<()>,
+    is_closed: Arc<AtomicBool>,
 }
 
 impl DatagramWorker {
@@ -443,21 +959,28 @@ impl DatagramWorker {
 
         let a_datagram = Arc::new(datagram);
         let a_datagram_cloned = Arc::clone(&a_datagram);
-        let tx_cloned = Arc::clone(&tx);
+        let is_closed = AtomicBool::new(false);
+        let a_is_closed = Arc::new(is_closed);
+        let a_is_closed_cloned = Arc::clone(&a_is_closed);
         let thread = thread::spawn(move || {
             let mut buffer = [0u8; u16::MAX as usize];
             loop {
+                if !a_is_closed_cloned.load(Ordering::Relaxed) {
+                    return;
+                }
                 match a_datagram_cloned.recv_from(&mut buffer) {
                     Ok((size, addr)) => {
+                        if !a_is_closed_cloned.load(Ordering::Relaxed) {
+                            return;
+                        }
                         debug!(
-                            "receive from socks: {}: {} -> {} ({} Bytes)",
+                            "receive from SOCKS: {}: {} -> {} ({} Bytes)",
                             "UDP", addr, local_port, size
                         );
+
+                        // Send
                         if let Err(ref e) =
-                            tx_cloned
-                                .lock()
-                                .unwrap()
-                                .send_udp(addr, src_port, &buffer[..size])
+                            tx.lock().unwrap().send_udp(addr, src_port, &buffer[..size])
                         {
                             warn!("handle {}: {}", "UDP", e);
                         }
@@ -466,7 +989,9 @@ impl DatagramWorker {
                         if e.kind() == io::ErrorKind::TimedOut {
                             continue;
                         }
-                        warn!("socks: {}", e);
+                        warn!("SOCKS: {}", e);
+                        a_is_closed_cloned.store(true, Ordering::Relaxed);
+
                         return;
                     }
                 }
@@ -474,18 +999,18 @@ impl DatagramWorker {
         });
 
         Ok(DatagramWorker {
-            tx,
             src_port,
             local_port,
             datagram: a_datagram,
             thread: thread,
+            is_closed: a_is_closed,
         })
     }
 
-    /// Sends data on the SOCKS to the destination.
+    /// Sends data on the SOCKS5 in UDP to the destination.
     pub fn send_to(&mut self, buffer: &[u8], dst: SocketAddrV4) -> io::Result<usize> {
         debug!(
-            "send to socks {}: {} -> {} ({} Bytes)",
+            "send to SOCKS {}: {} -> {} ({} Bytes)",
             "UDP",
             self.local_port,
             dst,
@@ -496,8 +1021,18 @@ impl DatagramWorker {
         self.datagram.send_to(buffer, dst)
     }
 
-    /// Get the source port of the SOCKS.
+    /// Closes the worker.
+    pub fn close(&mut self) {
+        self.is_closed.store(true, Ordering::Relaxed);
+    }
+
+    /// Get the source port of the SOCKS5 UDP client.
     pub fn get_src_port(&self) -> u16 {
         self.src_port
+    }
+
+    /// Returns if the worker is closed.
+    pub fn is_closed(&self) -> bool {
+        self.is_closed.load(Ordering::Relaxed)
     }
 }
