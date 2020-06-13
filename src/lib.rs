@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::io::{self, BufReader, BufWriter, Read, Write};
+use std::io::{self, BufWriter, Read, Write};
 use std::net::{Ipv4Addr, SocketAddrV4, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -16,7 +16,7 @@ use packet::layer::ethernet::Ethernet;
 use packet::layer::ipv4::Ipv4;
 use packet::layer::tcp::Tcp;
 use packet::layer::udp::Udp;
-use packet::layer::{Layer, LayerType, LayerTypes, Layers};
+use packet::layer::{Layer, LayerTypes, Layers};
 use packet::Indicator;
 use pcap::{HardwareAddr, Interface, Receiver, Sender};
 
@@ -842,6 +842,7 @@ pub struct StreamWorker {
     local_port: u16,
     dst: SocketAddrV4,
     writer: BufWriter<TcpStream>,
+    #[allow(dead_code)]
     thread: JoinHandle<()>,
     is_closed: Arc<AtomicBool>,
 }
@@ -942,6 +943,7 @@ pub struct DatagramWorker {
     src_port: u16,
     local_port: u16,
     datagram: Arc<SocksDatagram>,
+    #[allow(dead_code)]
     thread: JoinHandle<()>,
     is_closed: Arc<AtomicBool>,
 }
