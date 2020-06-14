@@ -19,7 +19,7 @@ use packet::layer::ipv4::Ipv4;
 use packet::layer::tcp::Tcp;
 use packet::layer::udp::Udp;
 use packet::layer::{Layer, LayerTypes, Layers};
-use packet::Indicator;
+use packet::{Defraggler, Indicator};
 use pcap::{HardwareAddr, Interface, Receiver, Sender};
 
 /// Sets the logger.
@@ -738,9 +738,10 @@ impl Downstreamer {
         // Send
         self.tx.send_to(&buffer, None).unwrap_or(Ok(()))?;
         debug!(
-            "send to pcap: {} ({} Bytes)",
+            "send to pcap: {} ({} + {} Bytes)",
             indicator.brief(),
-            size + payload.len()
+            size,
+            payload.len()
         );
 
         Ok(())
@@ -759,6 +760,7 @@ pub struct Upstreamer {
     datagrams: Vec<Option<DatagramWorker>>,
     datagram_map: Vec<u16>,
     datagram_reverse_map: Vec<u16>,
+    defrag: Defraggler,
 }
 
 impl Upstreamer {
@@ -780,6 +782,7 @@ impl Upstreamer {
             datagrams: (0..PORT_COUNT).map(|_| None).collect(),
             datagram_map: vec![0u16; u16::MAX as usize],
             datagram_reverse_map: vec![0u16; PORT_COUNT],
+            defrag: Defraggler::new(),
         };
         if let Some(local_ip_addr) = local_ip_addr {
             upstreamer
@@ -872,14 +875,27 @@ impl Upstreamer {
                 }
 
                 if ipv4.is_fragment() {
-                    // TODO: Deal with fragmentations
+                    // Fragmentation
+                    let frag = match self.defrag.add(indicator, buffer) {
+                        Some(frag) => frag,
+                        None => return Ok(()),
+                    };
+                    let (indicator, buffer) = frag.concatenate();
+
+                    if let Some(t) = indicator.get_transport_type() {
+                        match t {
+                            LayerTypes::Tcp => self.handle_tcp(&indicator, buffer)?,
+                            LayerTypes::Udp => self.handle_udp(&indicator, buffer)?,
+                            _ => unreachable!(),
+                        }
+                    }
                 } else {
                     if let Some(t) = indicator.get_transport_type() {
                         match t {
                             LayerTypes::Tcp => self.handle_tcp(indicator, buffer)?,
                             LayerTypes::Udp => self.handle_udp(indicator, buffer)?,
                             _ => unreachable!(),
-                        };
+                        }
                     }
                 }
             }
@@ -965,6 +981,7 @@ impl Upstreamer {
                 self.streams.insert(key, stream);
             } else if tcp.is_ack() {
                 if is_alive {
+                    // TODO: Escape all unordered packets
                     if buffer.len() > indicator.get_size() {
                         // Send
                         match self

@@ -104,6 +104,34 @@ impl Ipv4 {
         }
     }
 
+    /// Creates an `Ipv4` without fragmentation accoring to an `Ipv4`.
+    pub fn defrag(ipv4: &Ipv4) -> Ipv4 {
+        Ipv4 {
+            layer: ipv4::Ipv4 {
+                version: ipv4.layer.version,
+                header_length: ipv4.layer.header_length,
+                dscp: ipv4.layer.dscp,
+                ecn: ipv4.layer.ecn,
+                total_length: ipv4.layer.total_length,
+                identification: ipv4.get_identification(),
+                flags: 0,
+                fragment_offset: 0,
+                ttl: ipv4.layer.ttl,
+                next_level_protocol: ipv4.layer.next_level_protocol,
+                checksum: 0,
+                source: ipv4.get_src(),
+                destination: ipv4.get_dst(),
+                options: ipv4.layer.options.clone(),
+                payload: vec![],
+            },
+        }
+    }
+
+    /// Get the total length of the layer.
+    pub fn get_total_length(&self) -> u16 {
+        self.layer.total_length
+    }
+
     /// Get the identification of the layer.
     pub fn get_identification(&self) -> u16 {
         self.layer.identification

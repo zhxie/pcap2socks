@@ -5,8 +5,11 @@ use pnet::packet::ipv4::{Ipv4Flags, Ipv4Packet};
 use pnet::packet::tcp::TcpPacket;
 use pnet::packet::udp::UdpPacket;
 use pnet::packet::Packet;
+use std::collections::HashMap;
 use std::fmt::{self, Display, Formatter};
 use std::io;
+use std::net::Ipv4Addr;
+use std::time::Instant;
 
 pub mod layer;
 use layer::arp::Arp;
@@ -348,5 +351,154 @@ impl Display for Indicator {
             "Indicator{}{}{}",
             link_string, network_string, transport_string
         )
+    }
+}
+
+const EXPIRE_TIME: u128 = 10000;
+
+/// Represents a fragmentation.
+#[derive(Debug)]
+pub struct Fragmentation {
+    ethernet: Ethernet,
+    ipv4: Ipv4,
+    transport: Option<Layers>,
+    buffer: Vec<u8>,
+    last_seen: Instant,
+    length: usize,
+}
+
+impl Fragmentation {
+    /// Creates a `Fragmentation`.
+    pub fn new(indicator: &Indicator) -> Option<Fragmentation> {
+        let new_ipv4 = match indicator.get_ipv4() {
+            Some(ipv4) => Ipv4::defrag(ipv4),
+            None => return None,
+        };
+        let ethernet = match indicator.get_ethernet() {
+            Some(ethernet) => ethernet,
+            None => return None,
+        };
+
+        let mut frag = Fragmentation {
+            ethernet: ethernet.clone(),
+            ipv4: new_ipv4.clone(),
+            transport: None,
+            buffer: vec![0; u16::MAX as usize],
+            last_seen: Instant::now(),
+            length: 0,
+        };
+
+        // Indicator
+        let new_indicator = Indicator::new(
+            Layers::Ethernet(ethernet.clone()),
+            Some(Layers::Ipv4(new_ipv4)),
+            None,
+        );
+
+        // Serialize
+        if let Err(_) = new_indicator.serialize(&mut frag.buffer[0..]) {
+            return None;
+        }
+
+        Some(frag)
+    }
+
+    /// Adds a fragmentation.
+    pub fn add(&mut self, indicator: &Indicator, payload: &[u8]) {
+        // Transport
+        if let None = self.transport {
+            if let Some(transport) = indicator.get_transport() {
+                self.transport = Some(transport.clone());
+            }
+        }
+
+        // Payload
+        let ipv4 = match indicator.get_ipv4() {
+            Some(ipv4) => ipv4,
+            None => return,
+        };
+        let offset = (ipv4.get_fragment_offset() as usize) * 8;
+        let header_size = self.ethernet.get_size() + self.ipv4.get_size();
+
+        self.buffer[header_size + offset..].copy_from_slice(payload);
+        self.length += payload.len();
+    }
+
+    /// Concatenates fragmentations and returns an indicator of the buffer and the buffer itself.
+    pub fn concatenate(&self) -> (Indicator, &[u8]) {
+        let new_indicator = Indicator::new(
+            Layers::Ethernet(self.ethernet.clone()),
+            Some(Layers::Ipv4(self.ipv4.clone())),
+            self.transport.clone(),
+        );
+
+        let header_size = self.ethernet.get_size() + self.ipv4.get_size();
+
+        (new_indicator, &self.buffer[0..header_size + self.length])
+    }
+
+    /// Returns if the `Fragmentation` is completed.
+    pub fn is_completed(&self) -> bool {
+        self.length == self.ipv4.get_total_length() as usize - self.ipv4.get_size()
+    }
+
+    /// Returns if the `Fragmentation` is expired.
+    pub fn is_expired(&self) -> bool {
+        self.last_seen.elapsed().as_millis() > EXPIRE_TIME
+    }
+}
+
+/// Represents a defragmentation machine.
+#[derive(Debug)]
+pub struct Defraggler {
+    frags: HashMap<(Ipv4Addr, Ipv4Addr, u16), Fragmentation>,
+}
+
+impl Defraggler {
+    /// Creates a new empty `Defraggler`.
+    pub fn new() -> Defraggler {
+        Defraggler {
+            frags: HashMap::new(),
+        }
+    }
+
+    /// Adds a fragmentation and returns the fragmentation if it is completed.
+    pub fn add(&mut self, indicator: &Indicator, buffer: &[u8]) -> Option<Fragmentation> {
+        let ipv4 = match indicator.get_ipv4() {
+            Some(ipv4) => ipv4,
+            None => return None,
+        };
+
+        let key = (ipv4.get_src(), ipv4.get_dst(), ipv4.get_identification());
+
+        let mut is_create = false;
+        if self.frags.contains_key(&key) {
+            if self.frags.get(&key).unwrap().is_expired() {
+                // Expired
+                is_create = true;
+            }
+        } else {
+            is_create = true;
+        }
+
+        if is_create {
+            let frag = match Fragmentation::new(indicator) {
+                Some(frag) => frag,
+                None => return None,
+            };
+
+            self.frags.insert(key, frag);
+        }
+
+        let frag = self.frags.get_mut(&key).unwrap();
+
+        // Add fragmentation
+        let header_size = indicator.get_ethernet().unwrap().get_size() + ipv4.get_size();
+        frag.add(indicator, &buffer[header_size..]);
+        if frag.is_completed() {
+            self.frags.remove(&key)
+        } else {
+            None
+        }
     }
 }
