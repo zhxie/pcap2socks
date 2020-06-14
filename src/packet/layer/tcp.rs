@@ -247,7 +247,11 @@ impl Layer for Tcp {
         packet.populate(&self.layer);
 
         // Fix length
-        packet.set_data_offset((self.get_size() / 4) as u8);
+        let header_length = self.get_size();
+        if header_length / 4 > u8::MAX as usize {
+            return Err(io::Error::new(io::ErrorKind::Other, "TCP too big"));
+        }
+        packet.set_data_offset((header_length / 4) as u8);
 
         // Compute checksum
         let checksum = tcp::ipv4_checksum(
@@ -257,7 +261,7 @@ impl Layer for Tcp {
         );
         packet.set_checksum(checksum);
 
-        Ok(self.get_size())
+        Ok(header_length)
     }
 
     fn serialize_with_payload(
@@ -275,7 +279,11 @@ impl Layer for Tcp {
         packet.set_payload(payload);
 
         // Fix length
-        packet.set_data_offset((self.get_size() / 4) as u8);
+        let header_length = self.get_size();
+        if header_length / 4 > u8::MAX as usize {
+            return Err(io::Error::new(io::ErrorKind::Other, "TCP too big"));
+        }
+        packet.set_data_offset((header_length / 4) as u8);
 
         // Compute checksum
         let checksum = tcp::ipv4_checksum(
@@ -285,6 +293,6 @@ impl Layer for Tcp {
         );
         packet.set_checksum(checksum);
 
-        Ok(self.get_size() + n)
+        Ok(header_length + n)
     }
 }

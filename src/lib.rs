@@ -133,6 +133,14 @@ impl Downstreamer {
         self.local_ip_addr = ip_addr;
     }
 
+    /// Get TCP acknowledgement to an TCP connection.
+    pub fn get_tcp_acknowledgement(&mut self, dst: SocketAddrV4, src_port: u16) -> u32 {
+        *self
+            .tcp_acknowledgement_map
+            .get(&(src_port, dst))
+            .unwrap_or(&0)
+    }
+
     /// Adds TCP acknowledgement to an TCP connection.
     pub fn add_tcp_acknowledgement(&mut self, dst: SocketAddrV4, src_port: u16, n: u32) {
         let entry = self
@@ -200,7 +208,7 @@ impl Downstreamer {
         let ipv4_header_size = ipv4.get_size();
         let udp_header_size = udp.get_size();
         let t = udp.get_type();
-        if MSS < (ipv4_header_size + udp_header_size + payload.len()) as u32 {
+        if (MSS as usize) < ipv4_header_size + udp_header_size + payload.len() {
             let size = udp_header_size + payload.len();
             let mut n = 0;
 
@@ -221,6 +229,12 @@ impl Downstreamer {
                 }
 
                 // IPv4
+                if n / 8 > u16::MAX as usize {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "payload too big",
+                    ));
+                }
                 let ipv4 = Ipv4::new_more_fragment(
                     ipv4_identification,
                     t,
@@ -262,6 +276,12 @@ impl Downstreamer {
 
                 // IPv4
                 let ipv4;
+                if n / 8 > u16::MAX as usize {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "payload too big",
+                    ));
+                }
                 if remain > 0 {
                     ipv4 = Ipv4::new_more_fragment(
                         ipv4_identification,
@@ -367,7 +387,7 @@ impl Downstreamer {
         // Segmentation
         let header_size = ipv4.get_size() + tcp.get_size();
         let max_payload_size = MSS as usize - header_size;
-        if MSS < (header_size + payload.len()) as u32 {
+        if (MSS as usize) < header_size + payload.len() {
             let mut i = 0;
             loop {
                 // TCP
@@ -411,7 +431,14 @@ impl Downstreamer {
 
                 // Update TCP sequence
                 let tcp_sequence_entry = self.tcp_sequence_map.entry(key).or_insert(0);
-                *tcp_sequence_entry += length as u32;
+                if length > u32::MAX as usize {
+                    return Err(io::Error::new(io::ErrorKind::Other, "length too big"));
+                }
+                if u32::MAX - *tcp_sequence_entry < length as u32 {
+                    *tcp_sequence_entry = length as u32 - (u32::MAX - *tcp_sequence_entry);
+                } else {
+                    *tcp_sequence_entry += length as u32;
+                }
 
                 // Update IPv4 identification
                 let ipv4_identification_entry = self
@@ -438,7 +465,17 @@ impl Downstreamer {
 
             // Update TCP sequence
             let tcp_sequence_entry = self.tcp_sequence_map.entry(key).or_insert(0);
-            *tcp_sequence_entry += payload.len() as u32;
+            if payload.len() > u32::MAX as usize {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "payload too big",
+                ));
+            }
+            if u32::MAX - *tcp_sequence_entry < payload.len() as u32 {
+                *tcp_sequence_entry = payload.len() as u32 - (u32::MAX - *tcp_sequence_entry);
+            } else {
+                *tcp_sequence_entry += payload.len() as u32;
+            }
 
             // Update IPv4 identification
             let ipv4_identification_entry = self
@@ -981,35 +1018,54 @@ impl Upstreamer {
                 self.streams.insert(key, stream);
             } else if tcp.is_ack() {
                 if is_alive {
-                    // TODO: Escape all unordered packets
                     if buffer.len() > indicator.get_size() {
-                        // Send
-                        match self
-                            .streams
-                            .get_mut(&key)
-                            .unwrap()
-                            .send(&buffer[indicator.get_size()..])
+                        // TODO: Escape all unordered packets
+                        let record_sequence = self.tx.lock().unwrap().get_tcp_acknowledgement(
+                            SocketAddrV4::new(tcp.get_dst_ip_addr(), tcp.get_dst()),
+                            tcp.get_src(),
+                        );
+                        // Ordered packets or retransmission
+                        if record_sequence == tcp.get_sequence()
+                            || record_sequence - tcp.get_sequence() > u16::MAX as u32
                         {
-                            Ok(_) => {
-                                // Update TCP acknowledgement
-                                self.tx.lock().unwrap().add_tcp_acknowledgement(
-                                    dst,
-                                    tcp.get_src(),
-                                    (buffer.len() - indicator.get_size()) as u32,
-                                );
-
+                            let size = tcp.get_sequence()
+                                + (buffer.len() - indicator.get_size()) as u32
+                                - record_sequence;
+                            // Has untransmitted
+                            if size < u16::MAX as u32 {
+                                // Send
+                                match self
+                                    .streams
+                                    .get_mut(&key)
+                                    .unwrap()
+                                    .send(&buffer[buffer.len() - size as usize..])
+                                {
+                                    Ok(_) => {
+                                        // Update TCP acknowledgement
+                                        self.tx.lock().unwrap().add_tcp_acknowledgement(
+                                            dst,
+                                            tcp.get_src(),
+                                            size,
+                                        );
+                                        // Send ACK0
+                                        self.tx
+                                            .lock()
+                                            .unwrap()
+                                            .send_tcp_ack_0(dst, tcp.get_src())?;
+                                    }
+                                    Err(e) => {
+                                        // Send RST
+                                        self.tx.lock().unwrap().send_tcp_rst(
+                                            dst,
+                                            tcp.get_src(),
+                                            tcp.get_sequence(),
+                                        )?;
+                                        return Err(e);
+                                    }
+                                }
+                            } else {
                                 // Send ACK0
                                 self.tx.lock().unwrap().send_tcp_ack_0(dst, tcp.get_src())?;
-                            }
-                            Err(e) => {
-                                // Send RST
-                                self.tx.lock().unwrap().send_tcp_rst(
-                                    dst,
-                                    tcp.get_src(),
-                                    tcp.get_sequence(),
-                                )?;
-
-                                return Err(e);
                             }
                         }
                     }
@@ -1075,8 +1131,14 @@ impl Upstreamer {
             self.datagram_reverse_map[index] = src_port;
 
             // To next port
-            self.next_udp_port = self.next_udp_port + 1;
-            if self.next_udp_port >= INITIAL_PORT + PORT_COUNT as u16 {
+            if self.next_udp_port == u16::MAX {
+                self.next_udp_port = 0;
+            } else {
+                self.next_udp_port = self.next_udp_port + 1;
+            }
+            if self.next_udp_port > INITIAL_PORT + (PORT_COUNT - 1) as u16
+                || self.next_udp_port == 0
+            {
                 self.next_udp_port = INITIAL_PORT;
             }
         }

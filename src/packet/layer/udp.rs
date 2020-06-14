@@ -103,6 +103,12 @@ impl Layer for Udp {
         packet.populate(&self.layer);
 
         // Fix length
+        if n > u16::MAX as usize {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "length too big",
+            ));
+        }
         packet.set_length(n as u16);
 
         // Compute checksum
@@ -131,6 +137,12 @@ impl Layer for Udp {
         packet.set_payload(payload);
 
         // Fix length
+        if n > u16::MAX as usize {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "length too big",
+            ));
+        }
         packet.set_length(n as u16);
 
         // Compute checksum

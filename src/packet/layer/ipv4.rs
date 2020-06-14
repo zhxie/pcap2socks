@@ -199,14 +199,23 @@ impl Layer for Ipv4 {
 
         // Fix length
         let header_length = self.get_size();
+        if header_length / 4 > u8::MAX as usize {
+            return Err(io::Error::new(io::ErrorKind::Other, "IPv4 too big"));
+        }
         packet.set_header_length((header_length / 4) as u8);
+        if n > u16::MAX as usize {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "length too big",
+            ));
+        }
         packet.set_total_length(n as u16);
 
         // Compute checksum
         let checksum = ipv4::checksum(&packet.to_immutable());
         packet.set_checksum(checksum);
 
-        Ok(self.get_size())
+        Ok(header_length)
     }
 
     fn serialize_with_payload(&self, buffer: &mut [u8], _: &[u8], n: usize) -> io::Result<usize> {
