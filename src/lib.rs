@@ -5,6 +5,7 @@ use std::net::{Ipv4Addr, SocketAddrV4, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 pub mod args;
 pub mod packet;
@@ -77,8 +78,15 @@ pub fn interface(name: Option<String>) -> Option<Interface> {
     Some(inters[0].clone())
 }
 
+/// Represents the initial UDP port for binding in local.
 const INITIAL_PORT: u16 = 32768;
+/// Represents the max limit of UDP port for binding in local.
 const PORT_COUNT: usize = 64;
+
+/// Represents the wait time after a `TimedOut` `IoError`.
+const TIMEDOUT_WAIT: u64 = 20;
+
+/// Represents the MSS of packet sending from local to source, this will become an option in the future.
 const MSS: u32 = 1200;
 
 /// Represents the channel downstream traffic to the source in pcap.
@@ -811,6 +819,7 @@ impl Upstreamer {
                 }
                 Err(e) => {
                     if e.kind() == io::ErrorKind::TimedOut {
+                        thread::sleep(Duration::from_millis(TIMEDOUT_WAIT));
                         continue;
                     }
                     return Err(e);
@@ -863,7 +872,7 @@ impl Upstreamer {
                 }
 
                 if ipv4.is_fragment() {
-                    // Fragment
+                    // TODO: Deal with fragmentations
                 } else {
                     if let Some(t) = indicator.get_transport_type() {
                         match t {
@@ -893,7 +902,68 @@ impl Upstreamer {
                 None => {}
             };
 
-            if tcp.is_ack() {
+            // TODO: Record window size
+
+            if tcp.is_rst() {
+                if is_alive {
+                    self.streams.get_mut(&key).unwrap().close();
+                }
+            } else if tcp.is_fin() {
+                if is_alive {
+                    self.streams.get_mut(&key).unwrap().set_last_ack(true);
+                    self.streams.get_mut(&key).unwrap().close();
+
+                    // Send ACK/FIN
+                    self.tx.lock().unwrap().send_tcp_ack_fin(
+                        dst,
+                        tcp.get_src(),
+                        tcp.get_sequence() + 1,
+                    )?;
+                } else {
+                    // Send RST
+                    self.tx.lock().unwrap().send_tcp_rst(
+                        dst,
+                        tcp.get_src(),
+                        tcp.get_sequence() + 1,
+                    )?;
+                }
+            } else if tcp.is_syn() {
+                // Close before reconnect
+                if is_alive {
+                    self.streams.get_mut(&key).unwrap().close();
+                }
+
+                // Connect
+                let stream = match StreamWorker::new_and_open(
+                    self.get_tx(),
+                    tcp.get_src(),
+                    dst,
+                    self.remote,
+                ) {
+                    Ok(stream) => {
+                        // Send ACK/SYN
+                        self.tx.lock().unwrap().send_tcp_ack_syn(
+                            dst,
+                            tcp.get_src(),
+                            tcp.get_sequence() + 1,
+                        )?;
+
+                        stream
+                    }
+                    Err(e) => {
+                        // Send RST
+                        self.tx.lock().unwrap().send_tcp_rst(
+                            dst,
+                            tcp.get_src(),
+                            tcp.get_sequence() + 1,
+                        )?;
+
+                        return Err(e);
+                    }
+                };
+
+                self.streams.insert(key, stream);
+            } else if tcp.is_ack() {
                 if is_alive {
                     if buffer.len() > indicator.get_size() {
                         // Send
@@ -937,65 +1007,6 @@ impl Upstreamer {
                             tcp.get_sequence(),
                         )?;
                     }
-                }
-            } else if tcp.is_syn() {
-                // Close before reconnect
-                if is_alive {
-                    self.streams.get_mut(&key).unwrap().close();
-                }
-
-                // Connect
-                let stream = match StreamWorker::new_and_open(
-                    self.get_tx(),
-                    tcp.get_src(),
-                    dst,
-                    self.remote,
-                ) {
-                    Ok(stream) => {
-                        // Send ACK/SYN
-                        self.tx.lock().unwrap().send_tcp_ack_syn(
-                            dst,
-                            tcp.get_src(),
-                            tcp.get_sequence() + 1,
-                        )?;
-
-                        stream
-                    }
-                    Err(e) => {
-                        // Send RST
-                        self.tx.lock().unwrap().send_tcp_rst(
-                            dst,
-                            tcp.get_src(),
-                            tcp.get_sequence() + 1,
-                        )?;
-
-                        return Err(e);
-                    }
-                };
-
-                self.streams.insert(key, stream);
-            } else if tcp.is_rst() {
-                if is_alive {
-                    self.streams.get_mut(&key).unwrap().close();
-                }
-            } else if tcp.is_fin() {
-                if is_alive {
-                    self.streams.get_mut(&key).unwrap().set_last_ack(true);
-                    self.streams.get_mut(&key).unwrap().close();
-
-                    // Send ACK/FIN
-                    self.tx.lock().unwrap().send_tcp_ack_fin(
-                        dst,
-                        tcp.get_src(),
-                        tcp.get_sequence() + 1,
-                    )?;
-                } else {
-                    // Send RST
-                    self.tx.lock().unwrap().send_tcp_rst(
-                        dst,
-                        tcp.get_src(),
-                        tcp.get_sequence() + 1,
-                    )?;
                 }
             }
         }
@@ -1101,6 +1112,7 @@ impl StreamWorker {
                             "TCP", dst, 0, size
                         );
 
+                        // TODO: Make a large array to cache and send according to the window size
                         // Send
                         if let Err(ref e) =
                             tx.lock()
@@ -1112,6 +1124,7 @@ impl StreamWorker {
                     }
                     Err(ref e) => {
                         if e.kind() == io::ErrorKind::TimedOut {
+                            thread::sleep(Duration::from_millis(TIMEDOUT_WAIT));
                             continue;
                         }
                         warn!("SOCKS: {}", e);
@@ -1232,6 +1245,7 @@ impl DatagramWorker {
                     }
                     Err(ref e) => {
                         if e.kind() == io::ErrorKind::TimedOut {
+                            thread::sleep(Duration::from_millis(TIMEDOUT_WAIT));
                             continue;
                         }
                         warn!("SOCKS: {}", e);
