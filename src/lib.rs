@@ -434,11 +434,9 @@ impl Downstreamer {
                 if length > u32::MAX as usize {
                     return Err(io::Error::new(io::ErrorKind::Other, "length too big"));
                 }
-                if u32::MAX - *tcp_sequence_entry < length as u32 {
-                    *tcp_sequence_entry = length as u32 - (u32::MAX - *tcp_sequence_entry);
-                } else {
-                    *tcp_sequence_entry += length as u32;
-                }
+                *tcp_sequence_entry = (*tcp_sequence_entry)
+                    .checked_add(length as u32)
+                    .unwrap_or_else(|| length as u32 - (u32::MAX - *tcp_sequence_entry));
 
                 // Update IPv4 identification
                 let ipv4_identification_entry = self
@@ -471,11 +469,9 @@ impl Downstreamer {
                     "payload too big",
                 ));
             }
-            if u32::MAX - *tcp_sequence_entry < payload.len() as u32 {
-                *tcp_sequence_entry = payload.len() as u32 - (u32::MAX - *tcp_sequence_entry);
-            } else {
-                *tcp_sequence_entry += payload.len() as u32;
-            }
+            *tcp_sequence_entry = (*tcp_sequence_entry)
+                .checked_add(payload.len() as u32)
+                .unwrap_or_else(|| payload.len() as u32 - (u32::MAX - *tcp_sequence_entry));
 
             // Update IPv4 identification
             let ipv4_identification_entry = self
@@ -1019,54 +1015,44 @@ impl Upstreamer {
             } else if tcp.is_ack() {
                 if is_alive {
                     if buffer.len() > indicator.get_size() {
-                        // TODO: Escape all unordered packets
                         let record_sequence = self.tx.lock().unwrap().get_tcp_acknowledgement(
                             SocketAddrV4::new(tcp.get_dst_ip_addr(), tcp.get_dst()),
                             tcp.get_src(),
                         );
-                        // Ordered packets or retransmission
-                        if record_sequence == tcp.get_sequence()
-                            || record_sequence - tcp.get_sequence() > u16::MAX as u32
-                        {
-                            let size = tcp.get_sequence()
-                                + (buffer.len() - indicator.get_size()) as u32
-                                - record_sequence;
-                            // Has untransmitted
-                            if size < u16::MAX as u32 {
-                                // Send
-                                match self
-                                    .streams
-                                    .get_mut(&key)
-                                    .unwrap()
-                                    .send(&buffer[buffer.len() - size as usize..])
-                                {
-                                    Ok(_) => {
-                                        // Update TCP acknowledgement
-                                        self.tx.lock().unwrap().add_tcp_acknowledgement(
-                                            dst,
-                                            tcp.get_src(),
-                                            size,
-                                        );
-                                        // Send ACK0
-                                        self.tx
-                                            .lock()
-                                            .unwrap()
-                                            .send_tcp_ack_0(dst, tcp.get_src())?;
-                                    }
-                                    Err(e) => {
-                                        // Send RST
-                                        self.tx.lock().unwrap().send_tcp_rst(
-                                            dst,
-                                            tcp.get_src(),
-                                            tcp.get_sequence(),
-                                        )?;
-                                        return Err(e);
-                                    }
+
+                        // Check valid
+                        if record_sequence == tcp.get_sequence() {
+                            // Send
+                            match self
+                                .streams
+                                .get_mut(&key)
+                                .unwrap()
+                                .send(&buffer[indicator.get_size()..])
+                            {
+                                Ok(_) => {
+                                    // Update TCP acknowledgement
+                                    self.tx.lock().unwrap().add_tcp_acknowledgement(
+                                        dst,
+                                        tcp.get_src(),
+                                        (buffer.len() - indicator.get_size()) as u32,
+                                    );
+                                    // Send ACK0
+                                    self.tx.lock().unwrap().send_tcp_ack_0(dst, tcp.get_src())?;
                                 }
-                            } else {
-                                // Send ACK0
-                                self.tx.lock().unwrap().send_tcp_ack_0(dst, tcp.get_src())?;
+                                Err(e) => {
+                                    // Send RST
+                                    self.tx.lock().unwrap().send_tcp_rst(
+                                        dst,
+                                        tcp.get_src(),
+                                        tcp.get_sequence(),
+                                    )?;
+                                    return Err(e);
+                                }
                             }
+                        } else {
+                            // Unordered packet or retransmission
+                            // Send ACK0
+                            self.tx.lock().unwrap().send_tcp_ack_0(dst, tcp.get_src())?;
                         }
                     }
                 } else {
