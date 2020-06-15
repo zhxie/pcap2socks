@@ -148,7 +148,7 @@ impl Cacher {
             }
         }
 
-        todo!();
+        Ok(())
     }
 
     // Invalidates cache to the certain sequence.
@@ -1263,11 +1263,7 @@ impl Upstreamer {
                     tx_locked.set_tcp_acknowledged(dst, tcp.get_src(), tcp.get_acknowledgement());
 
                     if buffer.len() > indicator.get_size() {
-                        let record_sequence = self
-                            .tx
-                            .lock()
-                            .unwrap()
-                            .get_tcp_acknowledgement(dst, tcp.get_src());
+                        let record_sequence = tx_locked.get_tcp_acknowledgement(dst, tcp.get_src());
 
                         // Check valid
                         if record_sequence == tcp.get_sequence() {
@@ -1301,7 +1297,7 @@ impl Upstreamer {
                         } else {
                             // Unordered packet or retransmission
                             // Send ACK0
-                            self.tx.lock().unwrap().send_tcp_ack_0(dst, tcp.get_src())?;
+                            tx_locked.send_tcp_ack_0(dst, tcp.get_src())?;
                         }
                     } else {
                         // ACK0
