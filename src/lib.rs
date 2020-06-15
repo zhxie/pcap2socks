@@ -79,7 +79,7 @@ pub fn interface(name: Option<String>) -> Option<Interface> {
 }
 
 /// Represents the size of cache.
-const CACHE_SIZE: usize = 8192;
+const CACHE_SIZE: usize = 65536;
 
 /// Represents the cache.
 pub struct Cacher {
@@ -100,53 +100,49 @@ impl Cacher {
         }
     }
 
-    /// Get the buffer.
-    pub fn get(&self) -> Option<(&[u8], Option<&[u8]>)> {
+    /// Get the buffer in the given size. The returned vector's length will be no more than the given size.
+    pub fn get(&self, size: usize) -> Option<Vec<u8>> {
         if self.size == 0 {
             return None;
         }
 
-        let buffer_a = &self.buffer[self.head..min(self.head + self.size, self.buffer.len())];
-        let mut buffer_b = None;
-        if self.head + self.size > self.buffer.len() {
-            buffer_b = Some(&self.buffer[0..self.size - (self.buffer.len() - self.head)]);
+        let length = min(self.size, size);
+        let mut vector = vec![0u8; length];
+
+        // From the head to the end of the buffer
+        let length_a = min(length, self.buffer.len() - self.head);
+        vector[0..length_a].copy_from_slice(&self.buffer[self.head..self.head + length_a]);
+
+        // From the begin of the buffer to the tail
+        let length_b = length - length_a;
+        if length_b > 0 {
+            vector[length_a..].copy_from_slice(&self.buffer[..length_b]);
         }
 
-        Some((buffer_a, buffer_b))
+        Some(vector)
     }
 
     /// Appends some bytes to the end of cache.
     pub fn append(&mut self, buffer: &[u8]) -> io::Result<()> {
         if buffer.len() > self.buffer.len() - self.size {
-            return Err(io::Error::new(io::ErrorKind::Other, "cache full"));
+            return Err(io::Error::new(io::ErrorKind::Other, "cache is full"));
         }
 
-        let mut n = 0;
-        loop {
-            let size;
-            if self.head + self.size < self.buffer.len() {
-                size = min(
-                    self.buffer.len() - (self.head + self.size),
-                    buffer.len() - n,
-                );
-
-                // Copy
-                &self.buffer[self.head + self.size..self.head + self.size + size]
-                    .copy_from_slice(&buffer[n..n + size]);
-            } else {
-                size = min(self.buffer.len() - self.size, buffer.len() - n);
-
-                // Copy
-                let buffer_size = self.buffer.len();
-                &self.buffer[self.head + self.size - buffer_size..]
-                    .copy_from_slice(&buffer[n..n + size]);
-            }
-
-            n += size;
-            if n >= buffer.len() {
-                break;
-            }
+        // From the tail to the end of the buffer
+        let mut length_a = 0;
+        if self.head + self.size < self.buffer.len() {
+            length_a = min(buffer.len(), self.buffer.len() - (self.head + self.size));
+            self.buffer[self.head + self.size..self.head + self.size + length_a]
+                .copy_from_slice(&buffer[..length_a]);
         }
+
+        // From the begin of the buffer to the head
+        let length_b = buffer.len() - length_a;
+        if length_b > 0 {
+            self.buffer[0..length_b].copy_from_slice(&buffer[length_a..]);
+        }
+
+        self.size += buffer.len();
 
         Ok(())
     }
@@ -185,8 +181,8 @@ pub struct Downstreamer {
     ipv4_identification_map: HashMap<Ipv4Addr, u16>,
     tcp_sequence_map: HashMap<(u16, SocketAddrV4), u32>,
     tcp_acknowledgement_map: HashMap<(u16, SocketAddrV4), u32>,
-    tcp_acknowledged_map: HashMap<(u16, SocketAddrV4), u32>,
-    tcp_duplicate_acknowledged_map: HashMap<(u16, SocketAddrV4), u8>,
+    tcp_duplicate_acknowledged_map: HashMap<(u16, SocketAddrV4), u32>,
+    tcp_duplicate_acknowledged_count_map: HashMap<(u16, SocketAddrV4), u8>,
     tcp_cache: HashMap<(u16, SocketAddrV4), Cacher>,
 }
 
@@ -207,8 +203,8 @@ impl Downstreamer {
             ipv4_identification_map: HashMap::new(),
             tcp_sequence_map: HashMap::new(),
             tcp_acknowledgement_map: HashMap::new(),
-            tcp_acknowledged_map: HashMap::new(),
             tcp_duplicate_acknowledged_map: HashMap::new(),
+            tcp_duplicate_acknowledged_count_map: HashMap::new(),
             tcp_cache: HashMap::new(),
         }
     }
@@ -239,28 +235,53 @@ impl Downstreamer {
             .tcp_acknowledgement_map
             .entry((src_port, dst))
             .or_insert(0);
-        *entry += n;
+        *entry = entry
+            .checked_add(n)
+            .unwrap_or_else(|| n - (u32::MAX - *entry));
     }
 
     /// Sets TCP acknowledgement of the source in an TCP connection.
-    pub fn set_tcp_acknowledged(&mut self, dst: SocketAddrV4, src_port: u16, ack: u32) {
+    pub fn set_tcp_acknowledged(
+        &mut self,
+        dst: SocketAddrV4,
+        src_port: u16,
+        ack: u32,
+        is_ack0: bool,
+    ) {
         let key = (src_port, dst);
 
-        let record_acknowledged = *self.tcp_acknowledged_map.get(&key).unwrap_or(&0);
-        if record_acknowledged != ack {
-            self.tcp_acknowledged_map.insert(key, ack);
-            self.tcp_duplicate_acknowledged_map.insert(key, 0);
-        } else {
-            let entry = self.tcp_duplicate_acknowledged_map.entry(key).or_insert(0);
-            *entry += 1;
+        if let Some(cache) = self.tcp_cache.get_mut(&key) {
+            cache.invalidate_to(ack);
+        }
+
+        if is_ack0 {
+            let record_acknowledged = *self.tcp_duplicate_acknowledged_map.get(&key).unwrap_or(&0);
+            if record_acknowledged != ack {
+                self.tcp_duplicate_acknowledged_map.insert(key, ack);
+                self.tcp_duplicate_acknowledged_count_map.insert(key, 0);
+            } else {
+                let entry = self
+                    .tcp_duplicate_acknowledged_count_map
+                    .entry(key)
+                    .or_insert(0);
+                *entry = entry.checked_add(1).unwrap_or(0);
+            }
         }
     }
 
     // Recycles unused cache.
     pub fn recycle(&mut self, dst: SocketAddrV4, src_port: u16) {
         let key = (src_port, dst);
+
         self.tcp_duplicate_acknowledged_map.remove(&key);
+        self.tcp_duplicate_acknowledged_count_map.remove(&key);
         self.tcp_cache.remove(&key);
+    }
+
+    fn increase_ipv4_identification(&mut self, ip_addr: Ipv4Addr) {
+        let entry = self.ipv4_identification_map.entry(ip_addr).or_insert(0);
+
+        *entry = entry.checked_add(1).unwrap_or(0);
     }
 
     /// Sends an ARP reply packet.
@@ -446,11 +467,7 @@ impl Downstreamer {
         }
 
         // Update IPv4 identification
-        let ipv4_identification_entry = self
-            .ipv4_identification_map
-            .entry(dst.ip().clone())
-            .or_insert(0);
-        *ipv4_identification_entry += 1;
+        self.increase_ipv4_identification(dst.ip().clone());
 
         Ok(())
     }
@@ -459,35 +476,41 @@ impl Downstreamer {
     pub fn resend_tcp_ack(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()> {
         let key = (src_port, dst);
 
-        if *self.tcp_duplicate_acknowledged_map.get(&key).unwrap_or(&0) >= 3 {
+        if *self
+            .tcp_duplicate_acknowledged_count_map
+            .get(&key)
+            .unwrap_or(&0)
+            >= 3
+        {
+            // Psuedo headers
+            let tcp = Tcp::new_ack(Ipv4Addr::UNSPECIFIED, Ipv4Addr::UNSPECIFIED, 0, 0, 0, 0);
+            let ipv4 = Ipv4::new(
+                0,
+                tcp.get_type(),
+                Ipv4Addr::UNSPECIFIED,
+                Ipv4Addr::UNSPECIFIED,
+            )
+            .unwrap();
+            let header_size = ipv4.get_size() + tcp.get_size();
+            let length = MSS as usize - header_size;
+
             // Resend
             let buffer = match self.tcp_cache.get(&key) {
-                Some(cache) => match cache.get() {
-                    Some((buffer_a, buffer_b)) => {
-                        let mut size = buffer_a.len();
-                        if let Some(buffer_b) = buffer_b {
-                            size += buffer_b.len();
-                        }
-
-                        let mut buffer = vec![0u8; size];
-                        buffer[..buffer_a.len()].copy_from_slice(buffer_a);
-                        if let Some(buffer_b) = buffer_b {
-                            buffer[buffer_a.len()..].copy_from_slice(buffer_b);
-                        }
-                        Some(buffer)
-                    }
+                Some(cache) => match cache.get(length) {
+                    Some(buffer) => Some(buffer),
                     None => None,
                 },
                 None => None,
             };
 
-            let sequence = *self.tcp_acknowledged_map.get(&key).unwrap_or(&0);
             if let Some(buffer) = buffer {
-                self.send_tcp_ack_with_sequence(dst, src_port, sequence, buffer.as_slice())?;
+                // Send
+                let sequence = *self.tcp_duplicate_acknowledged_map.get(&key).unwrap_or(&0);
+                self.send_tcp_ack_raw(dst, src_port, sequence, &buffer)?;
             }
-        }
 
-        self.tcp_duplicate_acknowledged_map.insert(key, 0);
+            self.tcp_duplicate_acknowledged_count_map.insert(key, 0);
+        }
 
         Ok(())
     }
@@ -537,7 +560,7 @@ impl Downstreamer {
                 let length = min(max_payload_size, payload.len() - i * max_payload_size);
                 let payload_current = &payload[i * max_payload_size..i * max_payload_size + length];
                 let sequence = *self.tcp_sequence_map.get(&key).or(Some(&0)).unwrap();
-                self.send_tcp_ack_with_sequence(dst, src_port, sequence, payload_current)?;
+                self.send_tcp_ack_raw(dst, src_port, sequence, payload_current)?;
 
                 // Append to cache
                 let cache = self
@@ -565,7 +588,7 @@ impl Downstreamer {
             }
         } else {
             // Send
-            self.send_tcp_ack_with_sequence(dst, src_port, sequence, payload)?;
+            self.send_tcp_ack_raw(dst, src_port, sequence, payload)?;
 
             // Append to cache
             let cache = self
@@ -582,6 +605,7 @@ impl Downstreamer {
                     "payload too big",
                 ));
             }
+
             *tcp_sequence_entry = (*tcp_sequence_entry)
                 .checked_add(payload.len() as u32)
                 .unwrap_or_else(|| payload.len() as u32 - (u32::MAX - *tcp_sequence_entry));
@@ -590,7 +614,7 @@ impl Downstreamer {
         Ok(())
     }
 
-    fn send_tcp_ack_with_sequence(
+    fn send_tcp_ack_raw(
         &mut self,
         dst: SocketAddrV4,
         src_port: u16,
@@ -632,90 +656,18 @@ impl Downstreamer {
         )
         .unwrap();
 
-        // Segmentation
-        let header_size = ipv4.get_size() + tcp.get_size();
-        let max_payload_size = MSS as usize - header_size;
-        if (MSS as usize) < header_size + payload.len() {
-            let mut i = 0;
-            loop {
-                // TCP
-                if i * max_payload_size > u32::MAX as usize {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "payload too big",
-                    ));
-                }
-                let sequence = sequence
-                    .checked_add((i * max_payload_size) as u32)
-                    .unwrap_or_else(|| (i * max_payload_size) as u32 - (u32::MAX - sequence));
-                let tcp = Tcp::new_ack(
-                    dst.ip().clone(),
-                    self.src_ip_addr,
-                    dst.port(),
-                    src_port,
-                    sequence,
-                    *self.tcp_acknowledgement_map.get(&key).unwrap(),
-                );
+        // Indicator
+        let indicator = Indicator::new(
+            Layers::Ethernet(ethernet),
+            Some(Layers::Ipv4(ipv4)),
+            Some(Layers::Tcp(tcp)),
+        );
 
-                // IPv4 identification
-                if !self.ipv4_identification_map.contains_key(dst.ip()) {
-                    self.ipv4_identification_map.insert(dst.ip().clone(), 0);
-                }
-                let ipv4_identification = *self.ipv4_identification_map.get(dst.ip()).unwrap();
+        // Send
+        self.send_with_payload(&indicator, payload)?;
 
-                // IPv4
-                let ipv4 = Ipv4::new(
-                    ipv4_identification,
-                    tcp.get_type(),
-                    dst.ip().clone(),
-                    self.src_ip_addr,
-                )
-                .unwrap();
-
-                // Indicator
-                let indicator = Indicator::new(
-                    Layers::Ethernet(ethernet.clone()),
-                    Some(Layers::Ipv4(ipv4)),
-                    Some(Layers::Tcp(tcp)),
-                );
-
-                // Send
-                let length = min(max_payload_size, payload.len() - i * max_payload_size);
-                self.send_with_payload(
-                    &indicator,
-                    &payload[i * max_payload_size..i * max_payload_size + length],
-                )?;
-
-                // Update IPv4 identification
-                let ipv4_identification_entry = self
-                    .ipv4_identification_map
-                    .entry(dst.ip().clone())
-                    .or_insert(0);
-                *ipv4_identification_entry += 1;
-
-                i += 1;
-                if max_payload_size * i >= payload.len() {
-                    break;
-                }
-            }
-        } else {
-            // Indicator
-            let indicator = Indicator::new(
-                Layers::Ethernet(ethernet),
-                Some(Layers::Ipv4(ipv4)),
-                Some(Layers::Tcp(tcp)),
-            );
-
-            // Send
-            self.send_with_payload(&indicator, payload)?;
-
-            // Update IPv4 identification
-            let ipv4_identification_entry = self
-                .ipv4_identification_map
-                .entry(dst.ip().clone())
-                .or_insert(0);
-            *ipv4_identification_entry += 1;
-        }
+        // Update IPv4 identification
+        self.increase_ipv4_identification(dst.ip().clone());
 
         Ok(())
     }
@@ -768,11 +720,7 @@ impl Downstreamer {
         match self.send(&indicator) {
             Ok(()) => {
                 // Update IPv4 identification
-                let ipv4_identification_entry = self
-                    .ipv4_identification_map
-                    .entry(dst.ip().clone())
-                    .or_insert(0);
-                *ipv4_identification_entry += 1;
+                self.increase_ipv4_identification(dst.ip().clone());
 
                 return Ok(());
             }
@@ -836,14 +784,10 @@ impl Downstreamer {
             Ok(()) => {
                 // Update TCP sequence
                 let tcp_sequence_entry = self.tcp_sequence_map.entry(key).or_insert(0);
-                *tcp_sequence_entry += 1;
+                *tcp_sequence_entry = tcp_sequence_entry.checked_add(1).unwrap_or(0);
 
                 // Update IPv4 identification
-                let ipv4_identification_entry = self
-                    .ipv4_identification_map
-                    .entry(dst.ip().clone())
-                    .or_insert(0);
-                *ipv4_identification_entry += 1;
+                self.increase_ipv4_identification(dst.ip().clone());
 
                 return Ok(());
             }
@@ -906,11 +850,7 @@ impl Downstreamer {
         match self.send(&indicator) {
             Ok(()) => {
                 // Update IPv4 identification
-                let ipv4_identification_entry = self
-                    .ipv4_identification_map
-                    .entry(dst.ip().clone())
-                    .or_insert(0);
-                *ipv4_identification_entry += 1;
+                self.increase_ipv4_identification(dst.ip().clone());
 
                 return Ok(());
             }
@@ -936,7 +876,7 @@ impl Downstreamer {
             dst.port(),
             src_port,
             *self.tcp_sequence_map.get(&key).or(Some(&0)).unwrap(),
-            *self.tcp_acknowledgement_map.get(&key).unwrap(),
+            0,
         );
 
         // IPv4 identification
@@ -973,11 +913,7 @@ impl Downstreamer {
         match self.send(&indicator) {
             Ok(()) => {
                 // Update IPv4 identification
-                let ipv4_identification_entry = self
-                    .ipv4_identification_map
-                    .entry(dst.ip().clone())
-                    .or_insert(0);
-                *ipv4_identification_entry += 1;
+                self.increase_ipv4_identification(dst.ip().clone());
 
                 return Ok(());
             }
@@ -1205,13 +1141,17 @@ impl Upstreamer {
                     // Send ACK/FIN
                     let mut tx_locked = self.tx.lock().unwrap();
                     tx_locked.recycle(dst, tcp.get_src());
-                    tx_locked.send_tcp_ack_fin(dst, tcp.get_src(), tcp.get_sequence() + 1)?;
+                    tx_locked.send_tcp_ack_fin(
+                        dst,
+                        tcp.get_src(),
+                        tcp.get_sequence().checked_add(1).unwrap_or(0),
+                    )?;
                 } else {
                     // Send RST
                     self.tx.lock().unwrap().send_tcp_rst(
                         dst,
                         tcp.get_src(),
-                        tcp.get_sequence() + 1,
+                        tcp.get_sequence().checked_add(1).unwrap_or(0),
                     )?;
                 }
             } else if tcp.is_syn() {
@@ -1233,7 +1173,7 @@ impl Upstreamer {
                         self.tx.lock().unwrap().send_tcp_ack_syn(
                             dst,
                             tcp.get_src(),
-                            tcp.get_sequence() + 1,
+                            tcp.get_sequence().checked_add(1).unwrap_or(0),
                         )?;
 
                         stream
@@ -1243,7 +1183,7 @@ impl Upstreamer {
                         self.tx.lock().unwrap().send_tcp_rst(
                             dst,
                             tcp.get_src(),
-                            tcp.get_sequence() + 1,
+                            tcp.get_sequence().checked_add(1).unwrap_or(0),
                         )?;
 
                         return Err(e);
@@ -1254,8 +1194,14 @@ impl Upstreamer {
             } else if tcp.is_ack() {
                 if is_alive {
                     if buffer.len() > indicator.get_size() {
+                        // ACK
                         let mut tx_locked = self.tx.lock().unwrap();
-
+                        tx_locked.set_tcp_acknowledged(
+                            dst,
+                            tcp.get_src(),
+                            tcp.get_acknowledgement(),
+                            false,
+                        );
                         // Check valid
                         let record_sequence = tx_locked.get_tcp_acknowledgement(dst, tcp.get_src());
                         if record_sequence == tcp.get_sequence() {
@@ -1274,7 +1220,7 @@ impl Upstreamer {
                                         (buffer.len() - indicator.get_size()) as u32,
                                     );
                                     // Send ACK0
-                                    // tx_locked.send_tcp_ack_0(dst, tcp.get_src())?;
+                                    tx_locked.send_tcp_ack_0(dst, tcp.get_src())?;
                                 }
                                 Err(e) => {
                                     // Send RST
@@ -1299,6 +1245,7 @@ impl Upstreamer {
                             dst,
                             tcp.get_src(),
                             tcp.get_acknowledgement(),
+                            true,
                         );
                         // Retransmit if necessary
                         tx_locked.resend_tcp_ack(dst, tcp.get_src())?;
@@ -1365,11 +1312,7 @@ impl Upstreamer {
             self.datagram_reverse_map[index] = src_port;
 
             // To next port
-            if self.next_udp_port == u16::MAX {
-                self.next_udp_port = 0;
-            } else {
-                self.next_udp_port = self.next_udp_port + 1;
-            }
+            self.next_udp_port = self.next_udp_port.checked_add(1).unwrap_or(0);
             if self.next_udp_port > INITIAL_PORT + (PORT_COUNT - 1) as u16
                 || self.next_udp_port == 0
             {
