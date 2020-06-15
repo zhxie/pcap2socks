@@ -196,26 +196,16 @@ impl Tcp {
 impl Display for Tcp {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         let mut flags = String::from("[");
-        flags = flags + "-";
-        if self.is_ack() {
-            flags = flags + "A";
-        } else {
-            flags = flags + ".";
-        }
-        flags = flags + "-";
-        if self.is_rst() {
-            flags = flags + "R";
-        } else {
-            flags = flags + ".";
-        }
         if self.is_syn() {
             flags = flags + "S";
-        } else {
-            flags = flags + ".";
+        }
+        if self.is_rst() {
+            flags = flags + "R";
         }
         if self.is_fin() {
             flags = flags + "F";
-        } else {
+        }
+        if self.is_ack() {
             flags = flags + ".";
         }
         flags = flags + "]";
