@@ -246,16 +246,11 @@ impl Downstreamer {
     pub fn set_tcp_acknowledged(&mut self, dst: SocketAddrV4, src_port: u16, ack: u32) {
         let key = (src_port, dst);
 
-        let sub_acknowledged = ack
-            .checked_sub(*self.tcp_acknowledged_map.get(&key).unwrap_or(&0))
-            .unwrap_or_else(|| ack + (u32::MAX - *self.tcp_acknowledged_map.get(&key).unwrap()));
-        if 0 < sub_acknowledged && sub_acknowledged <= u16::MAX as u32 {
+        let record_acknowledged = *self.tcp_acknowledged_map.get(&key).unwrap_or(&0);
+        if record_acknowledged != ack {
             self.tcp_acknowledged_map.insert(key, ack);
             self.tcp_duplicate_acknowledged_map.insert(key, 0);
-            if let Some(cache) = self.tcp_cache.get_mut(&key) {
-                cache.invalidate_to(ack);
-            }
-        } else if sub_acknowledged == 0 {
+        } else {
             let entry = self.tcp_duplicate_acknowledged_map.entry(key).or_insert(0);
             *entry += 1;
         }
@@ -540,16 +535,16 @@ impl Downstreamer {
             loop {
                 // Send
                 let length = min(max_payload_size, payload.len() - i * max_payload_size);
-                let payload = &payload[i * max_payload_size..i * max_payload_size + length];
+                let payload_current = &payload[i * max_payload_size..i * max_payload_size + length];
                 let sequence = *self.tcp_sequence_map.get(&key).or(Some(&0)).unwrap();
-                self.send_tcp_ack_with_sequence(dst, src_port, sequence, payload)?;
+                self.send_tcp_ack_with_sequence(dst, src_port, sequence, payload_current)?;
 
                 // Append to cache
                 let cache = self
                     .tcp_cache
                     .entry(key)
                     .or_insert_with(|| Cacher::new(sequence));
-                cache.append(payload)?;
+                cache.append(payload_current)?;
 
                 // Update TCP sequence
                 let tcp_sequence_entry = self.tcp_sequence_map.entry(key).or_insert(0);
@@ -1258,14 +1253,11 @@ impl Upstreamer {
                 self.streams.insert(key, stream);
             } else if tcp.is_ack() {
                 if is_alive {
-                    // Record ack
-                    let mut tx_locked = self.tx.lock().unwrap();
-                    tx_locked.set_tcp_acknowledged(dst, tcp.get_src(), tcp.get_acknowledgement());
-
                     if buffer.len() > indicator.get_size() {
-                        let record_sequence = tx_locked.get_tcp_acknowledgement(dst, tcp.get_src());
+                        let mut tx_locked = self.tx.lock().unwrap();
 
                         // Check valid
+                        let record_sequence = tx_locked.get_tcp_acknowledgement(dst, tcp.get_src());
                         if record_sequence == tcp.get_sequence() {
                             // Send
                             match self
@@ -1282,7 +1274,7 @@ impl Upstreamer {
                                         (buffer.len() - indicator.get_size()) as u32,
                                     );
                                     // Send ACK0
-                                    tx_locked.send_tcp_ack_0(dst, tcp.get_src())?;
+                                    // tx_locked.send_tcp_ack_0(dst, tcp.get_src())?;
                                 }
                                 Err(e) => {
                                     // Send RST
@@ -1301,6 +1293,13 @@ impl Upstreamer {
                         }
                     } else {
                         // ACK0
+                        // Record ack
+                        let mut tx_locked = self.tx.lock().unwrap();
+                        tx_locked.set_tcp_acknowledged(
+                            dst,
+                            tcp.get_src(),
+                            tcp.get_acknowledgement(),
+                        );
                         // Retransmit if necessary
                         tx_locked.resend_tcp_ack(dst, tcp.get_src())?;
                     }
