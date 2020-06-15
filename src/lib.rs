@@ -78,10 +78,96 @@ pub fn interface(name: Option<String>) -> Option<Interface> {
     Some(inters[0].clone())
 }
 
-/// Represents the initial UDP port for binding in local.
-const INITIAL_PORT: u16 = 32768;
-/// Represents the max limit of UDP port for binding in local.
-const PORT_COUNT: usize = 64;
+/// Represents the size of cache.
+const CACHE_SIZE: usize = 8192;
+
+/// Represents the cache.
+pub struct Cacher {
+    buffer: Vec<u8>,
+    sequence: u32,
+    head: usize,
+    size: usize,
+}
+
+impl Cacher {
+    /// Creates a new `Cacher`.
+    pub fn new(sequence: u32) -> Cacher {
+        Cacher {
+            buffer: vec![0; CACHE_SIZE],
+            sequence,
+            head: 0,
+            size: 0,
+        }
+    }
+
+    /// Get the buffer.
+    pub fn get(&self) -> Option<(&[u8], Option<&[u8]>)> {
+        if self.size == 0 {
+            return None;
+        }
+
+        let buffer_a = &self.buffer[self.head..min(self.head + self.size, self.buffer.len())];
+        let mut buffer_b = None;
+        if self.head + self.size > self.buffer.len() {
+            buffer_b = Some(&self.buffer[0..self.size - (self.buffer.len() - self.head)]);
+        }
+
+        Some((buffer_a, buffer_b))
+    }
+
+    /// Appends some bytes to the end of cache.
+    pub fn append(&mut self, buffer: &[u8]) -> io::Result<()> {
+        if buffer.len() > self.buffer.len() - self.size {
+            return Err(io::Error::new(io::ErrorKind::Other, "cache full"));
+        }
+
+        let mut n = 0;
+        loop {
+            let size;
+            if self.head + self.size < self.buffer.len() {
+                size = min(
+                    self.buffer.len() - (self.head + self.size),
+                    buffer.len() - n,
+                );
+
+                // Copy
+                &self.buffer[self.head + self.size..self.head + self.size + size]
+                    .copy_from_slice(&buffer[n..n + size]);
+            } else {
+                size = min(self.buffer.len() - self.size, buffer.len() - n);
+
+                // Copy
+                let buffer_size = self.buffer.len();
+                &self.buffer[self.head + self.size - buffer_size..]
+                    .copy_from_slice(&buffer[n..n + size]);
+            }
+
+            n += size;
+            if n >= buffer.len() {
+                break;
+            }
+        }
+
+        todo!();
+    }
+
+    // Invalidates cache to the certain sequence.
+    pub fn invalidate_to(&mut self, sequence: u32) {
+        let size = sequence
+            .checked_sub(self.sequence)
+            .unwrap_or_else(|| u32::MAX - self.sequence + sequence) as usize;
+
+        if size <= u16::MAX as usize {
+            self.sequence = sequence;
+            self.size = self.size.checked_sub(size).unwrap_or(0);
+            if self.size == 0 {
+                self.head = 0;
+            } else {
+                self.head = (self.head + (size % self.buffer.len())) % self.buffer.len();
+            }
+        }
+    }
+}
 
 /// Represents the wait time after a `TimedOut` `IoError`.
 const TIMEDOUT_WAIT: u64 = 20;
@@ -99,10 +185,13 @@ pub struct Downstreamer {
     ipv4_identification_map: HashMap<Ipv4Addr, u16>,
     tcp_sequence_map: HashMap<(u16, SocketAddrV4), u32>,
     tcp_acknowledgement_map: HashMap<(u16, SocketAddrV4), u32>,
+    tcp_acknowledged_map: HashMap<(u16, SocketAddrV4), u32>,
+    tcp_duplicate_acknowledged_map: HashMap<(u16, SocketAddrV4), u8>,
+    tcp_cache: HashMap<(u16, SocketAddrV4), Cacher>,
 }
 
 impl Downstreamer {
-    /// Construct a new `Downstreamer`.
+    /// Creates a new `Downstreamer`.
     pub fn new(
         tx: Sender,
         local_hardware_addr: HardwareAddr,
@@ -118,6 +207,9 @@ impl Downstreamer {
             ipv4_identification_map: HashMap::new(),
             tcp_sequence_map: HashMap::new(),
             tcp_acknowledgement_map: HashMap::new(),
+            tcp_acknowledged_map: HashMap::new(),
+            tcp_duplicate_acknowledged_map: HashMap::new(),
+            tcp_cache: HashMap::new(),
         }
     }
 
@@ -148,6 +240,32 @@ impl Downstreamer {
             .entry((src_port, dst))
             .or_insert(0);
         *entry += n;
+    }
+
+    /// Sets TCP acknowledgement of the source in an TCP connection.
+    pub fn set_tcp_acknowledged(&mut self, dst: SocketAddrV4, src_port: u16, ack: u32) {
+        let key = (src_port, dst);
+
+        let sub_acknowledged = ack
+            .checked_sub(*self.tcp_acknowledged_map.get(&key).unwrap_or(&0))
+            .unwrap_or_else(|| ack + (u32::MAX - *self.tcp_acknowledged_map.get(&key).unwrap()));
+        if 0 < sub_acknowledged && sub_acknowledged <= u16::MAX as u32 {
+            self.tcp_acknowledged_map.insert(key, ack);
+            self.tcp_duplicate_acknowledged_map.insert(key, 0);
+            if let Some(cache) = self.tcp_cache.get_mut(&key) {
+                cache.invalidate_to(ack);
+            }
+        } else if sub_acknowledged == 0 {
+            let entry = self.tcp_duplicate_acknowledged_map.entry(key).or_insert(0);
+            *entry += 1;
+        }
+    }
+
+    // Recycles unused cache.
+    pub fn recycle(&mut self, dst: SocketAddrV4, src_port: u16) {
+        let key = (src_port, dst);
+        self.tcp_duplicate_acknowledged_map.remove(&key);
+        self.tcp_cache.remove(&key);
     }
 
     /// Sends an ARP reply packet.
@@ -342,6 +460,43 @@ impl Downstreamer {
         Ok(())
     }
 
+    /// Resends TCP ACK packets from the given sequence if necessary.
+    pub fn resend_tcp_ack(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()> {
+        let key = (src_port, dst);
+
+        if *self.tcp_duplicate_acknowledged_map.get(&key).unwrap_or(&0) >= 3 {
+            // Resend
+            let buffer = match self.tcp_cache.get(&key) {
+                Some(cache) => match cache.get() {
+                    Some((buffer_a, buffer_b)) => {
+                        let mut size = buffer_a.len();
+                        if let Some(buffer_b) = buffer_b {
+                            size += buffer_b.len();
+                        }
+
+                        let mut buffer = vec![0u8; size];
+                        buffer[..buffer_a.len()].copy_from_slice(buffer_a);
+                        if let Some(buffer_b) = buffer_b {
+                            buffer[buffer_a.len()..].copy_from_slice(buffer_b);
+                        }
+                        Some(buffer)
+                    }
+                    None => None,
+                },
+                None => None,
+            };
+
+            let sequence = *self.tcp_acknowledged_map.get(&key).unwrap_or(&0);
+            if let Some(buffer) = buffer {
+                self.send_tcp_ack_with_sequence(dst, src_port, sequence, buffer.as_slice())?;
+            }
+        }
+
+        self.tcp_duplicate_acknowledged_map.insert(key, 0);
+
+        Ok(())
+    }
+
     /// Sends an TCP ACK packet.
     pub fn send_tcp_ack(
         &mut self,
@@ -352,12 +507,110 @@ impl Downstreamer {
         let key = (src_port, dst);
 
         // TCP
+        let sequence = *self.tcp_sequence_map.get(&key).or(Some(&0)).unwrap();
         let tcp = Tcp::new_ack(
             dst.ip().clone(),
             self.src_ip_addr,
             dst.port(),
             src_port,
-            *self.tcp_sequence_map.get(&key).or(Some(&0)).unwrap(),
+            sequence,
+            *self.tcp_acknowledgement_map.get(&key).unwrap(),
+        );
+
+        // IPv4 identification
+        if !self.ipv4_identification_map.contains_key(dst.ip()) {
+            self.ipv4_identification_map.insert(dst.ip().clone(), 0);
+        }
+        let ipv4_identification = *self.ipv4_identification_map.get(dst.ip()).unwrap();
+
+        // IPv4
+        let ipv4 = Ipv4::new(
+            ipv4_identification,
+            tcp.get_type(),
+            dst.ip().clone(),
+            self.src_ip_addr,
+        )
+        .unwrap();
+
+        // Segmentation
+        let header_size = ipv4.get_size() + tcp.get_size();
+        let max_payload_size = MSS as usize - header_size;
+        if (MSS as usize) < header_size + payload.len() {
+            let mut i = 0;
+            loop {
+                // Send
+                let length = min(max_payload_size, payload.len() - i * max_payload_size);
+                let payload = &payload[i * max_payload_size..i * max_payload_size + length];
+                let sequence = *self.tcp_sequence_map.get(&key).or(Some(&0)).unwrap();
+                self.send_tcp_ack_with_sequence(dst, src_port, sequence, payload)?;
+
+                // Append to cache
+                let cache = self
+                    .tcp_cache
+                    .entry(key)
+                    .or_insert_with(|| Cacher::new(sequence));
+                cache.append(payload)?;
+
+                // Update TCP sequence
+                let tcp_sequence_entry = self.tcp_sequence_map.entry(key).or_insert(0);
+                if length > u32::MAX as usize {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "payload too big",
+                    ));
+                }
+                *tcp_sequence_entry = (*tcp_sequence_entry)
+                    .checked_add(length as u32)
+                    .unwrap_or_else(|| length as u32 - (u32::MAX - *tcp_sequence_entry));
+
+                i += 1;
+                if max_payload_size * i >= payload.len() {
+                    break;
+                }
+            }
+        } else {
+            // Send
+            self.send_tcp_ack_with_sequence(dst, src_port, sequence, payload)?;
+
+            // Append to cache
+            let cache = self
+                .tcp_cache
+                .entry(key)
+                .or_insert_with(|| Cacher::new(sequence));
+            cache.append(payload)?;
+
+            // Update TCP sequence
+            let tcp_sequence_entry = self.tcp_sequence_map.entry(key).or_insert(0);
+            if payload.len() > u32::MAX as usize {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "payload too big",
+                ));
+            }
+            *tcp_sequence_entry = (*tcp_sequence_entry)
+                .checked_add(payload.len() as u32)
+                .unwrap_or_else(|| payload.len() as u32 - (u32::MAX - *tcp_sequence_entry));
+        }
+
+        Ok(())
+    }
+
+    fn send_tcp_ack_with_sequence(
+        &mut self,
+        dst: SocketAddrV4,
+        src_port: u16,
+        sequence: u32,
+        payload: &[u8],
+    ) -> io::Result<()> {
+        let key = (src_port, dst);
+
+        // TCP
+        let tcp = Tcp::new_ack(
+            dst.ip().clone(),
+            self.src_ip_addr,
+            dst.port(),
+            src_port,
+            sequence,
             *self.tcp_acknowledgement_map.get(&key).unwrap(),
         );
 
@@ -391,12 +644,21 @@ impl Downstreamer {
             let mut i = 0;
             loop {
                 // TCP
+                if i * max_payload_size > u32::MAX as usize {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "payload too big",
+                    ));
+                }
+                let sequence = sequence
+                    .checked_add((i * max_payload_size) as u32)
+                    .unwrap_or_else(|| (i * max_payload_size) as u32 - (u32::MAX - sequence));
                 let tcp = Tcp::new_ack(
                     dst.ip().clone(),
                     self.src_ip_addr,
                     dst.port(),
                     src_port,
-                    *self.tcp_sequence_map.get(&key).or(Some(&0)).unwrap(),
+                    sequence,
                     *self.tcp_acknowledgement_map.get(&key).unwrap(),
                 );
 
@@ -429,15 +691,6 @@ impl Downstreamer {
                     &payload[i * max_payload_size..i * max_payload_size + length],
                 )?;
 
-                // Update TCP sequence
-                let tcp_sequence_entry = self.tcp_sequence_map.entry(key).or_insert(0);
-                if length > u32::MAX as usize {
-                    return Err(io::Error::new(io::ErrorKind::Other, "length too big"));
-                }
-                *tcp_sequence_entry = (*tcp_sequence_entry)
-                    .checked_add(length as u32)
-                    .unwrap_or_else(|| length as u32 - (u32::MAX - *tcp_sequence_entry));
-
                 // Update IPv4 identification
                 let ipv4_identification_entry = self
                     .ipv4_identification_map
@@ -460,18 +713,6 @@ impl Downstreamer {
 
             // Send
             self.send_with_payload(&indicator, payload)?;
-
-            // Update TCP sequence
-            let tcp_sequence_entry = self.tcp_sequence_map.entry(key).or_insert(0);
-            if payload.len() > u32::MAX as usize {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "payload too big",
-                ));
-            }
-            *tcp_sequence_entry = (*tcp_sequence_entry)
-                .checked_add(payload.len() as u32)
-                .unwrap_or_else(|| payload.len() as u32 - (u32::MAX - *tcp_sequence_entry));
 
             // Update IPv4 identification
             let ipv4_identification_entry = self
@@ -781,6 +1022,11 @@ impl Downstreamer {
     }
 }
 
+/// Represents the initial UDP port for binding in local.
+const INITIAL_PORT: u16 = 32768;
+/// Represents the max limit of UDP port for binding in local.
+const PORT_COUNT: usize = 64;
+
 /// Represents the channel upstream traffic to the proxy of SOCKS or loopback to the source in pcap.
 pub struct Upstreamer {
     tx: Arc<Mutex<Downstreamer>>,
@@ -797,7 +1043,7 @@ pub struct Upstreamer {
 }
 
 impl Upstreamer {
-    /// Construct a new `Upstreamer`.
+    /// Creates a new `Upstreamer`.
     pub fn new(
         tx: Arc<Mutex<Downstreamer>>,
         src_ip_addr: Ipv4Addr,
@@ -951,23 +1197,20 @@ impl Upstreamer {
                 None => {}
             };
 
-            // TODO: Record window size
-
             if tcp.is_rst() {
                 if is_alive {
                     self.streams.get_mut(&key).unwrap().close();
                 }
             } else if tcp.is_fin() {
                 if is_alive {
-                    self.streams.get_mut(&key).unwrap().set_last_ack(true);
-                    self.streams.get_mut(&key).unwrap().close();
+                    let stream = self.streams.get_mut(&key).unwrap();
+                    stream.set_last_ack(true);
+                    stream.close();
 
                     // Send ACK/FIN
-                    self.tx.lock().unwrap().send_tcp_ack_fin(
-                        dst,
-                        tcp.get_src(),
-                        tcp.get_sequence() + 1,
-                    )?;
+                    let mut tx_locked = self.tx.lock().unwrap();
+                    tx_locked.recycle(dst, tcp.get_src());
+                    tx_locked.send_tcp_ack_fin(dst, tcp.get_src(), tcp.get_sequence() + 1)?;
                 } else {
                     // Send RST
                     self.tx.lock().unwrap().send_tcp_rst(
@@ -980,6 +1223,7 @@ impl Upstreamer {
                 // Close before reconnect
                 if is_alive {
                     self.streams.get_mut(&key).unwrap().close();
+                    self.tx.lock().unwrap().recycle(dst, tcp.get_src());
                 }
 
                 // Connect
@@ -1014,11 +1258,16 @@ impl Upstreamer {
                 self.streams.insert(key, stream);
             } else if tcp.is_ack() {
                 if is_alive {
+                    // Record ack
+                    let mut tx_locked = self.tx.lock().unwrap();
+                    tx_locked.set_tcp_acknowledged(dst, tcp.get_src(), tcp.get_acknowledgement());
+
                     if buffer.len() > indicator.get_size() {
-                        let record_sequence = self.tx.lock().unwrap().get_tcp_acknowledgement(
-                            SocketAddrV4::new(tcp.get_dst_ip_addr(), tcp.get_dst()),
-                            tcp.get_src(),
-                        );
+                        let record_sequence = self
+                            .tx
+                            .lock()
+                            .unwrap()
+                            .get_tcp_acknowledgement(dst, tcp.get_src());
 
                         // Check valid
                         if record_sequence == tcp.get_sequence() {
@@ -1031,17 +1280,17 @@ impl Upstreamer {
                             {
                                 Ok(_) => {
                                     // Update TCP acknowledgement
-                                    self.tx.lock().unwrap().add_tcp_acknowledgement(
+                                    tx_locked.add_tcp_acknowledgement(
                                         dst,
                                         tcp.get_src(),
                                         (buffer.len() - indicator.get_size()) as u32,
                                     );
                                     // Send ACK0
-                                    self.tx.lock().unwrap().send_tcp_ack_0(dst, tcp.get_src())?;
+                                    tx_locked.send_tcp_ack_0(dst, tcp.get_src())?;
                                 }
                                 Err(e) => {
                                     // Send RST
-                                    self.tx.lock().unwrap().send_tcp_rst(
+                                    tx_locked.send_tcp_rst(
                                         dst,
                                         tcp.get_src(),
                                         tcp.get_sequence(),
@@ -1054,6 +1303,10 @@ impl Upstreamer {
                             // Send ACK0
                             self.tx.lock().unwrap().send_tcp_ack_0(dst, tcp.get_src())?;
                         }
+                    } else {
+                        // ACK0
+                        // Retransmit if necessary
+                        tx_locked.resend_tcp_ack(dst, tcp.get_src())?;
                     }
                 } else {
                     if is_last_ack {
@@ -1144,7 +1397,7 @@ pub struct StreamWorker {
 }
 
 impl StreamWorker {
-    /// Construct a new `StreamWorker` and open it.
+    /// Creates a new `StreamWorker` and open it.
     pub fn new_and_open(
         tx: Arc<Mutex<Downstreamer>>,
         src_port: u16,
@@ -1177,7 +1430,6 @@ impl StreamWorker {
                             "TCP", dst, 0, size
                         );
 
-                        // TODO: Make a large array to cache and send according to the window size
                         // Send
                         if let Err(ref e) =
                             tx.lock()
@@ -1231,7 +1483,6 @@ impl StreamWorker {
 
     /// Set the state LAST_ACK of the worker.
     pub fn set_last_ack(&mut self, value: bool) {
-        self.close();
         self.is_last_ack = value;
     }
 
@@ -1270,7 +1521,7 @@ pub struct DatagramWorker {
 }
 
 impl DatagramWorker {
-    /// Construct a new `DatagramWorker` and open it.
+    /// Creates a new `DatagramWorker` and open it.
     pub fn new_and_open(
         tx: Arc<Mutex<Downstreamer>>,
         src_port: u16,
