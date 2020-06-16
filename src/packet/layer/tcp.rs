@@ -60,7 +60,28 @@ impl Tcp {
             sequence,
             acknowledgement,
         );
-        tcp.layer.flags = TcpFlags::ACK | TcpFlags::SYN;
+        tcp.layer.flags |= TcpFlags::SYN;
+        tcp
+    }
+
+    /// Creates a `Tcp` represents a TCP ACK/RST.
+    pub fn new_ack_rst(
+        src_ip_addr: Ipv4Addr,
+        dst_ip_addr: Ipv4Addr,
+        src: u16,
+        dst: u16,
+        sequence: u32,
+        acknowledgement: u32,
+    ) -> Tcp {
+        let mut tcp = Tcp::new_rst(
+            src_ip_addr,
+            dst_ip_addr,
+            src,
+            dst,
+            sequence,
+            acknowledgement,
+        );
+        tcp.layer.flags |= TcpFlags::ACK;
         tcp
     }
 
@@ -81,7 +102,7 @@ impl Tcp {
             sequence,
             acknowledgement,
         );
-        tcp.layer.flags = TcpFlags::ACK | TcpFlags::FIN;
+        tcp.layer.flags |= TcpFlags::FIN;
         tcp
     }
 
@@ -190,6 +211,11 @@ impl Tcp {
     /// Returns if the `Tcp` is a TCP reset or finish.
     pub fn is_rst_or_fin(&self) -> bool {
         self.is_rst() || self.is_fin()
+    }
+
+    // Returns if the `Tcp` has zero window.
+    pub fn is_zero_window(&self) -> bool {
+        self.layer.window == 0
     }
 }
 
