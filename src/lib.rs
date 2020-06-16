@@ -1185,30 +1185,31 @@ impl Upstreamer {
                     // ACK
                     self.update_tcp_acknowledgement(indicator);
                     if buffer.len() > indicator.get_size() {
-                        // Check valid
-                        let mut tx_locked = self.tx.lock().unwrap();
-                        let record_sequence = tx_locked.get_tcp_acknowledgement(dst, tcp.get_src());
-                        if record_sequence == tcp.get_sequence() {
+                        // Append to cache
+                        let cache = self
+                            .tcp_cache_map
+                            .entry(key)
+                            .or_insert_with(|| RandomCacher::new(tcp.get_sequence()));
+
+                        let payload =
+                            cache.append(&buffer[indicator.get_size()..], tcp.get_sequence())?;
+                        if let Some(payload) = payload {
                             // Send
-                            match self
-                                .streams
-                                .get_mut(&key)
-                                .unwrap()
-                                .send(&buffer[indicator.get_size()..])
-                            {
+                            match self.streams.get_mut(&key).unwrap().send(payload.as_slice()) {
                                 Ok(_) => {
                                     // Update TCP acknowledgement
+                                    let mut tx_locked = self.tx.lock().unwrap();
                                     tx_locked.add_tcp_acknowledgement(
                                         dst,
                                         tcp.get_src(),
-                                        (buffer.len() - indicator.get_size()) as u32,
+                                        payload.len() as u32,
                                     );
                                     // Send ACK0
                                     tx_locked.send_tcp_ack_0(dst, tcp.get_src())?;
                                 }
                                 Err(e) => {
                                     // Send RST
-                                    tx_locked.send_tcp_rst(
+                                    self.tx.lock().unwrap().send_tcp_rst(
                                         dst,
                                         tcp.get_src(),
                                         tcp.get_sequence(),
@@ -1216,10 +1217,6 @@ impl Upstreamer {
                                     return Err(e);
                                 }
                             }
-                        } else {
-                            // Unordered packet or retransmission
-                            // Send ACK0
-                            tx_locked.send_tcp_ack_0(dst, tcp.get_src())?;
                         }
                     } else {
                         // ACK0
