@@ -6,7 +6,7 @@ use std::ops::Bound::Included;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub mod args;
 pub mod packet;
@@ -82,10 +82,10 @@ pub fn interface(name: Option<String>) -> Option<Interface> {
 /// Represents the initial size of cache.
 const INITIAL_CACHE_SIZE: usize = 65536;
 /// Represents the max size of cache.
-const MAX_CACHE_SIZE: usize = 262144;
+const MAX_CACHE_SIZE: usize = 1048576;
 
 /// Represents the max distance of u32 values between packets in an u32 window.
-const MAX_U32_WINDOW_SIZE: usize = 524288;
+const MAX_U32_WINDOW_SIZE: usize = 4194304;
 
 /// Represents the linear cache.
 pub struct Cacher {
@@ -978,6 +978,7 @@ pub struct Upstreamer {
     streams: HashMap<(u16, SocketAddrV4), StreamWorker>,
     tcp_acknowledgement_map: HashMap<(u16, SocketAddrV4), u32>,
     tcp_acknowledgement_count_map: HashMap<(u16, SocketAddrV4), u8>,
+    tcp_retransmission_map: HashMap<(u16, SocketAddrV4), Instant>,
     tcp_cache_map: HashMap<(u16, SocketAddrV4), RandomCacher>,
     next_udp_port: u16,
     datagrams: Vec<Option<DatagramWorker>>,
@@ -1003,6 +1004,7 @@ impl Upstreamer {
             streams: HashMap::new(),
             tcp_acknowledgement_map: HashMap::new(),
             tcp_acknowledgement_count_map: HashMap::new(),
+            tcp_retransmission_map: HashMap::new(),
             tcp_cache_map: HashMap::new(),
             next_udp_port: INITIAL_PORT,
             datagrams: (0..PORT_COUNT).map(|_| None).collect(),
@@ -1221,22 +1223,25 @@ impl Upstreamer {
                             }
                         } else {
                             // ACK0
-                            if *self
-                                .tcp_acknowledgement_count_map
-                                .get(&(tcp.get_src(), dst))
-                                .unwrap_or(&0)
-                                > 3
+                            if *self.tcp_acknowledgement_count_map.get(&key).unwrap_or(&0) > 3
                                 && !tcp.is_zero_window()
                             {
-                                // Retransmit
-                                self.tx.lock().unwrap().resend_tcp_ack(
-                                    dst,
-                                    tcp.get_src(),
-                                    *self
-                                        .tcp_acknowledgement_map
-                                        .get(&(tcp.get_src(), dst))
-                                        .unwrap_or(&0),
-                                )?;
+                                let mut is_retransmit = true;
+                                if let Some(instant) = self.tcp_retransmission_map.get(&key) {
+                                    if instant.elapsed().as_millis() < 20 {
+                                        is_retransmit = false;
+                                    }
+                                }
+
+                                if is_retransmit {
+                                    // Retransmit
+                                    self.tx.lock().unwrap().resend_tcp_ack(
+                                        dst,
+                                        tcp.get_src(),
+                                        *self.tcp_acknowledgement_map.get(&key).unwrap_or(&0),
+                                    )?;
+                                    self.tcp_retransmission_map.insert(key, Instant::now());
+                                }
                             }
                         }
                     } else {
@@ -1362,15 +1367,17 @@ impl Upstreamer {
             let sub_acknowledgement = tcp
                 .get_acknowledgement()
                 .checked_sub(record_acknowledgement)
-                .unwrap_or_else(|| tcp.get_acknowledgement() - (u32::MAX - record_acknowledgement));
+                .unwrap_or_else(|| tcp.get_acknowledgement() + (u32::MAX - record_acknowledgement));
 
             if sub_acknowledgement == 0 {
                 let entry = self.tcp_acknowledgement_count_map.entry(key).or_insert(0);
 
                 *entry = entry.checked_add(1).unwrap_or(u8::MAX);
-            } else if sub_acknowledgement < u16::MAX as u32 {
+            } else if sub_acknowledgement < MAX_U32_WINDOW_SIZE as u32 {
                 self.tcp_acknowledgement_map
                     .insert(key, tcp.get_acknowledgement());
+
+                self.tcp_acknowledgement_count_map.insert(key, 0);
             }
         }
     }
