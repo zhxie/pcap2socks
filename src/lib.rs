@@ -1,4 +1,4 @@
-use std::cmp::min;
+use std::cmp::{max, min};
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, SocketAddrV4, TcpStream};
@@ -78,8 +78,8 @@ pub fn interface(name: Option<String>) -> Option<Interface> {
     Some(inters[0].clone())
 }
 
-/// Represents the size of cache.
-const CACHE_SIZE: usize = 65536;
+/// Represents the initial size of cache.
+const INITIAL_CACHE_SIZE: usize = 65536;
 
 /// Represents the cache.
 pub struct Cacher {
@@ -93,7 +93,7 @@ impl Cacher {
     /// Creates a new `Cacher`.
     pub fn new(sequence: u32) -> Cacher {
         Cacher {
-            buffer: vec![0; CACHE_SIZE],
+            buffer: vec![0; INITIAL_CACHE_SIZE],
             sequence,
             head: 0,
             size: 0,
@@ -123,12 +123,28 @@ impl Cacher {
     }
 
     /// Appends some bytes to the end of cache.
-    pub fn append(&mut self, buffer: &[u8]) -> io::Result<()> {
+    pub fn append(&mut self, buffer: &[u8]) {
         if buffer.len() > self.buffer.len() - self.size {
-            return Err(io::Error::new(io::ErrorKind::Other, "cache is full"));
+            let size = max(self.buffer.len() * 2, self.buffer.len() + buffer.len());
+            let mut new_buffer = vec![0u8; size];
+
+            trace!("extent cache to {} Bytes", size);
+
+            // From the head to the end of the buffer
+            let length_a = min(self.head + self.size, self.buffer.len());
+            new_buffer[..length_a].copy_from_slice(&self.buffer[length_a..]);
+
+            // From the begin of the buffer to the tail
+            let length_b = self.size - length_a;
+            if length_b > 0 {
+                new_buffer[length_a..length_a + length_b].copy_from_slice(&self.buffer[..length_b]);
+            }
+
+            self.buffer = new_buffer;
         }
 
         trace!("append {} Bytes to cache", buffer.len());
+        warn!("cache is extended: a congestion may be in your network");
 
         // From the tail to the end of the buffer
         let mut length_a = 0;
@@ -145,8 +161,6 @@ impl Cacher {
         }
 
         self.size += buffer.len();
-
-        Ok(())
     }
 
     // Invalidates cache to the certain sequence.
@@ -363,7 +377,7 @@ impl Downstreamer {
                 .tcp_cache
                 .entry(key)
                 .or_insert_with(|| Cacher::new(sequence));
-            cache.append(payload)?;
+            cache.append(payload);
 
             // Update TCP sequence
             let tcp_sequence_entry = self.tcp_sequence_map.entry(key).or_insert(0);
