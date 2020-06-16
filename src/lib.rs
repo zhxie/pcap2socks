@@ -285,7 +285,7 @@ impl Downstreamer {
 
     /// Removes a TCP cache.
     pub fn remove_cache(&mut self, dst: SocketAddrV4, src_port: u16) {
-        trace!("remove cache {} -> {}", dst, src_port,);
+        trace!("remove cache {} -> {}", dst, src_port);
         self.tcp_cache_map.remove(&(src_port, dst));
     }
 
@@ -1142,146 +1142,182 @@ impl Upstreamer {
                 None => {}
             };
 
+            // Diversion
+            enum TcpDiversion {
+                Ack,
+                Syn,
+                Rst,
+                Fin,
+                Unhandled,
+            }
+            let diversion;
             if tcp.is_rst() {
-                if is_alive {
-                    self.streams.get_mut(&key).unwrap().close();
-                }
-            } else if tcp.is_fin() {
-                if is_alive {
-                    let stream = self.streams.get_mut(&key).unwrap();
-                    stream.set_last_ack(true);
-                    stream.close();
-
-                    // Send ACK/FIN
-                    let mut tx_locked = self.tx.lock().unwrap();
-                    tx_locked.remove_cache(dst, tcp.get_src());
-                    tx_locked.send_tcp_ack_fin(
-                        dst,
-                        tcp.get_src(),
-                        tcp.get_sequence().checked_add(1).unwrap_or(0),
-                    )?;
+                diversion = TcpDiversion::Rst;
+            } else if tcp.is_ack_fin() {
+                if buffer.len() > indicator.get_size() {
+                    diversion = TcpDiversion::Ack;
                 } else {
-                    // Send RST
-                    self.tx.lock().unwrap().send_tcp_rst(
-                        dst,
-                        tcp.get_src(),
-                        tcp.get_sequence().checked_add(1).unwrap_or(0),
-                    )?;
+                    diversion = TcpDiversion::Fin;
                 }
             } else if tcp.is_syn() {
-                // Close before reconnect
-                if is_alive {
-                    self.streams.get_mut(&key).unwrap().close();
-                    self.tx.lock().unwrap().remove_cache(dst, tcp.get_src());
-                }
-
-                // Connect
-                let stream = match StreamWorker::new_and_open(
-                    self.get_tx(),
-                    tcp.get_src(),
-                    dst,
-                    self.remote,
-                ) {
-                    Ok(stream) => {
-                        // Send ACK/SYN
-                        self.tx.lock().unwrap().send_tcp_ack_syn(
-                            dst,
-                            tcp.get_src(),
-                            tcp.get_sequence().checked_add(1).unwrap_or(0),
-                        )?;
-
-                        stream
-                    }
-                    Err(e) => {
-                        // Send ACK/RST
-                        self.tx.lock().unwrap().send_tcp_ack_rst(
-                            dst,
-                            tcp.get_src(),
-                            tcp.get_sequence().checked_add(1).unwrap_or(0),
-                        )?;
-
-                        return Err(e);
-                    }
-                };
-
-                self.streams.insert(key, stream);
+                diversion = TcpDiversion::Syn;
+            } else if tcp.is_fin() {
+                diversion = TcpDiversion::Fin;
             } else if tcp.is_ack() {
-                if is_alive {
-                    // ACK
-                    self.update_tcp_acknowledgement(indicator);
-                    if buffer.len() > indicator.get_size() {
-                        // Append to cache
-                        let cache = self
-                            .tcp_cache_map
-                            .entry(key)
-                            .or_insert_with(|| RandomCacher::new(tcp.get_sequence()));
+                diversion = TcpDiversion::Ack;
+            } else {
+                diversion = TcpDiversion::Unhandled;
+            }
 
-                        let payload =
-                            cache.append(&buffer[indicator.get_size()..], tcp.get_sequence())?;
+            match diversion {
+                TcpDiversion::Ack => {
+                    if is_alive {
+                        // ACK
+                        self.update_tcp_acknowledgement(indicator);
+                        if buffer.len() > indicator.get_size() {
+                            // Append to cache
+                            let cache = self
+                                .tcp_cache_map
+                                .entry(key)
+                                .or_insert_with(|| RandomCacher::new(tcp.get_sequence()));
 
-                        match payload {
-                            Some(payload) => {
-                                // Send
-                                match self.streams.get_mut(&key).unwrap().send(payload.as_slice()) {
-                                    Ok(_) => {
-                                        // Update TCP acknowledgement
-                                        let mut tx_locked = self.tx.lock().unwrap();
-                                        tx_locked.add_tcp_acknowledgement(
-                                            dst,
-                                            tcp.get_src(),
-                                            payload.len() as u32,
-                                        );
-                                        // Send ACK0
-                                        // tx_locked.send_tcp_ack_0(dst, tcp.get_src())?;
-                                    }
-                                    Err(e) => {
-                                        // Send ACK/RST
-                                        self.tx.lock().unwrap().send_tcp_ack_rst(
-                                            dst,
-                                            tcp.get_src(),
-                                            tcp.get_sequence(),
-                                        )?;
-                                        return Err(e);
+                            let payload = cache
+                                .append(&buffer[indicator.get_size()..], tcp.get_sequence())?;
+                            match payload {
+                                Some(payload) => {
+                                    // Send
+                                    match self
+                                        .streams
+                                        .get_mut(&key)
+                                        .unwrap()
+                                        .send(payload.as_slice())
+                                    {
+                                        Ok(_) => {
+                                            // Update TCP acknowledgement
+                                            let mut tx_locked = self.tx.lock().unwrap();
+                                            tx_locked.add_tcp_acknowledgement(
+                                                dst,
+                                                tcp.get_src(),
+                                                payload.len() as u32,
+                                            );
+                                            // Send ACK0
+                                            // tx_locked.send_tcp_ack_0(dst, tcp.get_src())?;
+                                        }
+                                        Err(e) => {
+                                            // Send ACK/RST
+                                            self.tx.lock().unwrap().send_tcp_ack_rst(
+                                                dst,
+                                                tcp.get_src(),
+                                                tcp.get_sequence(),
+                                            )?;
+                                            return Err(e);
+                                        }
                                     }
                                 }
+                                None => {
+                                    // Send ACK0
+                                    self.tx.lock().unwrap().send_tcp_ack_0(dst, tcp.get_src())?;
+                                }
                             }
-                            None => {
-                                // Send ACK0
-                                self.tx.lock().unwrap().send_tcp_ack_0(dst, tcp.get_src())?;
+                        } else {
+                            // ACK0
+                            if *self
+                                .tcp_acknowledgement_count_map
+                                .get(&(tcp.get_src(), dst))
+                                .unwrap_or(&0)
+                                > 3
+                                && !tcp.is_zero_window()
+                            {
+                                // Retransmit
+                                self.tx.lock().unwrap().resend_tcp_ack(
+                                    dst,
+                                    tcp.get_src(),
+                                    *self
+                                        .tcp_acknowledgement_map
+                                        .get(&(tcp.get_src(), dst))
+                                        .unwrap_or(&0),
+                                )?;
                             }
                         }
                     } else {
-                        // ACK0
-                        if *self
-                            .tcp_acknowledgement_count_map
-                            .get(&(tcp.get_src(), dst))
-                            .unwrap_or(&0)
-                            > 3
-                            && !tcp.is_zero_window()
-                        {
-                            // Retransmit
-                            self.tx.lock().unwrap().resend_tcp_ack(
+                        if is_last_ack {
+                            self.streams.get_mut(&key).unwrap().set_last_ack(false);
+                        } else {
+                            // Send RST
+                            self.tx.lock().unwrap().send_tcp_rst(
                                 dst,
                                 tcp.get_src(),
-                                *self
-                                    .tcp_acknowledgement_map
-                                    .get(&(tcp.get_src(), dst))
-                                    .unwrap_or(&0),
+                                tcp.get_sequence(),
                             )?;
                         }
                     }
-                } else {
-                    if is_last_ack {
-                        self.streams.get_mut(&key).unwrap().set_last_ack(false);
+                }
+                TcpDiversion::Syn => {
+                    // Close before reconnect
+                    if is_alive {
+                        self.streams.get_mut(&key).unwrap().close();
+                        self.remove_cache(indicator);
+                        self.tx.lock().unwrap().remove_cache(dst, tcp.get_src());
+                    }
+                    // Connect
+                    let stream = match StreamWorker::new_and_open(
+                        self.get_tx(),
+                        tcp.get_src(),
+                        dst,
+                        self.remote,
+                    ) {
+                        Ok(stream) => {
+                            // Send ACK/SYN
+                            self.tx.lock().unwrap().send_tcp_ack_syn(
+                                dst,
+                                tcp.get_src(),
+                                tcp.get_sequence().checked_add(1).unwrap_or(0),
+                            )?;
+                            stream
+                        }
+                        Err(e) => {
+                            // Send ACK/RST
+                            self.tx.lock().unwrap().send_tcp_ack_rst(
+                                dst,
+                                tcp.get_src(),
+                                tcp.get_sequence().checked_add(1).unwrap_or(0),
+                            )?;
+                            return Err(e);
+                        }
+                    };
+
+                    self.streams.insert(key, stream);
+                }
+                TcpDiversion::Rst => {
+                    if is_alive {
+                        self.streams.get_mut(&key).unwrap().close();
+                    }
+                }
+                TcpDiversion::Fin => {
+                    if is_alive {
+                        let stream = self.streams.get_mut(&key).unwrap();
+                        stream.set_last_ack(true);
+                        stream.close();
+                        self.remove_cache(indicator);
+
+                        // Send ACK/FIN
+                        let mut tx_locked = self.tx.lock().unwrap();
+                        tx_locked.remove_cache(dst, tcp.get_src());
+                        tx_locked.send_tcp_ack_fin(
+                            dst,
+                            tcp.get_src(),
+                            tcp.get_sequence().checked_add(1).unwrap_or(0),
+                        )?;
                     } else {
                         // Send RST
                         self.tx.lock().unwrap().send_tcp_rst(
                             dst,
                             tcp.get_src(),
-                            tcp.get_sequence(),
+                            tcp.get_sequence().checked_add(1).unwrap_or(0),
                         )?;
                     }
                 }
+                TcpDiversion::Unhandled => {}
             }
         }
 
@@ -1331,11 +1367,21 @@ impl Upstreamer {
             if sub_acknowledgement == 0 {
                 let entry = self.tcp_acknowledgement_count_map.entry(key).or_insert(0);
 
-                *entry = entry.checked_add(1).unwrap_or(0);
+                *entry = entry.checked_add(1).unwrap_or(u8::MAX);
             } else if sub_acknowledgement < u16::MAX as u32 {
                 self.tcp_acknowledgement_map
                     .insert(key, tcp.get_acknowledgement());
             }
+        }
+    }
+
+    fn remove_cache(&mut self, indicator: &Indicator) {
+        if let Some(tcp) = indicator.get_tcp() {
+            let dst = SocketAddrV4::new(tcp.get_dst_ip_addr(), tcp.get_dst());
+            let key = (tcp.get_src(), dst);
+
+            trace!("remove cache {} -> {}", dst, tcp.get_dst());
+            self.tcp_cache_map.remove(&key);
         }
     }
 

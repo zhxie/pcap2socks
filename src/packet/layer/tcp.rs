@@ -193,6 +193,11 @@ impl Tcp {
         self.layer.flags & TcpFlags::ACK != 0
     }
 
+    /// Returns if the `Tcp` is a TCP acknowledgement and finish.
+    pub fn is_ack_fin(&self) -> bool {
+        self.is_ack() && self.is_fin()
+    }
+
     /// Returns if the `Tcp` is a TCP reset.
     pub fn is_rst(&self) -> bool {
         self.layer.flags & TcpFlags::RST != 0
