@@ -22,6 +22,7 @@ impl Tcp {
         dst: u16,
         sequence: u32,
         acknowledgement: u32,
+        window: u16,
     ) -> Tcp {
         Tcp {
             layer: tcp::Tcp {
@@ -32,7 +33,7 @@ impl Tcp {
                 data_offset: 5,
                 reserved: 0,
                 flags: TcpFlags::ACK,
-                window: 65535,
+                window,
                 checksum: 0,
                 urgent_ptr: 0,
                 options: vec![],
@@ -51,6 +52,7 @@ impl Tcp {
         dst: u16,
         sequence: u32,
         acknowledgement: u32,
+        window: u16,
     ) -> Tcp {
         let mut tcp = Tcp::new_ack(
             src_ip_addr,
@@ -59,6 +61,7 @@ impl Tcp {
             dst,
             sequence,
             acknowledgement,
+            window,
         );
         tcp.layer.flags |= TcpFlags::SYN;
         tcp
@@ -72,6 +75,7 @@ impl Tcp {
         dst: u16,
         sequence: u32,
         acknowledgement: u32,
+        window: u16,
     ) -> Tcp {
         let mut tcp = Tcp::new_rst(
             src_ip_addr,
@@ -80,6 +84,7 @@ impl Tcp {
             dst,
             sequence,
             acknowledgement,
+            window,
         );
         tcp.layer.flags |= TcpFlags::ACK;
         tcp
@@ -93,6 +98,7 @@ impl Tcp {
         dst: u16,
         sequence: u32,
         acknowledgement: u32,
+        window: u16,
     ) -> Tcp {
         let mut tcp = Tcp::new_ack(
             src_ip_addr,
@@ -101,6 +107,7 @@ impl Tcp {
             dst,
             sequence,
             acknowledgement,
+            window,
         );
         tcp.layer.flags |= TcpFlags::FIN;
         tcp
@@ -114,6 +121,7 @@ impl Tcp {
         dst: u16,
         sequence: u32,
         acknowledgement: u32,
+        window: u16,
     ) -> Tcp {
         let mut tcp = Tcp::new_ack(
             src_ip_addr,
@@ -122,6 +130,7 @@ impl Tcp {
             dst,
             sequence,
             acknowledgement,
+            window,
         );
         tcp.layer.flags = TcpFlags::RST;
         tcp

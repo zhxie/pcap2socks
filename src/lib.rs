@@ -89,7 +89,7 @@ const TIMEDOUT_WAIT: u64 = 20;
 /// Represents the MSS of packet sending from local to source, this will become an option in the future.
 const MSS: u32 = 1200;
 
-// TODO: implement rwnd & swnd
+// TODO: implement swnd and make 2 cache for sent and pending
 /// Represents the channel downstream traffic to the source in pcap.
 pub struct Downstreamer {
     tx: Sender,
@@ -100,6 +100,7 @@ pub struct Downstreamer {
     ipv4_identification_map: HashMap<Ipv4Addr, u16>,
     tcp_sequence_map: HashMap<(u16, SocketAddrV4), u32>,
     tcp_acknowledgement_map: HashMap<(u16, SocketAddrV4), u32>,
+    tcp_window_map: HashMap<(u16, SocketAddrV4), u16>,
     tcp_cache_map: HashMap<(u16, SocketAddrV4), Cacher>,
 }
 
@@ -120,6 +121,7 @@ impl Downstreamer {
             ipv4_identification_map: HashMap::new(),
             tcp_sequence_map: HashMap::new(),
             tcp_acknowledgement_map: HashMap::new(),
+            tcp_window_map: HashMap::new(),
             tcp_cache_map: HashMap::new(),
         }
     }
@@ -136,15 +138,18 @@ impl Downstreamer {
         self.local_ip_addr = ip_addr;
     }
 
-    /// Get TCP acknowledgement to an TCP connection.
-    pub fn get_tcp_acknowledgement(&mut self, dst: SocketAddrV4, src_port: u16) -> u32 {
-        *self
-            .tcp_acknowledgement_map
-            .get(&(src_port, dst))
-            .unwrap_or(&0)
+    fn increase_ipv4_identification(&mut self, ip_addr: Ipv4Addr) {
+        let entry = self.ipv4_identification_map.entry(ip_addr).or_insert(0);
+
+        *entry = entry.checked_add(1).unwrap_or(0);
     }
 
-    /// Adds TCP acknowledgement to an TCP connection.
+    fn set_tcp_acknowledgement(&mut self, dst: SocketAddrV4, src_port: u16, sequence: u32) {
+        self.tcp_acknowledgement_map
+            .insert((src_port, dst), sequence);
+    }
+
+    /// Adds acknowledgement to a TCP connection.
     pub fn add_tcp_acknowledgement(&mut self, dst: SocketAddrV4, src_port: u16, n: u32) {
         let entry = self
             .tcp_acknowledgement_map
@@ -153,6 +158,20 @@ impl Downstreamer {
         *entry = entry
             .checked_add(n)
             .unwrap_or_else(|| n - (u32::MAX - *entry));
+    }
+
+    /// Sets the window size of a TCP connection.
+    pub fn set_tcp_window(&mut self, dst: SocketAddrV4, src_port: u16, window: u16) {
+        self.tcp_window_map.insert((src_port, dst), window);
+    }
+
+    /// Get the size of the cache of a TCP connection.
+    pub fn get_cache_size(&mut self, dst: SocketAddrV4, src_port: u16) -> usize {
+        if let Some(cache) = self.tcp_cache_map.get(&(src_port, dst)) {
+            return cache.get_size();
+        }
+
+        0
     }
 
     /// Invalidates TCP cache to the given sequence.
@@ -168,16 +187,15 @@ impl Downstreamer {
         }
     }
 
-    /// Removes a TCP cache.
-    pub fn remove_cache(&mut self, dst: SocketAddrV4, src_port: u16) {
-        trace!("remove cache {} -> {}", dst, src_port);
-        self.tcp_cache_map.remove(&(src_port, dst));
-    }
+    /// Removes all information related to a TCP connection.
+    pub fn remove(&mut self, dst: SocketAddrV4, src_port: u16) {
+        let key = (src_port, dst);
 
-    fn increase_ipv4_identification(&mut self, ip_addr: Ipv4Addr) {
-        let entry = self.ipv4_identification_map.entry(ip_addr).or_insert(0);
-
-        *entry = entry.checked_add(1).unwrap_or(0);
+        trace!("remove {} -> {}", dst, src_port);
+        self.tcp_sequence_map.remove(&key);
+        self.tcp_acknowledgement_map.remove(&key);
+        self.tcp_window_map.remove(&key);
+        self.tcp_cache_map.remove(&key);
     }
 
     /// Sends an ARP reply packet.
@@ -205,46 +223,34 @@ impl Downstreamer {
         self.send(&indicator)
     }
 
-    /// TODO: update sequence if sequence is larger
-    /// Resends TCP ACK packets from the given sequence if necessary.
-    pub fn resend_tcp_ack(
-        &mut self,
-        dst: SocketAddrV4,
-        src_port: u16,
-        sequence: u32,
-    ) -> io::Result<()> {
+    /// Sends TCP ACK packets from the cache from the given sequence.
+    pub fn send_tcp_ack_from_cache(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()> {
         let key = (src_port, dst);
 
-        // Psuedo headers
-        let tcp = Tcp::new_ack(Ipv4Addr::UNSPECIFIED, Ipv4Addr::UNSPECIFIED, 0, 0, 0, 0);
-        let ipv4 = Ipv4::new(
-            0,
-            tcp.get_type(),
-            Ipv4Addr::UNSPECIFIED,
-            Ipv4Addr::UNSPECIFIED,
-        )
-        .unwrap();
-
         // Resend
-        let header_size = ipv4.get_size() + tcp.get_size();
-        let length = MSS as usize - header_size;
-        let buffer = match self.tcp_cache_map.get(&key) {
-            Some(cache) => match cache.get(length) {
-                Some(buffer) => Some(buffer),
-                None => None,
-            },
-            None => None,
+        let payload;
+        let sequence;
+        match self.tcp_cache_map.get(&key) {
+            Some(cache) => {
+                match cache.get_all() {
+                    Ok(buffer) => {
+                        payload = buffer;
+                    }
+                    Err(e) => return Err(e),
+                }
+                sequence = cache.get_sequence();
+            }
+            None => return Ok(()),
         };
 
-        if let Some(buffer) = buffer {
-            // Send
-            self.send_tcp_ack_raw(dst, src_port, sequence, &buffer)?;
+        if payload.len() > 0 {
+            return self.send_tcp_ack_raw(dst, src_port, sequence, payload.as_slice());
         }
 
         Ok(())
     }
 
-    /// Sends an TCP ACK packet.
+    /// Sends TCP ACK packets.
     pub fn send_tcp_ack(
         &mut self,
         dst: SocketAddrV4,
@@ -253,8 +259,30 @@ impl Downstreamer {
     ) -> io::Result<()> {
         let key = (src_port, dst);
 
+        // TCP sequence
+        let sequence = *self.tcp_sequence_map.get(&key).unwrap_or(&0);
+
+        // Append to cache
+        let cache = self
+            .tcp_cache_map
+            .entry(key)
+            .or_insert_with(|| Cacher::new(sequence));
+        cache.append(payload)?;
+
+        self.send_tcp_ack_raw(dst, src_port, sequence, payload)
+    }
+
+    fn send_tcp_ack_raw(
+        &mut self,
+        dst: SocketAddrV4,
+        src_port: u16,
+        sequence: u32,
+        payload: &[u8],
+    ) -> io::Result<()> {
+        let key = (src_port, dst);
+
         // Psuedo headers
-        let tcp = Tcp::new_ack(Ipv4Addr::UNSPECIFIED, Ipv4Addr::UNSPECIFIED, 0, 0, 0, 0);
+        let tcp = Tcp::new_ack(Ipv4Addr::UNSPECIFIED, Ipv4Addr::UNSPECIFIED, 0, 0, 0, 0, 0);
         let ipv4 = Ipv4::new(
             0,
             tcp.get_type(),
@@ -268,58 +296,42 @@ impl Downstreamer {
         let max_payload_size = MSS as usize - header_size;
         let mut i = 0;
         while max_payload_size * i < payload.len() {
-            // Send
             let length = min(max_payload_size, payload.len() - i * max_payload_size);
             let payload = &payload[i * max_payload_size..i * max_payload_size + length];
-            let sequence = *self.tcp_sequence_map.get(&key).or(Some(&0)).unwrap();
-            self.send_tcp_ack_raw(dst, src_port, sequence, payload)?;
+            let sequence = sequence
+                .checked_add((i * max_payload_size) as u32)
+                .unwrap_or_else(|| (i * max_payload_size) as u32 - (u32::MAX - sequence));
 
-            // Append to cache
-            let cache = self
-                .tcp_cache_map
-                .entry(key)
-                .or_insert_with(|| Cacher::new(sequence));
-            cache.append(payload)?;
+            // TCP
+            let tcp = Tcp::new_ack(
+                dst.ip().clone(),
+                self.src_ip_addr,
+                dst.port(),
+                src_port,
+                sequence,
+                *self.tcp_acknowledgement_map.get(&key).unwrap_or(&0),
+                *self.tcp_window_map.get(&key).unwrap_or(&65535),
+            );
+
+            // Send
+            self.send_ipv4_with_transport(Layers::Tcp(tcp), Some(payload))?;
 
             // Update TCP sequence
-            let tcp_sequence_entry = self.tcp_sequence_map.entry(key).or_insert(0);
-            if length > u32::MAX as usize {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "payload too big",
-                ));
-            }
-            *tcp_sequence_entry = (*tcp_sequence_entry)
+            let next_sequence = sequence
                 .checked_add(length as u32)
-                .unwrap_or_else(|| length as u32 - (u32::MAX - *tcp_sequence_entry));
+                .unwrap_or_else(|| length as u32 - (u32::MAX - sequence));
+            let record_sequence = *self.tcp_sequence_map.get(&key).unwrap_or(&0);
+            let sub_sequence = next_sequence
+                .checked_sub(record_sequence)
+                .unwrap_or_else(|| next_sequence + (u32::MAX - record_sequence));
+            if (sub_sequence as usize) < MAX_U32_WINDOW_SIZE {
+                self.tcp_sequence_map.insert(key, next_sequence);
+            }
 
-            i += 1;
+            i = i + 1;
         }
 
         Ok(())
-    }
-
-    fn send_tcp_ack_raw(
-        &mut self,
-        dst: SocketAddrV4,
-        src_port: u16,
-        sequence: u32,
-        payload: &[u8],
-    ) -> io::Result<()> {
-        let key = (src_port, dst);
-
-        // TCP
-        let tcp = Tcp::new_ack(
-            dst.ip().clone(),
-            self.src_ip_addr,
-            dst.port(),
-            src_port,
-            sequence,
-            *self.tcp_acknowledgement_map.get(&key).unwrap(),
-        );
-
-        // Send
-        self.send_ipv4_with_transport(Layers::Tcp(tcp), Some(payload))
     }
 
     /// Sends an TCP ACK packet without payload.
@@ -332,8 +344,9 @@ impl Downstreamer {
             self.src_ip_addr,
             dst.port(),
             src_port,
-            *self.tcp_sequence_map.get(&key).or(Some(&0)).unwrap(),
-            *self.tcp_acknowledgement_map.get(&key).unwrap(),
+            *self.tcp_sequence_map.get(&key).unwrap_or(&0),
+            *self.tcp_acknowledgement_map.get(&key).unwrap_or(&0),
+            *self.tcp_window_map.get(&key).unwrap_or(&65535),
         );
 
         // Send
@@ -341,15 +354,8 @@ impl Downstreamer {
     }
 
     /// Sends an TCP ACK/SYN packet.
-    pub fn send_tcp_ack_syn(
-        &mut self,
-        dst: SocketAddrV4,
-        src_port: u16,
-        sequence: u32,
-    ) -> io::Result<()> {
-        // TCP acknowledgement
+    pub fn send_tcp_ack_syn(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()> {
         let key = (src_port, dst);
-        self.tcp_acknowledgement_map.insert(key, sequence);
 
         // TCP
         let tcp = Tcp::new_ack_syn(
@@ -357,8 +363,9 @@ impl Downstreamer {
             self.src_ip_addr,
             dst.port(),
             src_port,
-            *self.tcp_sequence_map.get(&key).or(Some(&0)).unwrap(),
-            *self.tcp_acknowledgement_map.get(&key).unwrap(),
+            *self.tcp_sequence_map.get(&key).unwrap_or(&0),
+            *self.tcp_acknowledgement_map.get(&key).unwrap_or(&0),
+            *self.tcp_window_map.get(&key).unwrap_or(&65535),
         );
 
         // Send
@@ -372,15 +379,8 @@ impl Downstreamer {
     }
 
     /// Sends an TCP ACK/RST packet.
-    pub fn send_tcp_ack_rst(
-        &mut self,
-        dst: SocketAddrV4,
-        src_port: u16,
-        sequence: u32,
-    ) -> io::Result<()> {
-        // TCP acknowledgement
+    pub fn send_tcp_ack_rst(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()> {
         let key = (src_port, dst);
-        self.tcp_acknowledgement_map.insert(key, sequence);
 
         // TCP
         let tcp = Tcp::new_ack_rst(
@@ -388,8 +388,9 @@ impl Downstreamer {
             self.src_ip_addr,
             dst.port(),
             src_port,
-            *self.tcp_sequence_map.get(&key).or(Some(&0)).unwrap(),
-            *self.tcp_acknowledgement_map.get(&key).unwrap(),
+            *self.tcp_sequence_map.get(&key).unwrap_or(&0),
+            *self.tcp_acknowledgement_map.get(&key).unwrap_or(&0),
+            *self.tcp_window_map.get(&key).unwrap_or(&65535),
         );
 
         // Send
@@ -397,15 +398,8 @@ impl Downstreamer {
     }
 
     /// Sends an TCP ACK/FIN packet.
-    pub fn send_tcp_ack_fin(
-        &mut self,
-        dst: SocketAddrV4,
-        src_port: u16,
-        sequence: u32,
-    ) -> io::Result<()> {
-        // TCP acknowledgement
+    pub fn send_tcp_ack_fin(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()> {
         let key = (src_port, dst);
-        self.tcp_acknowledgement_map.insert(key, sequence);
 
         // TCP
         let tcp = Tcp::new_ack_fin(
@@ -413,8 +407,9 @@ impl Downstreamer {
             self.src_ip_addr,
             dst.port(),
             src_port,
-            *self.tcp_sequence_map.get(&key).or(Some(&0)).unwrap(),
-            *self.tcp_acknowledgement_map.get(&key).unwrap(),
+            *self.tcp_sequence_map.get(&key).unwrap_or(&0),
+            *self.tcp_acknowledgement_map.get(&key).unwrap_or(&0),
+            *self.tcp_window_map.get(&key).unwrap_or(&65535),
         );
 
         // Send
@@ -422,15 +417,8 @@ impl Downstreamer {
     }
 
     /// Sends an TCP RST packet.
-    pub fn send_tcp_rst(
-        &mut self,
-        dst: SocketAddrV4,
-        src_port: u16,
-        sequence: u32,
-    ) -> io::Result<()> {
-        // TCP acknowledgement
+    pub fn send_tcp_rst(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()> {
         let key = (src_port, dst);
-        self.tcp_acknowledgement_map.insert(key, sequence);
 
         // TCP
         let tcp = Tcp::new_rst(
@@ -438,15 +426,16 @@ impl Downstreamer {
             self.src_ip_addr,
             dst.port(),
             src_port,
-            *self.tcp_sequence_map.get(&key).or(Some(&0)).unwrap(),
+            *self.tcp_sequence_map.get(&key).unwrap_or(&0),
             0,
+            *self.tcp_window_map.get(&key).unwrap_or(&65535),
         );
 
         // Send
         self.send_ipv4_with_transport(Layers::Tcp(tcp), None)
     }
 
-    /// Sends an UDP packet.
+    /// Sends UDP packets.
     pub fn send_udp(&mut self, dst: SocketAddrV4, src_port: u16, payload: &[u8]) -> io::Result<()> {
         // Psuedo headers
         let udp = Udp::new(Ipv4Addr::UNSPECIFIED, Ipv4Addr::UNSPECIFIED, 0, 0);
@@ -480,12 +469,6 @@ impl Downstreamer {
             }
 
             // Send
-            if n / 8 > u16::MAX as usize {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "payload too big",
-                ));
-            }
             if n == 0 {
                 if remain > 0 {
                     // UDP
@@ -526,12 +509,7 @@ impl Downstreamer {
         Ok(())
     }
 
-    pub fn send_udp_raw(
-        &mut self,
-        dst: SocketAddrV4,
-        src_port: u16,
-        payload: &[u8],
-    ) -> io::Result<()> {
+    fn send_udp_raw(&mut self, dst: SocketAddrV4, src_port: u16, payload: &[u8]) -> io::Result<()> {
         // UDP
         let udp = Udp::new(dst.ip().clone(), self.src_ip_addr, dst.port(), src_port);
 
@@ -546,15 +524,9 @@ impl Downstreamer {
         transport: Option<Layers>,
         payload: &[u8],
     ) -> io::Result<()> {
-        // IPv4 identification
-        if !self.ipv4_identification_map.contains_key(&dst_ip_addr) {
-            self.ipv4_identification_map.insert(dst_ip_addr, 0);
-        }
-        let ipv4_identification = *self.ipv4_identification_map.get(&dst_ip_addr).unwrap();
-
         // IPv4
         let ipv4 = Ipv4::new_more_fragment(
-            ipv4_identification,
+            *self.ipv4_identification_map.get(&dst_ip_addr).unwrap_or(&0),
             t,
             fragment_offset,
             dst_ip_addr,
@@ -573,15 +545,9 @@ impl Downstreamer {
         fragment_offset: u16,
         payload: &[u8],
     ) -> io::Result<()> {
-        // IPv4 identification
-        if !self.ipv4_identification_map.contains_key(&dst_ip_addr) {
-            self.ipv4_identification_map.insert(dst_ip_addr, 0);
-        }
-        let ipv4_identification = *self.ipv4_identification_map.get(&dst_ip_addr).unwrap();
-
         // IPv4
         let ipv4 = Ipv4::new_last_fragment(
-            ipv4_identification,
+            *self.ipv4_identification_map.get(&dst_ip_addr).unwrap_or(&0),
             t,
             fragment_offset,
             dst_ip_addr,
@@ -609,15 +575,9 @@ impl Downstreamer {
             _ => unreachable!(),
         };
 
-        // IPv4 identification
-        if !self.ipv4_identification_map.contains_key(&dst_ip_addr) {
-            self.ipv4_identification_map.insert(dst_ip_addr, 0);
-        }
-        let ipv4_identification = *self.ipv4_identification_map.get(&dst_ip_addr).unwrap();
-
         // IPv4
         let ipv4 = Ipv4::new(
-            ipv4_identification,
+            *self.ipv4_identification_map.get(&dst_ip_addr).unwrap_or(&0),
             transport.get_type(),
             dst_ip_addr,
             self.src_ip_addr,
@@ -703,8 +663,8 @@ pub struct Upstreamer {
     remote: SocketAddrV4,
     streams: HashMap<(u16, SocketAddrV4), StreamWorker>,
     tcp_acknowledgement_map: HashMap<(u16, SocketAddrV4), u32>,
-    tcp_acknowledgement_count_map: HashMap<(u16, SocketAddrV4), u8>,
-    tcp_retransmission_map: HashMap<(u16, SocketAddrV4), Instant>,
+    tcp_duplicate_map: HashMap<(u16, SocketAddrV4), usize>,
+    tcp_last_retransmission_map: HashMap<(u16, SocketAddrV4), Instant>,
     tcp_cache_map: HashMap<(u16, SocketAddrV4), RandomCacher>,
     next_udp_port: u16,
     datagrams: Vec<Option<DatagramWorker>>,
@@ -729,8 +689,8 @@ impl Upstreamer {
             remote,
             streams: HashMap::new(),
             tcp_acknowledgement_map: HashMap::new(),
-            tcp_acknowledgement_count_map: HashMap::new(),
-            tcp_retransmission_map: HashMap::new(),
+            tcp_duplicate_map: HashMap::new(),
+            tcp_last_retransmission_map: HashMap::new(),
             tcp_cache_map: HashMap::new(),
             next_udp_port: INITIAL_PORT,
             datagrams: (0..PORT_COUNT).map(|_| None).collect(),
@@ -759,12 +719,12 @@ impl Upstreamer {
                             match t {
                                 LayerTypes::Arp => {
                                     if let Err(ref e) = self.handle_arp(indicator) {
-                                        warn!("handle {}: {}", t, e);
+                                        warn!("handle {}: {}", indicator.brief(), e);
                                     }
                                 }
                                 LayerTypes::Ipv4 => {
                                     if let Err(ref e) = self.handle_ipv4(indicator, frame) {
-                                        warn!("handle {}: {}", t, e);
+                                        warn!("handle {}: {}", indicator.brief(), e);
                                     }
                                 }
                                 _ => unreachable!(),
@@ -858,199 +818,226 @@ impl Upstreamer {
 
     fn handle_tcp(&mut self, indicator: &Indicator, buffer: &[u8]) -> io::Result<()> {
         if let Some(ref tcp) = indicator.get_tcp() {
+            if tcp.is_rst() {
+                self.handle_tcp_rst(indicator);
+            } else if tcp.is_syn() {
+                return self.handle_tcp_syn(indicator);
+            } else if tcp.is_ack() {
+                return self.handle_tcp_ack(indicator, buffer);
+            } else if tcp.is_fin() {
+                // Pure TCP FIN
+                return self.handle_tcp_fin(indicator);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn handle_tcp_ack(&mut self, indicator: &Indicator, buffer: &[u8]) -> io::Result<()> {
+        if let Some(tcp) = indicator.get_tcp() {
             let dst = SocketAddrV4::new(tcp.get_dst_ip_addr(), tcp.get_dst());
             let key = (tcp.get_src(), dst);
-            let mut is_alive = false;
-            let mut is_last_ack = false;
-            match self.streams.get(&key) {
-                Some(ref stream) => {
-                    is_alive = !stream.is_closed();
-                    is_last_ack = stream.is_last_ack();
-                }
-                None => {}
+            let is_exist = self.streams.get(&key).is_some();
+            let is_alive = match self.streams.get(&key) {
+                Some(ref stream) => !stream.is_closed(),
+                None => false,
             };
 
-            // Diversion
-            enum TcpDiversion {
-                Ack,
-                Syn,
-                Rst,
-                Fin,
-                Unhandled,
-            }
-            let diversion;
-            if tcp.is_rst() {
-                diversion = TcpDiversion::Rst;
-            } else if tcp.is_ack_fin() {
-                if buffer.len() > indicator.get_size() {
-                    diversion = TcpDiversion::Ack;
-                } else {
-                    diversion = TcpDiversion::Fin;
-                }
-            } else if tcp.is_syn() {
-                diversion = TcpDiversion::Syn;
-            } else if tcp.is_fin() {
-                diversion = TcpDiversion::Fin;
-            } else if tcp.is_ack() {
-                diversion = TcpDiversion::Ack;
-            } else {
-                diversion = TcpDiversion::Unhandled;
-            }
-
-            match diversion {
-                TcpDiversion::Ack => {
-                    if is_alive {
-                        // ACK
-                        self.update_tcp_acknowledgement(indicator);
-                        if buffer.len() > indicator.get_size() {
-                            // Append to cache
-                            let cache = self
-                                .tcp_cache_map
-                                .entry(key)
-                                .or_insert_with(|| RandomCacher::new(tcp.get_sequence()));
-
-                            let payload = cache
-                                .append(&buffer[indicator.get_size()..], tcp.get_sequence())?;
-                            match payload {
-                                Some(payload) => {
-                                    // Send
-                                    match self
-                                        .streams
-                                        .get_mut(&key)
-                                        .unwrap()
-                                        .send(payload.as_slice())
-                                    {
-                                        Ok(_) => {
-                                            // Update TCP acknowledgement
-                                            let mut tx_locked = self.tx.lock().unwrap();
-                                            tx_locked.add_tcp_acknowledgement(
-                                                dst,
-                                                tcp.get_src(),
-                                                payload.len() as u32,
-                                            );
-                                            // Send ACK0
-                                            // tx_locked.send_tcp_ack_0(dst, tcp.get_src())?;
-                                        }
-                                        Err(e) => {
-                                            // Send ACK/RST
-                                            self.tx.lock().unwrap().send_tcp_ack_rst(
-                                                dst,
-                                                tcp.get_src(),
-                                                tcp.get_sequence(),
-                                            )?;
-                                            return Err(e);
-                                        }
-                                    }
-                                }
-                                None => {
-                                    // Send ACK0
-                                    self.tx.lock().unwrap().send_tcp_ack_0(dst, tcp.get_src())?;
-                                }
-                            }
-                        } else {
-                            // ACK0
-                            if *self.tcp_acknowledgement_count_map.get(&key).unwrap_or(&0) > 3
-                                && !tcp.is_zero_window()
-                            {
-                                // Fast retransmit
-                                let mut is_retransmit = true;
-                                if let Some(instant) = self.tcp_retransmission_map.get(&key) {
-                                    if instant.elapsed().as_millis() < 20 {
-                                        // Cooled down
-                                        is_retransmit = false;
-                                    }
-                                }
-
-                                if is_retransmit {
-                                    // Retransmit
-                                    self.tx.lock().unwrap().resend_tcp_ack(
-                                        dst,
-                                        tcp.get_src(),
-                                        *self.tcp_acknowledgement_map.get(&key).unwrap_or(&0),
-                                    )?;
-                                    self.tcp_retransmission_map.insert(key, Instant::now());
-                                }
-                            }
-                        }
-                    } else {
-                        if is_last_ack {
-                            self.streams.get_mut(&key).unwrap().set_last_ack(false);
-                        } else {
-                            // Send RST
-                            self.tx.lock().unwrap().send_tcp_rst(
-                                dst,
-                                tcp.get_src(),
-                                tcp.get_sequence(),
-                            )?;
-                        }
-                    }
-                }
-                TcpDiversion::Syn => {
-                    // Close before reconnect
-                    if is_alive {
-                        self.streams.get_mut(&key).unwrap().close();
-                        self.remove_cache(indicator);
-                        self.tx.lock().unwrap().remove_cache(dst, tcp.get_src());
-                    }
-                    // Connect
-                    let stream = match StreamWorker::new_and_open(
-                        self.get_tx(),
-                        tcp.get_src(),
+            if is_exist {
+                if is_alive {
+                    // ACK
+                    self.update_tcp_acknowledgement(indicator);
+                    self.tx.lock().unwrap().invalidate_cache_to(
                         dst,
-                        self.remote,
-                    ) {
-                        Ok(stream) => {
-                            // Send ACK/SYN
-                            self.tx.lock().unwrap().send_tcp_ack_syn(
-                                dst,
-                                tcp.get_src(),
-                                tcp.get_sequence().checked_add(1).unwrap_or(0),
-                            )?;
-                            stream
-                        }
-                        Err(e) => {
-                            // Send ACK/RST
-                            self.tx.lock().unwrap().send_tcp_ack_rst(
-                                dst,
-                                tcp.get_src(),
-                                tcp.get_sequence().checked_add(1).unwrap_or(0),
-                            )?;
-                            return Err(e);
-                        }
-                    };
+                        tcp.get_src(),
+                        tcp.get_acknowledgement(),
+                    );
+                    if buffer.len() > indicator.get_size() {
+                        // ACK
+                        // Append to cache
+                        let cache = self
+                            .tcp_cache_map
+                            .entry(key)
+                            .or_insert_with(|| RandomCacher::new(tcp.get_sequence()));
+                        let payload =
+                            cache.append(tcp.get_sequence(), &buffer[indicator.get_size()..])?;
 
-                    self.streams.insert(key, stream);
-                }
-                TcpDiversion::Rst => {
-                    if is_alive {
-                        self.streams.get_mut(&key).unwrap().close();
-                    }
-                }
-                TcpDiversion::Fin => {
-                    if is_alive {
-                        let stream = self.streams.get_mut(&key).unwrap();
-                        stream.set_last_ack(true);
-                        stream.close();
-                        self.remove_cache(indicator);
+                        match payload {
+                            Some(payload) => {
+                                // Send
+                                match self.streams.get_mut(&key).unwrap().send(payload.as_slice()) {
+                                    Ok(_) => {
+                                        // Update window size
+                                        let mut tx_locked = self.tx.lock().unwrap();
+                                        tx_locked.set_tcp_window(
+                                            dst,
+                                            tcp.get_src(),
+                                            cache.get_remaining_size(),
+                                        );
 
-                        // Send ACK/FIN
-                        let mut tx_locked = self.tx.lock().unwrap();
-                        tx_locked.remove_cache(dst, tcp.get_src());
-                        tx_locked.send_tcp_ack_fin(
-                            dst,
-                            tcp.get_src(),
-                            tcp.get_sequence().checked_add(1).unwrap_or(0),
-                        )?;
+                                        // Update TCP acknowledgement
+                                        tx_locked.add_tcp_acknowledgement(
+                                            dst,
+                                            tcp.get_src(),
+                                            payload.len() as u32,
+                                        );
+
+                                        // Send ACK0
+                                        tx_locked.send_tcp_ack_0(dst, tcp.get_src())?;
+                                    }
+                                    Err(e) => {
+                                        // Clean up
+                                        self.remove(indicator);
+
+                                        // Send ACK/RST
+                                        let mut tx_locked = self.tx.lock().unwrap();
+                                        tx_locked.send_tcp_ack_rst(dst, tcp.get_src())?;
+
+                                        // Clean up
+                                        tx_locked.remove(dst, tcp.get_src());
+
+                                        return Err(e);
+                                    }
+                                }
+                            }
+                            None => {
+                                // Retransmission or unordered
+                                // Send ACK0
+                                self.tx.lock().unwrap().send_tcp_ack_0(dst, tcp.get_src())?;
+                            }
+                        }
                     } else {
-                        // Send RST
-                        self.tx.lock().unwrap().send_tcp_rst(
-                            dst,
-                            tcp.get_src(),
-                            tcp.get_sequence().checked_add(1).unwrap_or(0),
-                        )?;
+                        // ACK0
+                        if *self.tcp_duplicate_map.get(&key).unwrap_or(&0) > 3 {
+                            if !tcp.is_zero_window() {
+                                let is_cooled_down =
+                                    match self.tcp_last_retransmission_map.get(&key) {
+                                        Some(instant) => instant.elapsed().as_millis() < 20,
+                                        None => false,
+                                    };
+                                if !is_cooled_down {
+                                    // Fast retransmit
+                                    // TODO: the procedure is in back N
+                                    self.tx
+                                        .lock()
+                                        .unwrap()
+                                        .send_tcp_ack_from_cache(dst, tcp.get_src())?;
+
+                                    self.tcp_last_retransmission_map.insert(key, Instant::now());
+                                } else {
+                                    // Cooled down
+                                }
+                            } else {
+                                // Zero window
+                            }
+                        }
                     }
+                } else {
+                    // Expect in LAST_ACK state (or the stream met an error)
+                    self.remove(indicator);
+                    self.tx.lock().unwrap().remove(dst, tcp.get_src());
                 }
-                TcpDiversion::Unhandled => {}
+            } else {
+                // Send RST
+                self.tx.lock().unwrap().send_tcp_rst(dst, tcp.get_src())?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn handle_tcp_syn(&mut self, indicator: &Indicator) -> io::Result<()> {
+        if let Some(tcp) = indicator.get_tcp() {
+            let dst = SocketAddrV4::new(tcp.get_dst_ip_addr(), tcp.get_dst());
+            let key = (tcp.get_src(), dst);
+            let is_exist = self.streams.get(&key).is_some();
+
+            // Close before reconnect
+            if is_exist {
+                // Clean up
+                self.remove(indicator);
+                self.tx.lock().unwrap().remove(dst, tcp.get_src());
+            }
+
+            // Connect
+            let stream = StreamWorker::new_and_open(self.get_tx(), tcp.get_src(), dst, self.remote);
+
+            let stream = match stream {
+                Ok(stream) => {
+                    let mut tx_locked = self.tx.lock().unwrap();
+                    tx_locked.set_tcp_acknowledgement(
+                        dst,
+                        tcp.get_src(),
+                        tcp.get_sequence().checked_add(1).unwrap_or(0),
+                    );
+                    // Send ACK/SYN
+                    tx_locked.send_tcp_ack_syn(dst, tcp.get_src())?;
+
+                    stream
+                }
+                Err(e) => {
+                    let mut tx_locked = self.tx.lock().unwrap();
+                    tx_locked.set_tcp_acknowledgement(
+                        dst,
+                        tcp.get_src(),
+                        tcp.get_sequence().checked_add(1).unwrap_or(0),
+                    );
+                    // Send ACK/RST
+                    tx_locked.send_tcp_ack_rst(dst, tcp.get_src())?;
+
+                    return Err(e);
+                }
+            };
+
+            self.streams.insert(key, stream);
+        }
+
+        Ok(())
+    }
+
+    fn handle_tcp_rst(&mut self, indicator: &Indicator) {
+        if let Some(ref tcp) = indicator.get_tcp() {
+            let dst = SocketAddrV4::new(tcp.get_dst_ip_addr(), tcp.get_dst());
+            let key = (tcp.get_src(), dst);
+            let is_exist = self.streams.get(&key).is_some();
+
+            if is_exist {
+                // Clean up
+                self.remove(indicator);
+                self.tx.lock().unwrap().remove(dst, tcp.get_src());
+            }
+        }
+    }
+
+    fn handle_tcp_fin(&mut self, indicator: &Indicator) -> io::Result<()> {
+        if let Some(ref tcp) = indicator.get_tcp() {
+            let dst = SocketAddrV4::new(tcp.get_dst_ip_addr(), tcp.get_dst());
+            let key = (tcp.get_src(), dst);
+            let is_exist = self.streams.get(&key).is_some();
+
+            if is_exist {
+                if self.tx.lock().unwrap().get_cache_size(dst, tcp.get_src()) > 0 {
+                    // Fast retransmit
+                    // TODO: the procedure is in back N
+                    self.tx
+                        .lock()
+                        .unwrap()
+                        .send_tcp_ack_from_cache(dst, tcp.get_src())?;
+
+                    self.tcp_last_retransmission_map.insert(key, Instant::now());
+                } else {
+                    let stream = self.streams.get_mut(&key).unwrap();
+                    stream.close();
+
+                    // Send ACK/FIN
+                    self.tx
+                        .lock()
+                        .unwrap()
+                        .send_tcp_ack_fin(dst, tcp.get_src())?;
+                }
+            } else {
+                // Send RST
+                self.tx.lock().unwrap().send_tcp_rst(dst, tcp.get_src())?;
             }
         }
 
@@ -1098,24 +1085,34 @@ impl Upstreamer {
                 .unwrap_or_else(|| tcp.get_acknowledgement() + (u32::MAX - record_acknowledgement));
 
             if sub_acknowledgement == 0 {
-                let entry = self.tcp_acknowledgement_count_map.entry(key).or_insert(0);
+                // Duplicate
+                let entry = self.tcp_duplicate_map.entry(key).or_insert(0);
 
-                *entry = entry.checked_add(1).unwrap_or(u8::MAX);
+                *entry = entry.checked_add(1).unwrap_or(usize::MAX);
             } else if sub_acknowledgement < MAX_U32_WINDOW_SIZE as u32 {
                 self.tcp_acknowledgement_map
                     .insert(key, tcp.get_acknowledgement());
 
-                self.tcp_acknowledgement_count_map.insert(key, 0);
+                self.tcp_duplicate_map.insert(key, 0);
             }
         }
     }
 
-    fn remove_cache(&mut self, indicator: &Indicator) {
+    fn remove(&mut self, indicator: &Indicator) {
         if let Some(tcp) = indicator.get_tcp() {
             let dst = SocketAddrV4::new(tcp.get_dst_ip_addr(), tcp.get_dst());
             let key = (tcp.get_src(), dst);
 
-            trace!("remove cache {} -> {}", dst, tcp.get_dst());
+            trace!(
+                "remove {} connection {} -> {}",
+                tcp.get_type(),
+                dst,
+                tcp.get_dst()
+            );
+            self.streams.remove(&key);
+            self.tcp_acknowledgement_map.remove(&key);
+            self.tcp_duplicate_map.remove(&key);
+            self.tcp_last_retransmission_map.remove(&key);
             self.tcp_cache_map.remove(&key);
         }
     }
@@ -1148,13 +1145,11 @@ impl Upstreamer {
 }
 
 /// Represents a worker of a SOCKS5 TCP client.
-pub struct StreamWorker {
-    src_port: u16,
+struct StreamWorker {
     dst: SocketAddrV4,
     stream: TcpStream,
     thread: Option<JoinHandle<()>>,
     is_closed: Arc<AtomicBool>,
-    is_last_ack: bool,
 }
 
 impl StreamWorker {
@@ -1214,12 +1209,10 @@ impl StreamWorker {
         });
 
         Ok(StreamWorker {
-            src_port,
             dst,
             stream,
             thread: Some(thread),
             is_closed: a_is_closed,
-            is_last_ack: false,
         })
     }
 
@@ -1242,38 +1235,24 @@ impl StreamWorker {
         self.is_closed.store(true, Ordering::Relaxed);
     }
 
-    /// Set the state LAST_ACK of the worker.
-    pub fn set_last_ack(&mut self, value: bool) {
-        self.is_last_ack = value;
-    }
-
-    /// Get the source port and the destination of the SOCKS5 TCP client.
-    pub fn get_src_port_and_dst(&self) -> (u16, SocketAddrV4) {
-        (self.src_port, self.dst)
-    }
-
     /// Returns if the worker is closed.
     pub fn is_closed(&self) -> bool {
         self.is_closed.load(Ordering::Relaxed)
     }
-
-    /// Returns if the worker is in state LAST_ACK.
-    pub fn is_last_ack(&self) -> bool {
-        self.is_last_ack
-    }
 }
 
+// TODO: implement drop
 impl Drop for StreamWorker {
     fn drop(&mut self) {
         self.close();
         if let Some(thread) = self.thread.take() {
-            thread.join().unwrap();
+            // thread.join().unwrap();
         }
     }
 }
 
 /// Represents a worker of a SOCKS5 UDP client.
-pub struct DatagramWorker {
+struct DatagramWorker {
     src_port: u16,
     local_port: u16,
     datagram: Arc<SocksDatagram>,
@@ -1373,11 +1352,12 @@ impl DatagramWorker {
     }
 }
 
+// TODO: instead of drop datagram, reuse it
 impl Drop for DatagramWorker {
     fn drop(&mut self) {
         self.close();
         if let Some(thread) = self.thread.take() {
-            thread.join().unwrap();
+            // thread.join().unwrap();
         }
     }
 }

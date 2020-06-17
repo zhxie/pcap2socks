@@ -31,28 +31,6 @@ impl Cacher {
         }
     }
 
-    /// Get the buffer in the given size. The returned vector's length will be no more than the given size.
-    pub fn get(&self, size: usize) -> Option<Vec<u8>> {
-        if self.size == 0 {
-            return None;
-        }
-
-        let length = min(self.size, size);
-        let mut vector = vec![0u8; length];
-
-        // From the head to the end of the buffer
-        let length_a = min(length, self.buffer.len() - self.head);
-        vector[..length_a].copy_from_slice(&self.buffer[self.head..self.head + length_a]);
-
-        // From the begin of the buffer to the tail
-        let length_b = length - length_a;
-        if length_b > 0 {
-            vector[length_a..].copy_from_slice(&self.buffer[..length_b]);
-        }
-
-        Some(vector)
-    }
-
     /// Appends some bytes to the end of the cache.
     pub fn append(&mut self, buffer: &[u8]) -> io::Result<()> {
         if buffer.len() > self.buffer.len() - self.size {
@@ -116,6 +94,48 @@ impl Cacher {
             }
         }
     }
+
+    /// Get the buffer from the beginning of the cache in the given size.
+    pub fn get(&self, size: usize) -> io::Result<Vec<u8>> {
+        if size == 0 {
+            return Ok(Vec::new());
+        }
+        if self.size < size {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "request size too big",
+            ));
+        }
+
+        let mut vector = vec![0u8; size];
+
+        // From the head to the end of the buffer
+        let length_a = min(size, self.buffer.len() - self.head);
+        vector[..length_a].copy_from_slice(&self.buffer[self.head..self.head + length_a]);
+
+        // From the begin of the buffer to the tail
+        let length_b = size - length_a;
+        if length_b > 0 {
+            vector[length_a..].copy_from_slice(&self.buffer[..length_b]);
+        }
+
+        Ok(vector)
+    }
+
+    /// Get all the buffer of the cache.
+    pub fn get_all(&self) -> io::Result<Vec<u8>> {
+        self.get(self.get_size())
+    }
+
+    /// Get the sequence of the cache.
+    pub fn get_sequence(&self) -> u32 {
+        self.sequence
+    }
+
+    /// Get the size of the cache.
+    pub fn get_size(&self) -> usize {
+        self.size
+    }
 }
 
 /// Represents the random cache.
@@ -124,6 +144,8 @@ pub struct RandomCacher {
     buffer: Vec<u8>,
     sequence: u32,
     head: usize,
+    /// Represents the expected size from the head to the tail. NOT all the bytes in [head, head + size) are existed.
+    size: usize,
     /// Represents ranges of existing values. Use an u64 instead of an u32 because the sequence is used as a ring.
     ranges: BTreeMap<u64, usize>,
 }
@@ -135,12 +157,13 @@ impl RandomCacher {
             buffer: vec![0u8; INITIAL_CACHE_SIZE],
             sequence,
             head: 0,
+            size: 0,
             ranges: BTreeMap::new(),
         }
     }
 
     /// Appends some bytes to the cache and returns continuous bytes from the beginning.
-    pub fn append(&mut self, buffer: &[u8], sequence: u32) -> io::Result<Option<Vec<u8>>> {
+    pub fn append(&mut self, sequence: u32, buffer: &[u8]) -> io::Result<Option<Vec<u8>>> {
         let sub_sequence = sequence
             .checked_sub(self.sequence)
             .unwrap_or_else(|| sequence + (u32::MAX - self.sequence))
@@ -186,6 +209,21 @@ impl RandomCacher {
         let length_b = buffer.len() - length_a;
         if length_b > 0 {
             self.buffer[..length_b].copy_from_slice(&buffer[length_a..]);
+        }
+
+        // Update size
+        let tail = sequence
+            .checked_add(buffer.len() as u32)
+            .unwrap_or_else(|| buffer.len() as u32 - (u32::MAX - sequence));
+        let record_tail = self
+            .sequence
+            .checked_add(self.size as u32)
+            .unwrap_or_else(|| self.size as u32 - (u32::MAX - self.sequence));
+        let sub_tail = tail
+            .checked_sub(record_tail)
+            .unwrap_or_else(|| tail + (u32::MAX - record_tail));
+        if sub_tail as usize <= MAX_U32_WINDOW_SIZE {
+            self.size += sub_tail as usize;
         }
 
         // Insert and merge ranges
@@ -265,10 +303,25 @@ impl RandomCacher {
                 .checked_add(size as u32)
                 .unwrap_or_else(|| size as u32 - (u32::MAX - self.sequence));
             self.head = (self.head + (size % self.buffer.len())) % self.buffer.len();
+            self.size -= vector.len();
 
             return Ok(Some(vector));
         }
 
         Ok(None)
+    }
+
+    /// Get the sequence of the cache.
+    pub fn get_sequence(&self) -> u32 {
+        self.sequence
+    }
+
+    /// Get the remaining size of the `RandomCacher`.
+    pub fn get_remaining_size(&self) -> u16 {
+        if self.buffer.len() - self.size > u16::MAX as usize {
+            u16::MAX
+        } else {
+            (self.buffer.len() - self.size) as u16
+        }
     }
 }
