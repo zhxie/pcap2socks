@@ -233,20 +233,26 @@ impl RandomCacher {
                 sequence += u32::MAX as u64;
             }
 
-            // Select ranges which can be merged
-            let mut pop_keys = Vec::new();
+            // Select ranges which can be merged in a loop
             let mut end = sequence + buffer.len() as u64;
-            for (&key, &value) in self.ranges.range((
-                Included(&sequence),
-                Included(&(sequence + buffer.len() as u64)),
-            )) {
-                pop_keys.push(key);
-                end = max(end, key + value as u64);
-            }
+            loop {
+                let mut pop_keys = Vec::new();
+                for (&key, &value) in self.ranges.range((
+                    Included(&sequence),
+                    Included(&(sequence + buffer.len() as u64)),
+                )) {
+                    pop_keys.push(key);
+                    end = max(end, key + value as u64);
+                }
 
-            // Pop
-            for ref pop_key in pop_keys {
-                self.ranges.remove(pop_key);
+                if pop_keys.len() <= 0 {
+                    break;
+                }
+
+                // Pop
+                for ref pop_key in pop_keys {
+                    self.ranges.remove(pop_key);
+                }
             }
 
             // Select the previous range if exists
@@ -258,17 +264,17 @@ impl RandomCacher {
             }
 
             // Merge previous range
-            let mut size = buffer.len();
+            let mut size = end - sequence;
             if let Some(prev_key) = prev_key {
                 let prev_size = *self.ranges.get(&prev_key).unwrap();
                 if prev_key + (prev_size as u64) >= sequence {
-                    size += (sequence - prev_key) as usize;
+                    size += sequence - prev_key;
                     sequence = prev_key;
                 }
             }
 
             // Insert range
-            self.ranges.insert(sequence, size);
+            self.ranges.insert(sequence, size as usize);
         }
 
         // Pop if possible
