@@ -197,6 +197,11 @@ impl Tcp {
         self.layer.acknowledgement
     }
 
+    /// Get the window size of the layer.
+    pub fn get_window(&self) -> u16 {
+        self.layer.window
+    }
+
     /// Returns if the `Tcp` is a TCP acknowledgement.
     pub fn is_ack(&self) -> bool {
         self.layer.flags & TcpFlags::ACK != 0
