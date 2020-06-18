@@ -23,6 +23,8 @@ pub struct Flags {
         value_name = "INTERFACE"
     )]
     pub inter: Option<String>,
+    #[clap(long, about = "MTU", value_name = "VALUE", default_value = "1400")]
+    pub mtu: u16,
     #[clap(long, short, about = "ARP publishing address", value_name = "ADDRESS")]
     pub publish: Option<String>,
     #[clap(long = "source", short, about = "Source", value_name = "ADDRESS")]
@@ -46,12 +48,16 @@ pub fn parse() -> Flags {
 #[derive(Debug)]
 pub enum ParseError {
     AddrParseError(AddrParseError),
+    OutOfRangeError(&'static str, &'static str),
 }
 
 impl Display for ParseError {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         match &self {
             ParseError::AddrParseError(ref e) => write!(f, "parse: {}", e),
+            ParseError::OutOfRangeError(ref value, ref range) => {
+                write!(f, "parse: {} is out of range {}", value, range)
+            }
         }
     }
 }
@@ -60,6 +66,7 @@ impl Error for ParseError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match &self {
             ParseError::AddrParseError(ref e) => Some(e),
+            ParseError::OutOfRangeError(_, _) => None,
         }
     }
 }
@@ -77,6 +84,7 @@ pub struct Opts {
     pub verbose: bool,
     pub vverbose: bool,
     pub inter: Option<String>,
+    pub mtu: u16,
     pub publish: Option<Ipv4Addr>,
     pub src: Ipv4Addr,
     pub dst: SocketAddrV4,
@@ -89,16 +97,18 @@ impl Opts {
             verbose: false,
             vverbose: false,
             inter: None,
+            mtu: 1400,
             publish: None,
             src: Ipv4Addr::UNSPECIFIED,
-            dst: SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0),
+            dst: SocketAddrV4::new("127.0.0.1".parse().unwrap(), 1080),
         }
     }
 
     /// Validates flags and creates a new `Opts`.
     pub fn validate(flags: &Flags) -> Result {
-        let verbose = flags.verbose;
-        let vverbose = flags.vverbose;
+        if flags.mtu < 576 {
+            return Err(ParseError::OutOfRangeError("MTU", "[576, 65535]"));
+        }
         let mut publish = None;
         if let Some(p) = &flags.publish {
             publish = Some(p.parse()?);
@@ -107,8 +117,9 @@ impl Opts {
         let dst = flags.dst.parse()?;
 
         Ok(Opts {
-            verbose,
-            vverbose,
+            verbose: flags.verbose,
+            vverbose: flags.vverbose,
+            mtu: flags.mtu,
             inter: flags.inter.clone(),
             publish,
             src,

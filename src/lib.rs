@@ -86,12 +86,10 @@ const MAX_U32_WINDOW_SIZE: usize = 256 * 1024;
 /// Represents the wait time after a `TimedOut` `IoError`.
 const TIMEDOUT_WAIT: u64 = 20;
 
-/// Represents the MSS of packet sending from local to source, this will become an option in the future.
-const MSS: u32 = 1200;
-
 /// Represents the channel downstream traffic to the source in pcap.
 pub struct Downstreamer {
     tx: Sender,
+    mtu: u16,
     src_hardware_addr: HardwareAddr,
     local_hardware_addr: HardwareAddr,
     src_ip_addr: Ipv4Addr,
@@ -109,12 +107,14 @@ impl Downstreamer {
     /// Creates a new `Downstreamer`.
     pub fn new(
         tx: Sender,
+        mtu: u16,
         local_hardware_addr: HardwareAddr,
         src_ip_addr: Ipv4Addr,
         local_ip_addr: Ipv4Addr,
     ) -> Downstreamer {
         Downstreamer {
             tx,
+            mtu,
             src_hardware_addr: pcap::HARDWARE_ADDR_UNSPECIFIED,
             local_hardware_addr,
             src_ip_addr,
@@ -371,7 +371,7 @@ impl Downstreamer {
 
         // Segmentation
         let header_size = ipv4.get_size() + tcp.get_size();
-        let max_payload_size = MSS as usize - header_size;
+        let max_payload_size = self.mtu as usize - header_size;
         let mut i = 0;
         while max_payload_size * i < payload.len() {
             let length = min(max_payload_size, payload.len() - i * max_payload_size);
@@ -532,7 +532,7 @@ impl Downstreamer {
         let size = udp_header_size + payload.len();
         let mut n = 0;
         while n < size {
-            let mut length = min(size - n, MSS as usize - ipv4_header_size);
+            let mut length = min(size - n, self.mtu as usize - ipv4_header_size);
             let mut remain = size - n - length;
 
             // Alignment

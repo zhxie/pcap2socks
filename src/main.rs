@@ -30,6 +30,7 @@ fn main() {
         }
     };
     info!("Listen on {}", inter);
+    info!("MTU {}", opts.mtu);
 
     // Publish
     if let Some(publish) = opts.publish {
@@ -45,7 +46,13 @@ fn main() {
             return;
         }
     };
-    let downstreamer = lib::Downstreamer::new(tx, inter.hardware_addr, opts.src, inter.ip_addrs[0]);
+    let downstreamer = lib::Downstreamer::new(
+        tx,
+        opts.mtu,
+        inter.hardware_addr,
+        opts.src,
+        inter.ip_addrs[0],
+    );
     let mut upstreamer = lib::Upstreamer::new(
         Arc::new(Mutex::new(downstreamer)),
         opts.src,
