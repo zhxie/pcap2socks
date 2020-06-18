@@ -1,8 +1,8 @@
 use std::cmp::min;
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
-use std::net::{Ipv4Addr, SocketAddrV4, TcpStream};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::net::{Ipv4Addr, Shutdown, SocketAddrV4, TcpStream};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -1065,17 +1065,32 @@ impl Upstreamer {
             let index = (port - INITIAL_PORT) as usize;
 
             // Bind
-            let create_new = match self.datagrams[index] {
-                Some(ref worker) => worker.get_src_port() != udp.get_src() || worker.is_closed(),
-                None => true,
+            let is_create;
+            let is_set;
+            match self.datagrams[index] {
+                Some(ref worker) => {
+                    is_create = worker.is_closed();
+                    is_set = worker.get_src_port() != udp.get_src();
+                }
+                None => {
+                    is_create = true;
+                    is_set = false;
+                }
             };
-            if create_new {
+            if is_create {
+                // Bind
                 self.datagrams[index] = Some(DatagramWorker::bind(
                     self.get_tx(),
                     udp.get_src(),
                     port,
                     self.remote,
                 )?);
+            } else if is_set {
+                // Replace
+                self.datagrams[index]
+                    .as_mut()
+                    .unwrap()
+                    .set_src_port(udp.get_src());
             }
 
             // Send
@@ -1165,7 +1180,7 @@ impl Upstreamer {
     }
 }
 
-/// Represents a worker of a SOCKS5 TCP client.
+/// Represents a worker of a SOCKS5 TCP stream.
 struct StreamWorker {
     dst: SocketAddrV4,
     stream: TcpStream,
@@ -1265,21 +1280,25 @@ impl StreamWorker {
     }
 }
 
-// TODO: implement drop
 impl Drop for StreamWorker {
     fn drop(&mut self) {
         self.close();
-        if let Some(thread) = self.thread.take() {
-            // thread.join().unwrap();
+        if let Err(ref e) = self.stream.shutdown(Shutdown::Both) {
+            warn!("handle {}: {}", "TCP", e);
         }
+        if let Some(thread) = self.thread.take() {
+            thread.join().unwrap();
+        }
+        trace!("drop stream {} -> {}", 0, self.dst);
     }
 }
 
 /// Represents a worker of a SOCKS5 UDP client.
 struct DatagramWorker {
-    src_port: u16,
+    src_port: Arc<AtomicU16>,
     local_port: u16,
     datagram: Arc<SocksDatagram>,
+    #[allow(dead_code)]
     thread: Option<JoinHandle<()>>,
     is_closed: Arc<AtomicBool>,
 }
@@ -1295,6 +1314,8 @@ impl DatagramWorker {
         let datagram =
             SocksDatagram::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, local_port), remote)?;
 
+        let a_src_port = Arc::new(AtomicU16::from(src_port));
+        let a_src_port_cloned = Arc::clone(&a_src_port);
         let a_datagram = Arc::new(datagram);
         let a_datagram_cloned = Arc::clone(&a_datagram);
         let is_closed = AtomicBool::new(false);
@@ -1317,9 +1338,11 @@ impl DatagramWorker {
                         );
 
                         // Send
-                        if let Err(ref e) =
-                            tx.lock().unwrap().send_udp(addr, src_port, &buffer[..size])
-                        {
+                        if let Err(ref e) = tx.lock().unwrap().send_udp(
+                            addr,
+                            a_src_port_cloned.load(Ordering::Relaxed),
+                            &buffer[..size],
+                        ) {
                             warn!("handle {}: {}", "UDP", e);
                         }
                     }
@@ -1340,7 +1363,7 @@ impl DatagramWorker {
         trace!("create datagram {} = {}", src_port, local_port);
 
         Ok(DatagramWorker {
-            src_port,
+            src_port: a_src_port,
             local_port,
             datagram: a_datagram,
             thread: Some(thread),
@@ -1362,29 +1385,19 @@ impl DatagramWorker {
         self.datagram.send_to(buffer, dst)
     }
 
-    /// Closes the worker.
-    pub fn close(&mut self) {
-        self.is_closed.store(true, Ordering::Relaxed);
-        trace!("close datagram {} = {}", self.src_port, self.local_port);
+    /// Sets the source port of the `DatagramWorker`.
+    pub fn set_src_port(&mut self, src_port: u16) {
+        self.src_port.store(src_port, Ordering::Relaxed);
+        trace!("set datagram {} = {}", src_port, self.local_port);
     }
 
-    /// Get the source port of the SOCKS5 UDP client.
+    /// Get the source port of the `DatagramWorker`.
     pub fn get_src_port(&self) -> u16 {
-        self.src_port
+        self.src_port.load(Ordering::Relaxed)
     }
 
     /// Returns if the worker is closed.
     pub fn is_closed(&self) -> bool {
         self.is_closed.load(Ordering::Relaxed)
-    }
-}
-
-// TODO: instead of drop datagram, reuse it
-impl Drop for DatagramWorker {
-    fn drop(&mut self) {
-        self.close();
-        if let Some(thread) = self.thread.take() {
-            // thread.join().unwrap();
-        }
     }
 }
