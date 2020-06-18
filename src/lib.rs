@@ -972,6 +972,7 @@ impl Upstreamer {
                                         );
 
                                         // Send ACK0
+                                        // If there is a heavy traffic, the ACK reported may be inaccurate, which would results in retransmission
                                         tx_locked.send_tcp_ack_0(dst, tcp.get_src())?;
                                     }
                                     Err(e) => {

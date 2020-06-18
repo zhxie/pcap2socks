@@ -31,7 +31,8 @@ pub struct Flags {
         long = "destination",
         short,
         about = "Destination",
-        value_name = "ADDRESS"
+        value_name = "ADDRESS",
+        default_value = "127.0.0.1:1080"
     )]
     pub dst: String,
 }
