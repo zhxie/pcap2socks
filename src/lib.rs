@@ -81,7 +81,7 @@ pub fn interface(name: Option<String>) -> Option<Interface> {
 }
 
 /// Represents the max distance of u32 values between packets in an u32 window.
-const MAX_U32_WINDOW_SIZE: usize = 4194304;
+const MAX_U32_WINDOW_SIZE: usize = 256 * 1024;
 
 /// Represents the wait time after a `TimedOut` `IoError`.
 const TIMEDOUT_WAIT: u64 = 20;
@@ -128,25 +128,31 @@ impl Downstreamer {
 
     /// Sets the source hardware address.
     pub fn set_src_hardware_addr(&mut self, hardware_addr: HardwareAddr) {
-        trace!("set source hardware address to {}", hardware_addr);
         self.src_hardware_addr = hardware_addr;
+        trace!("set source hardware address to {}", hardware_addr);
     }
 
     /// Sets the local IP address.
     pub fn set_local_ip_addr(&mut self, ip_addr: Ipv4Addr) {
-        trace!("set local IP address to {}", ip_addr);
         self.local_ip_addr = ip_addr;
+        trace!("set local IP address to {}", ip_addr);
     }
 
     fn increase_ipv4_identification(&mut self, ip_addr: Ipv4Addr) {
         let entry = self.ipv4_identification_map.entry(ip_addr).or_insert(0);
-
         *entry = entry.checked_add(1).unwrap_or(0);
+        trace!("increase IPv4 identification of {} to {}", ip_addr, entry);
     }
 
     fn set_tcp_acknowledgement(&mut self, dst: SocketAddrV4, src_port: u16, sequence: u32) {
         self.tcp_acknowledgement_map
             .insert((src_port, dst), sequence);
+        trace!(
+            "set TCP acknowledgement of {} -> {} to {}",
+            dst,
+            src_port,
+            sequence
+        );
     }
 
     /// Adds acknowledgement to a TCP connection.
@@ -158,11 +164,18 @@ impl Downstreamer {
         *entry = entry
             .checked_add(n)
             .unwrap_or_else(|| n - (u32::MAX - *entry));
+        trace!(
+            "add TCP acknowledgement of {} -> {} to {}",
+            dst,
+            src_port,
+            entry
+        );
     }
 
     /// Sets the window size of a TCP connection.
     pub fn set_tcp_window(&mut self, dst: SocketAddrV4, src_port: u16, window: u16) {
         self.tcp_window_map.insert((src_port, dst), window);
+        trace!("set TCP window of {} -> {} to {}", dst, src_port, window);
     }
 
     /// Get the size of the cache of a TCP connection.
@@ -176,26 +189,26 @@ impl Downstreamer {
 
     /// Invalidates TCP cache to the given sequence.
     pub fn invalidate_cache_to(&mut self, dst: SocketAddrV4, src_port: u16, sequence: u32) {
+        if let Some(cache) = self.tcp_cache_map.get_mut(&(src_port, dst)) {
+            cache.invalidate_to(sequence);
+        }
         trace!(
             "invalidate cache {} -> {} to sequence {}",
             dst,
             src_port,
             sequence
         );
-        if let Some(cache) = self.tcp_cache_map.get_mut(&(src_port, dst)) {
-            cache.invalidate_to(sequence);
-        }
     }
 
     /// Removes all information related to a TCP connection.
     pub fn remove(&mut self, dst: SocketAddrV4, src_port: u16) {
         let key = (src_port, dst);
 
-        trace!("remove {} -> {}", dst, src_port);
         self.tcp_sequence_map.remove(&key);
         self.tcp_acknowledgement_map.remove(&key);
         self.tcp_window_map.remove(&key);
         self.tcp_cache_map.remove(&key);
+        trace!("remove {} -> {}", dst, src_port);
     }
 
     /// Sends an ARP reply packet.
@@ -266,7 +279,7 @@ impl Downstreamer {
         let cache = self
             .tcp_cache_map
             .entry(key)
-            .or_insert_with(|| Cacher::new(sequence));
+            .or_insert_with(|| Cacher::new_extendable(sequence));
         cache.append(payload)?;
 
         self.send_tcp_ack_raw(dst, src_port, sequence, payload)
@@ -743,7 +756,7 @@ impl Upstreamer {
         }
     }
 
-    fn handle_arp(&self, indicator: &Indicator) -> io::Result<()> {
+    fn handle_arp(&mut self, indicator: &Indicator) -> io::Result<()> {
         if let Some(local_ip_addr) = self.local_ip_addr {
             if let Some(arp) = indicator.get_arp() {
                 if arp.is_request_of(self.src_ip_addr, local_ip_addr) {
@@ -759,6 +772,7 @@ impl Upstreamer {
                             .lock()
                             .unwrap()
                             .set_src_hardware_addr(arp.get_src_hardware_addr());
+                        self.is_tx_src_hardware_addr_set = true;
                     }
 
                     // Send
@@ -784,6 +798,7 @@ impl Upstreamer {
                         .lock()
                         .unwrap()
                         .set_src_hardware_addr(indicator.get_ethernet().unwrap().get_src());
+                    self.is_tx_src_hardware_addr_set = true;
                 }
 
                 if ipv4.is_fragment() {
@@ -960,7 +975,7 @@ impl Upstreamer {
             }
 
             // Connect
-            let stream = StreamWorker::new_and_open(self.get_tx(), tcp.get_src(), dst, self.remote);
+            let stream = StreamWorker::connect(self.get_tx(), tcp.get_src(), dst, self.remote);
 
             let stream = match stream {
                 Ok(stream) => {
@@ -1055,7 +1070,7 @@ impl Upstreamer {
                 None => true,
             };
             if create_new {
-                self.datagrams[index] = Some(DatagramWorker::new_and_open(
+                self.datagrams[index] = Some(DatagramWorker::bind(
                     self.get_tx(),
                     udp.get_src(),
                     port,
@@ -1087,13 +1102,24 @@ impl Upstreamer {
             if sub_acknowledgement == 0 {
                 // Duplicate
                 let entry = self.tcp_duplicate_map.entry(key).or_insert(0);
-
                 *entry = entry.checked_add(1).unwrap_or(usize::MAX);
+                trace!(
+                    "duplicate TCP acknowledgement of {} -> {} at {}",
+                    tcp.get_src(),
+                    dst,
+                    tcp.get_acknowledgement()
+                );
             } else if sub_acknowledgement < MAX_U32_WINDOW_SIZE as u32 {
                 self.tcp_acknowledgement_map
                     .insert(key, tcp.get_acknowledgement());
 
                 self.tcp_duplicate_map.insert(key, 0);
+                trace!(
+                    "set TCP acknowledgement of {} -> {} to {}",
+                    tcp.get_src(),
+                    dst,
+                    tcp.get_acknowledgement()
+                );
             }
         }
     }
@@ -1103,17 +1129,12 @@ impl Upstreamer {
             let dst = SocketAddrV4::new(tcp.get_dst_ip_addr(), tcp.get_dst());
             let key = (tcp.get_src(), dst);
 
-            trace!(
-                "remove {} connection {} -> {}",
-                tcp.get_type(),
-                dst,
-                tcp.get_dst()
-            );
             self.streams.remove(&key);
             self.tcp_acknowledgement_map.remove(&key);
             self.tcp_duplicate_map.remove(&key);
             self.tcp_last_retransmission_map.remove(&key);
             self.tcp_cache_map.remove(&key);
+            trace!("remove {} -> {}", dst, tcp.get_dst());
         }
     }
 
@@ -1153,8 +1174,8 @@ struct StreamWorker {
 }
 
 impl StreamWorker {
-    /// Creates a new `StreamWorker` and open it.
-    pub fn new_and_open(
+    /// Opens a new `StreamWorker`.
+    pub fn connect(
         tx: Arc<Mutex<Downstreamer>>,
         src_port: u16,
         dst: SocketAddrV4,
@@ -1208,6 +1229,8 @@ impl StreamWorker {
             }
         });
 
+        trace!("open stream {} -> {}", 0, dst);
+
         Ok(StreamWorker {
             dst,
             stream,
@@ -1233,6 +1256,7 @@ impl StreamWorker {
     /// Closes the worker.
     pub fn close(&mut self) {
         self.is_closed.store(true, Ordering::Relaxed);
+        trace!("close stream {} -> {}", 0, self.dst);
     }
 
     /// Returns if the worker is closed.
@@ -1261,8 +1285,8 @@ struct DatagramWorker {
 }
 
 impl DatagramWorker {
-    /// Creates a new `DatagramWorker` and open it.
-    pub fn new_and_open(
+    /// Creates a new `DatagramWorker`.
+    pub fn bind(
         tx: Arc<Mutex<Downstreamer>>,
         src_port: u16,
         local_port: u16,
@@ -1313,6 +1337,8 @@ impl DatagramWorker {
             }
         });
 
+        trace!("create datagram {} = {}", src_port, local_port);
+
         Ok(DatagramWorker {
             src_port,
             local_port,
@@ -1339,6 +1365,7 @@ impl DatagramWorker {
     /// Closes the worker.
     pub fn close(&mut self) {
         self.is_closed.store(true, Ordering::Relaxed);
+        trace!("close datagram {} = {}", self.src_port, self.local_port);
     }
 
     /// Get the source port of the SOCKS5 UDP client.

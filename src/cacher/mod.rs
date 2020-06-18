@@ -4,17 +4,16 @@ use std::io;
 use std::ops::Bound::Included;
 
 /// Represents the initial size of cache.
-const INITIAL_CACHE_SIZE: usize = 65536;
-/// Represents the max size of cache.
-const MAX_CACHE_SIZE: usize = 16 * INITIAL_CACHE_SIZE;
+const CACHE_SIZE: usize = 64 * 1024;
 
 /// Represents the max distance of u32 values between packets in an u32 window.
-const MAX_U32_WINDOW_SIZE: usize = 4194304;
+const MAX_U32_WINDOW_SIZE: usize = 4 * 1024 * 1024;
 
 /// Represents the linear cache.
 #[derive(Debug)]
 pub struct Cacher {
     buffer: Vec<u8>,
+    extendable: bool,
     sequence: u32,
     head: usize,
     size: usize,
@@ -24,39 +23,48 @@ impl Cacher {
     /// Creates a new `Cacher`.
     pub fn new(sequence: u32) -> Cacher {
         Cacher {
-            buffer: vec![0; INITIAL_CACHE_SIZE],
+            buffer: vec![0; CACHE_SIZE],
+            extendable: false,
             sequence,
             head: 0,
             size: 0,
         }
     }
 
+    /// Creates a new `Cacher` which can increase its size dynamically.
+    pub fn new_extendable(sequence: u32) -> Cacher {
+        let mut cacher = Cacher::new(sequence);
+        cacher.extendable = true;
+
+        cacher
+    }
+
     /// Appends some bytes to the end of the cache.
     pub fn append(&mut self, buffer: &[u8]) -> io::Result<()> {
         if buffer.len() > self.buffer.len() - self.size {
-            // Extend the buffer
-            let size = min(
-                max(self.buffer.len() * 2, self.buffer.len() + buffer.len()),
-                MAX_CACHE_SIZE,
-            );
-            if self.size + buffer.len() > size {
+            if self.is_extendable() {
+                // Extend the buffer
+                let size = max(self.buffer.len() * 2, self.buffer.len() + buffer.len());
+
+                let mut new_buffer = vec![0u8; size];
+
+                // From the head to the end of the buffer
+                let length_a = min(self.size, self.buffer.len() - self.head);
+                new_buffer[..length_a]
+                    .copy_from_slice(&self.buffer[self.head..self.head + length_a]);
+
+                // From the begin of the buffer to the tail
+                let length_b = self.size - length_a;
+                if length_b > 0 {
+                    new_buffer[length_a..length_a + length_b]
+                        .copy_from_slice(&self.buffer[..length_b]);
+                }
+
+                self.buffer = new_buffer;
+                self.head = 0;
+            } else {
                 return Err(io::Error::new(io::ErrorKind::Other, "cache is full"));
             }
-
-            let mut new_buffer = vec![0u8; size];
-
-            // From the head to the end of the buffer
-            let length_a = min(self.size, self.buffer.len() - self.head);
-            new_buffer[..length_a].copy_from_slice(&self.buffer[self.head..self.head + length_a]);
-
-            // From the begin of the buffer to the tail
-            let length_b = self.size - length_a;
-            if length_b > 0 {
-                new_buffer[length_a..length_a + length_b].copy_from_slice(&self.buffer[..length_b]);
-            }
-
-            self.buffer = new_buffer;
-            self.head = 0;
         }
 
         // From the tail to the end of the buffer
@@ -136,30 +144,44 @@ impl Cacher {
     pub fn get_size(&self) -> usize {
         self.size
     }
+
+    fn is_extendable(&self) -> bool {
+        self.extendable
+    }
 }
 
 /// Represents the random cache.
 #[derive(Debug)]
 pub struct RandomCacher {
     buffer: Vec<u8>,
+    extendable: bool,
     sequence: u32,
     head: usize,
     /// Represents the expected size from the head to the tail. NOT all the bytes in [head, head + size) are existed.
     size: usize,
-    /// Represents ranges of existing values. Use an u64 instead of an u32 because the sequence is used as a ring.
-    ranges: BTreeMap<u64, usize>,
+    /// Represents edges of existing values. Use an u64 instead of an u32 because the sequence is used as a ring.
+    edges: BTreeMap<u64, usize>,
 }
 
 impl RandomCacher {
     /// Creates a new `RandomCacher`.
     pub fn new(sequence: u32) -> RandomCacher {
         RandomCacher {
-            buffer: vec![0u8; INITIAL_CACHE_SIZE],
+            buffer: vec![0u8; CACHE_SIZE],
+            extendable: false,
             sequence,
             head: 0,
             size: 0,
-            ranges: BTreeMap::new(),
+            edges: BTreeMap::new(),
         }
+    }
+
+    /// Creates a new `RandomCacher` which can increase its size dynamically.
+    pub fn new_extendable(sequence: u32) -> RandomCacher {
+        let mut cacher = RandomCacher::new(sequence);
+        cacher.extendable = true;
+
+        cacher
     }
 
     /// Appends some bytes to the cache and returns continuous bytes from the beginning.
@@ -174,26 +196,28 @@ impl RandomCacher {
 
         let size = sub_sequence + buffer.len();
         if size > self.buffer.len() {
-            // Extend the buffer
-            let size = min(max(self.buffer.len() * 2, size), MAX_CACHE_SIZE);
-            if self.buffer.len() + buffer.len() > size {
+            if self.is_extendable() {
+                // Extend the buffer
+                let size = max(self.buffer.len() * 2, size);
+
+                let mut new_buffer = vec![0u8; size];
+
+                // TODO: the procedure may by optimized to copy valid bytes only
+                // From the head to the end of the buffer
+                new_buffer[..self.buffer.len() - self.head]
+                    .copy_from_slice(&self.buffer[self.head..]);
+
+                // From the begin of the buffer to the tail
+                if self.head > 0 {
+                    new_buffer[self.buffer.len() - self.head..self.buffer.len()]
+                        .copy_from_slice(&self.buffer[..self.head]);
+                }
+
+                self.buffer = new_buffer;
+                self.head = 0;
+            } else {
                 return Err(io::Error::new(io::ErrorKind::Other, "cache is full"));
             }
-
-            let mut new_buffer = vec![0u8; size];
-
-            // TODO: the procedure may by optimized to copy valid bytes only
-            // From the head to the end of the buffer
-            new_buffer[..self.buffer.len() - self.head].copy_from_slice(&self.buffer[self.head..]);
-
-            // From the begin of the buffer to the tail
-            if self.head > 0 {
-                new_buffer[self.buffer.len() - self.head..self.buffer.len()]
-                    .copy_from_slice(&self.buffer[..self.head]);
-            }
-
-            self.buffer = new_buffer;
-            self.head = 0;
         }
 
         // TODO: the procedure may by optimized to copy valid bytes only
@@ -237,7 +261,7 @@ impl RandomCacher {
             let mut end = sequence + buffer.len() as u64;
             loop {
                 let mut pop_keys = Vec::new();
-                for (&key, &value) in self.ranges.range((
+                for (&key, &value) in self.edges.range((
                     Included(&sequence),
                     Included(&(sequence + buffer.len() as u64)),
                 )) {
@@ -251,13 +275,13 @@ impl RandomCacher {
 
                 // Pop
                 for ref pop_key in pop_keys {
-                    self.ranges.remove(pop_key);
+                    self.edges.remove(pop_key);
                 }
             }
 
             // Select the previous range if exists
             let mut prev_key = None;
-            for &key in self.ranges.keys() {
+            for &key in self.edges.keys() {
                 if key < sequence {
                     prev_key = Some(key);
                 }
@@ -266,7 +290,7 @@ impl RandomCacher {
             // Merge previous range
             let mut size = end - sequence;
             if let Some(prev_key) = prev_key {
-                let prev_size = *self.ranges.get(&prev_key).unwrap();
+                let prev_size = *self.edges.get(&prev_key).unwrap();
                 if prev_key + (prev_size as u64) >= sequence {
                     size += sequence - prev_key;
                     sequence = prev_key;
@@ -274,21 +298,21 @@ impl RandomCacher {
             }
 
             // Insert range
-            self.ranges.insert(sequence, size as usize);
+            self.edges.insert(sequence, size as usize);
         }
 
         // Pop if possible
-        let first_key = *self.ranges.keys().next().unwrap();
+        let first_key = *self.edges.keys().next().unwrap();
         if first_key as u32 == self.sequence {
-            let size = self.ranges.remove(&first_key).unwrap();
+            let size = self.edges.remove(&first_key).unwrap();
 
             // Shrink range sequence is possible
             if ((u32::MAX - self.sequence) as usize) < size {
-                let keys: Vec<_> = self.ranges.keys().map(|x| *x).collect();
+                let keys: Vec<_> = self.edges.keys().map(|x| *x).collect();
 
                 for key in keys {
-                    let value = self.ranges.remove(&key).unwrap();
-                    self.ranges.insert(key - u32::MAX as u64, value);
+                    let value = self.edges.remove(&key).unwrap();
+                    self.edges.insert(key - u32::MAX as u64, value);
                 }
             }
 
@@ -329,5 +353,9 @@ impl RandomCacher {
         } else {
             (self.buffer.len() - self.size) as u16
         }
+    }
+
+    fn is_extendable(&self) -> bool {
+        self.extendable
     }
 }
