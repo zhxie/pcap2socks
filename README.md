@@ -4,12 +4,29 @@
 
 _This project is currently under development._
 
+## Features
+
+- **Redirect Traffic**: Redirect TCP and UDP traffic to a SOCKS5 proxy.
+- **Proxy ARP**: Reply ARP request as it owns the specified address which is not on the network.
+- **Cross Platform**
+- **Full Cone NAT**
+
+## Dependencies
+
+1. [Npcap](http://www.npcap.org/) or WinPcap in Windows (If using npcap, make sure to install with the "Install Npcap in WinPcap API-compatible Mode"), libpcap in macOS, Linux and others.
+
+## Build
+
+### Windows
+
+If you want to build **pcap2socks** in Windows, you must meet all the three requirements described in [libpnet](https://github.com/libpnet/libpnet#windows).
+
 ## Usage
 
 ```
 cargo run -- -s <ADDRESS> -d <ADDRESS>
 
-# Or using proxy ARP
+# Or using proxy ARP (recommended)
 cargo run -- -s <ADDRESS> -p <ADDRESS> -d <ADDRESS>
 ```
 
@@ -21,13 +38,15 @@ cargo run -- -s <ADDRESS> -p <ADDRESS> -d <ADDRESS>
 
 `-s, --source <ADDRESS>`: (Required) Source.
 
-`-p, --publish <ADDRESS>`: ARP publishing address. If this value is set, `pcap2socks` will reply ARP request as it owns the specified address which is not in the network, also called proxy ARP.
+`-p, --publish <ADDRESS>`: ARP publishing address. If this value is set, `pcap2socks` will reply ARP request as it owns the specified address which is not on the network, also called proxy ARP.
 
 `-d, --destination <ADDRESS>`: Destination, default as `127.0.0.1:1080`.
 
 `-h, --help`: Prints help information.
 
 `-v, --verbose`: Prints verbose information.
+
+`--version`: Prints version information.
 
 `-V, --vverbose`: Prints vverbose information.
 
