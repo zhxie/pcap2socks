@@ -104,7 +104,7 @@ impl Ipv4 {
         }
     }
 
-    /// Creates an `Ipv4` without fragmentation accoring to an `Ipv4`.
+    /// Creates an `Ipv4` without fragmentation according to an `Ipv4`.
     pub fn defrag(ipv4: &Ipv4) -> Ipv4 {
         Ipv4 {
             layer: ipv4::Ipv4 {

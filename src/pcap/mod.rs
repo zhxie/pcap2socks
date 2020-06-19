@@ -18,6 +18,7 @@ pub struct Interface {
     pub alias: Option<String>,
     pub hardware_addr: MacAddr,
     pub ip_addrs: Vec<Ipv4Addr>,
+    pub is_up: bool,
     pub is_loopback: bool,
 }
 
@@ -29,6 +30,7 @@ impl Interface {
             alias: None,
             hardware_addr: MacAddr::zero(),
             ip_addrs: vec![],
+            is_up: false,
             is_loopback: false,
         }
     }
@@ -110,9 +112,13 @@ pub fn interfaces() -> Vec<Interface> {
                 })
                 .filter_map(Result::ok)
                 .collect();
+
+            // Exclude interface without any IPv4 address
             if i.ip_addrs.len() <= 0 {
                 return Err(());
             }
+
+            i.is_up = inter.is_up();
             i.is_loopback = inter.is_loopback();
 
             Ok(i)

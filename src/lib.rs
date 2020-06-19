@@ -62,25 +62,33 @@ pub fn interfaces() -> Vec<Interface> {
         .collect()
 }
 
-/// Gets an available network iterface match the name.
-pub fn interface(name: Option<String>) -> Option<Interface> {
-    let mut inters = interfaces();
-    if inters.len() > 1 {
-        if let None = name {
-            return None;
-        }
-    }
-    if let Some(inter_name) = name {
-        inters.retain(|current_inter| current_inter.name == inter_name);
-    }
-    if inters.len() <= 0 {
-        return None;
-    }
-
-    Some(inters[0].clone())
+/// Gets a list of available network interfaces which is up for the current machine.
+fn up_interfaces() -> Vec<Interface> {
+    interfaces()
+        .into_iter()
+        .filter(|inter| inter.is_up)
+        .collect()
 }
 
-/// Represents the max distance of u32 values between packets in an u32 window.
+/// Gets an available network interface match the name.
+pub fn interface(name: Option<String>) -> Option<Interface> {
+    let inters = match name {
+        Some(name) => {
+            let mut inters = interfaces();
+            inters.retain(|current_inter| current_inter.name == name);
+            inters
+        }
+        None => up_interfaces(),
+    };
+
+    if inters.len() != 1 {
+        None
+    } else {
+        Some(inters[0].clone())
+    }
+}
+
+/// Represents the max distance of `u32` values between packets in an `u32` window.
 const MAX_U32_WINDOW_SIZE: usize = 256 * 1024;
 
 /// Represents the wait time after a `TimedOut` `IoError`.
@@ -193,21 +201,6 @@ impl Downstreamer {
         trace!("set TCP window of {} -> {} to {}", dst, src_port, window);
     }
 
-    /// Get the size of the cache of a TCP connection.
-    pub fn get_cache_size(&mut self, dst: SocketAddrV4, src_port: u16) -> usize {
-        let key = (src_port, dst);
-
-        let mut size = 0;
-        if let Some(cache) = self.tcp_cache_map.get(&key) {
-            size += cache.get_size();
-        }
-        if let Some(cache) = self.tcp_cache2_map.get(&key) {
-            size += cache.get_size();
-        }
-
-        size
-    }
-
     /// Invalidates TCP cache to the given sequence.
     pub fn invalidate_cache_to(&mut self, dst: SocketAddrV4, src_port: u16, sequence: u32) {
         if let Some(cache) = self.tcp_cache_map.get_mut(&(src_port, dst)) {
@@ -230,6 +223,21 @@ impl Downstreamer {
         self.tcp_window_map.remove(&key);
         self.tcp_cache_map.remove(&key);
         trace!("remove {} -> {}", dst, src_port);
+    }
+
+    /// Get the size of the cache of a TCP connection.
+    pub fn get_cache_size(&mut self, dst: SocketAddrV4, src_port: u16) -> usize {
+        let key = (src_port, dst);
+
+        let mut size = 0;
+        if let Some(cache) = self.tcp_cache_map.get(&key) {
+            size += cache.get_size();
+        }
+        if let Some(cache) = self.tcp_cache2_map.get(&key) {
+            size += cache.get_size();
+        }
+
+        size
     }
 
     /// Sends an ARP reply packet.
@@ -359,7 +367,7 @@ impl Downstreamer {
     ) -> io::Result<()> {
         let key = (src_port, dst);
 
-        // Psuedo headers
+        // Pseudo headers
         let tcp = Tcp::new_ack(Ipv4Addr::UNSPECIFIED, Ipv4Addr::UNSPECIFIED, 0, 0, 0, 0, 0);
         let ipv4 = Ipv4::new(
             0,
@@ -515,7 +523,7 @@ impl Downstreamer {
 
     /// Sends UDP packets.
     pub fn send_udp(&mut self, dst: SocketAddrV4, src_port: u16, payload: &[u8]) -> io::Result<()> {
-        // Psuedo headers
+        // Pseudo headers
         let udp = Udp::new(Ipv4Addr::UNSPECIFIED, Ipv4Addr::UNSPECIFIED, 0, 0);
         let ipv4 = Ipv4::new(
             0,
@@ -726,6 +734,11 @@ impl Downstreamer {
         Ok(())
     }
 }
+
+/// Represents the TCP ACK duplicates before trigger a fast retransmission.
+const DUPLICATES_BEFORE_FAST_RETRANSMISSION: usize = 3;
+/// Represents the cool down time between 2 retransmissions.
+const RETRANSMISSION_COOL_DOWN: u128 = 1000;
 
 /// Represents the initial UDP port for binding in local.
 const INITIAL_PORT: u16 = 32768;
@@ -998,11 +1011,15 @@ impl Upstreamer {
                         }
                     } else {
                         // ACK0
-                        if *self.tcp_duplicate_map.get(&key).unwrap_or(&0) > 3 {
+                        if *self.tcp_duplicate_map.get(&key).unwrap_or(&0)
+                            > DUPLICATES_BEFORE_FAST_RETRANSMISSION
+                        {
                             if !tcp.is_zero_window() {
                                 let is_cooled_down =
                                     match self.tcp_last_retransmission_map.get(&key) {
-                                        Some(instant) => instant.elapsed().as_millis() < 1000,
+                                        Some(instant) => {
+                                            instant.elapsed().as_millis() < RETRANSMISSION_COOL_DOWN
+                                        }
                                         None => false,
                                     };
                                 if !is_cooled_down {
@@ -1021,8 +1038,22 @@ impl Upstreamer {
                     self.tx.lock().unwrap().send_tcp_ack(dst, tcp.get_src())?;
                 } else {
                     // Expect in LAST_ACK state (or the stream met an error)
-                    self.remove(indicator);
-                    self.tx.lock().unwrap().remove(dst, tcp.get_src());
+                    if tcp.is_fin() {
+                        let mut tx_locked = self.tx.lock().unwrap();
+                        tx_locked.set_tcp_acknowledgement(
+                            dst,
+                            tcp.get_src(),
+                            tcp.get_sequence().checked_add(1).unwrap_or(0),
+                        );
+                        // Send ACK/FIN
+                        self.tx
+                            .lock()
+                            .unwrap()
+                            .send_tcp_ack_fin(dst, tcp.get_src())?;
+                    } else {
+                        self.remove(indicator);
+                        self.tx.lock().unwrap().remove(dst, tcp.get_src());
+                    }
                 }
             } else {
                 // Send RST
@@ -1041,6 +1072,9 @@ impl Upstreamer {
 
             // Connect if not connected, drop if established
             if !is_exist {
+                // Clean up
+                self.remove(indicator);
+
                 self.update_tcp_sequence(indicator);
 
                 // Connect
@@ -1049,6 +1083,9 @@ impl Upstreamer {
                 let stream = match stream {
                     Ok(stream) => {
                         let mut tx_locked = self.tx.lock().unwrap();
+                        // Clean up
+                        tx_locked.remove(dst, tcp.get_src());
+
                         tx_locked.set_tcp_acknowledgement(
                             dst,
                             tcp.get_src(),
@@ -1114,11 +1151,14 @@ impl Upstreamer {
                     let stream = self.streams.get_mut(&key).unwrap();
                     stream.close();
 
+                    let mut tx_locked = self.tx.lock().unwrap();
+                    tx_locked.set_tcp_acknowledgement(
+                        dst,
+                        tcp.get_src(),
+                        tcp.get_sequence().checked_add(1).unwrap_or(0),
+                    );
                     // Send ACK/FIN
-                    self.tx
-                        .lock()
-                        .unwrap()
-                        .send_tcp_ack_fin(dst, tcp.get_src())?;
+                    tx_locked.send_tcp_ack_fin(dst, tcp.get_src())?;
                 }
             } else {
                 // Send RST

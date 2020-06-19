@@ -197,6 +197,26 @@ impl Tcp {
         self.layer.acknowledgement
     }
 
+    /// Get the string represents the flags of the layer.
+    pub fn get_flag_string(&self) -> String {
+        let mut flags = String::from("[");
+        if self.is_syn() {
+            flags = flags + "S";
+        }
+        if self.is_rst() {
+            flags = flags + "R";
+        }
+        if self.is_fin() {
+            flags = flags + "F";
+        }
+        if self.is_ack() {
+            flags = flags + ".";
+        }
+        flags = flags + "]";
+
+        flags
+    }
+
     /// Get the window size of the layer.
     pub fn get_window(&self) -> u16 {
         self.layer.window
@@ -240,28 +260,13 @@ impl Tcp {
 
 impl Display for Tcp {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        let mut flags = String::from("[");
-        if self.is_syn() {
-            flags = flags + "S";
-        }
-        if self.is_rst() {
-            flags = flags + "R";
-        }
-        if self.is_fin() {
-            flags = flags + "F";
-        }
-        if self.is_ack() {
-            flags = flags + ".";
-        }
-        flags = flags + "]";
-
         write!(
             f,
             "{}: {} -> {} {}",
             LayerTypes::Tcp,
             self.layer.source,
             self.layer.destination,
-            flags
+            self.get_flag_string()
         )
     }
 }
