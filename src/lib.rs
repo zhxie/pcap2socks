@@ -168,6 +168,19 @@ impl Downstreamer {
         );
     }
 
+    /// Sets the sequence of a TCP connection. In fact, this function should never be used.
+    #[deprecated(note = "this function should never be used")]
+    pub fn set_tcp_sequence(&mut self, dst: SocketAddrV4, src_port: u16, acknowledgement: u32) {
+        self.tcp_sequence_map
+            .insert((src_port, dst), acknowledgement);
+        trace!(
+            "set TCP sequence of {} -> {} to {}",
+            dst,
+            src_port,
+            acknowledgement
+        );
+    }
+
     /// Sets the acknowledgement of a TCP connection.
     pub fn set_tcp_acknowledgement(&mut self, dst: SocketAddrV4, src_port: u16, sequence: u32) {
         self.tcp_acknowledgement_map
@@ -870,9 +883,10 @@ impl Upstreamer {
         if let Some(ref ipv4) = indicator.get_ipv4() {
             if ipv4.get_src() == self.src_ip_addr {
                 debug!(
-                    "receive from pcap: {} ({} Bytes)",
+                    "receive from pcap: {} ({} + {} Bytes)",
                     indicator.brief(),
-                    indicator.get_size() + buffer.len()
+                    indicator.get_size(),
+                    buffer.len() - indicator.get_size()
                 );
                 // Set downstreamer's hardware address
                 if !self.is_tx_src_hardware_addr_set {
@@ -1012,9 +1026,9 @@ impl Upstreamer {
                             }
                         }
                     } else {
-                        // ACK0
+                        // ACK0 or FIN
                         if *self.tcp_duplicate_map.get(&key).unwrap_or(&0)
-                            > DUPLICATES_BEFORE_FAST_RETRANSMISSION
+                            >= DUPLICATES_BEFORE_FAST_RETRANSMISSION
                         {
                             if !tcp.is_zero_window() {
                                 let is_cooled_down =
@@ -1025,12 +1039,28 @@ impl Upstreamer {
                                         None => false,
                                     };
                                 if !is_cooled_down {
-                                    // Fast retransmit
-                                    // TODO: the procedure is in back N
-                                    self.tx.lock().unwrap().resend_tcp_ack(dst, tcp.get_src())?;
+                                    if tcp.is_fin() {
+                                        // Expect all the data is handled
+                                        let mut tx_locked = self.tx.lock().unwrap();
+                                        tx_locked.set_tcp_acknowledgement(
+                                            dst,
+                                            tcp.get_src(),
+                                            tcp.get_sequence().checked_add(1).unwrap_or(0),
+                                        );
+                                        // Send ACK/FIN
+                                        tx_locked.send_tcp_ack_fin(dst, tcp.get_src())?;
+                                    } else {
+                                        // Fast retransmit
+                                        // TODO: the procedure is in back N
+                                        self.tx
+                                            .lock()
+                                            .unwrap()
+                                            .resend_tcp_ack(dst, tcp.get_src())?;
 
-                                    self.tcp_duplicate_map.insert(key, 0);
-                                    self.tcp_last_retransmission_map.insert(key, Instant::now());
+                                        self.tcp_duplicate_map.insert(key, 0);
+                                        self.tcp_last_retransmission_map
+                                            .insert(key, Instant::now());
+                                    }
                                 }
                             }
                         }
@@ -1055,8 +1085,25 @@ impl Upstreamer {
                     }
                 }
             } else {
-                // Send RST
-                self.tx.lock().unwrap().send_tcp_rst(dst, tcp.get_src())?;
+                if tcp.is_fin() {
+                    // Though a RST is enough, reply with respect
+                    let mut tx_locked = self.tx.lock().unwrap();
+                    #[allow(deprecated)]
+                    tx_locked.set_tcp_sequence(dst, tcp.get_src(), tcp.get_acknowledgement());
+                    tx_locked.set_tcp_acknowledgement(
+                        dst,
+                        tcp.get_src(),
+                        tcp.get_sequence().checked_add(1).unwrap_or(0),
+                    );
+                    // Send ACK/FIN
+                    tx_locked.send_tcp_ack_fin(dst, tcp.get_src())?;
+
+                    // Clean up
+                    tx_locked.remove(dst, tcp.get_src());
+                } else {
+                    // Send RST
+                    self.tx.lock().unwrap().send_tcp_rst(dst, tcp.get_src())?;
+                }
             }
         }
 
@@ -1143,7 +1190,8 @@ impl Upstreamer {
             let is_exist = self.streams.get(&key).is_some();
 
             if is_exist {
-                if self.tx.lock().unwrap().get_cache_size(dst, tcp.get_src()) > 0 {
+                let remain_cache_size = self.tx.lock().unwrap().get_cache_size(dst, tcp.get_src());
+                if remain_cache_size > 0 {
                     // Trigger sending remaining data
                     self.tx.lock().unwrap().send_tcp_ack(dst, tcp.get_src())?;
                 } else {
@@ -1329,6 +1377,9 @@ impl Upstreamer {
     }
 }
 
+/// Represents the times the stream received 0 byte data continuously before close itself.
+const ZEROES_BEFORE_CLOSE: usize = 3;
+
 /// Represents a worker of a SOCKS5 TCP stream.
 struct StreamWorker {
     dst: SocketAddrV4,
@@ -1353,6 +1404,7 @@ impl StreamWorker {
         let a_is_closed_cloned = Arc::clone(&a_is_closed);
         let thread = thread::spawn(move || {
             let mut buffer = [0u8; u16::MAX as usize];
+            let mut zero = 0;
             loop {
                 if a_is_closed_cloned.load(Ordering::Relaxed) {
                     return;
@@ -1363,9 +1415,17 @@ impl StreamWorker {
                             return;
                         }
                         if size == 0 {
-                            a_is_closed_cloned.store(true, Ordering::Relaxed);
-                            return;
+                            zero += 1;
+                            if zero >= ZEROES_BEFORE_CLOSE {
+                                warn!(
+                                    "SOCKS: {}",
+                                    io::Error::new(io::ErrorKind::UnexpectedEof, "received 0")
+                                );
+                                a_is_closed_cloned.store(true, Ordering::Relaxed);
+                                return;
+                            }
                         }
+                        zero = 0;
                         debug!(
                             "receive from SOCKS: {}: {} -> {} ({} Bytes)",
                             "TCP", dst, 0, size
