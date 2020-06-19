@@ -1,3 +1,4 @@
+use log::{debug, trace, warn};
 use std::cmp::min;
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
@@ -14,7 +15,6 @@ pub mod pcap;
 pub mod socks;
 use crate::socks::SocksDatagram;
 use cacher::{Cacher, RandomCacher};
-use log::{debug, trace, warn, Level, LevelFilter};
 use packet::layer::arp::Arp;
 use packet::layer::ethernet::Ethernet;
 use packet::layer::ipv4::Ipv4;
@@ -26,7 +26,8 @@ use pcap::{HardwareAddr, Interface, Receiver, Sender};
 
 /// Sets the logger.
 pub fn set_logger(flags: &args::Flags) {
-    use env_logger::fmt::Color;
+    use env_logger::fmt::{Color, Target};
+    use log::{Level, LevelFilter};
 
     let level = match &flags.vverbose {
         true => LevelFilter::Trace,
@@ -36,6 +37,7 @@ pub fn set_logger(flags: &args::Flags) {
         },
     };
     env_logger::builder()
+        .target(Target::Stdout)
         .filter_level(level)
         .format(|buf, record| {
             let mut style = buf.style();

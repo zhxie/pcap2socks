@@ -1,6 +1,7 @@
 use log::{error, info};
-use pcap2socks as lib;
 use std::sync::{Arc, Mutex};
+
+use pcap2socks as lib;
 
 fn main() {
     // Parse arguments
