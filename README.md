@@ -13,7 +13,7 @@ _This project is currently under development._
 
 ## Dependencies
 
-1. [Npcap](http://www.npcap.org/) or WinPcap in Windows (If using npcap, make sure to install with the "Install Npcap in WinPcap API-compatible Mode"), libpcap in macOS, Linux and others.
+1. [Npcap](http://www.npcap.org/) or WinPcap in Windows (If using Npcap, make sure to install with the "Install Npcap in WinPcap API-compatible Mode"), libpcap in macOS, Linux and others.
 
 ## Build
 
@@ -24,11 +24,21 @@ If you want to build **pcap2socks** in Windows, you must meet all the three requ
 ## Usage
 
 ```
-cargo run -- -s <ADDRESS> -d <ADDRESS>
+cargo run -- -s <ADDRESS>
 
-# Or using proxy ARP (recommended)
+# Or a more general one using proxy ARP (recommended)
 cargo run -- -s <ADDRESS> -p <ADDRESS> -d <ADDRESS>
 ```
+
+### Flags
+
+`-h, --help`: Prints help information.
+
+`-v, --verbose`: Prints verbose information.
+
+`--version`: Prints version information.
+
+`-V, --vverbose`: Prints vverbose information.
 
 ### Options
 
@@ -41,14 +51,6 @@ cargo run -- -s <ADDRESS> -p <ADDRESS> -d <ADDRESS>
 `-p, --publish <ADDRESS>`: ARP publishing address. If this value is set, `pcap2socks` will reply ARP request as it owns the specified address which is not on the network, also called proxy ARP.
 
 `-d, --destination <ADDRESS>`: Destination, default as `127.0.0.1:1080`.
-
-`-h, --help`: Prints help information.
-
-`-v, --verbose`: Prints verbose information.
-
-`--version`: Prints version information.
-
-`-V, --vverbose`: Prints vverbose information.
 
 ## License
 

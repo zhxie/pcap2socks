@@ -281,7 +281,7 @@ impl Downstreamer {
         let cache = self
             .tcp_cache2_map
             .entry(key)
-            .or_insert_with(|| Cacher::new_extendable(sequence));
+            .or_insert_with(|| Cacher::new_expandable(sequence));
         cache.append(payload)?;
 
         self.send_tcp_ack(dst, src_port)
@@ -1046,10 +1046,7 @@ impl Upstreamer {
                             tcp.get_sequence().checked_add(1).unwrap_or(0),
                         );
                         // Send ACK/FIN
-                        self.tx
-                            .lock()
-                            .unwrap()
-                            .send_tcp_ack_fin(dst, tcp.get_src())?;
+                        tx_locked.send_tcp_ack_fin(dst, tcp.get_src())?;
                     } else {
                         self.remove(indicator);
                         self.tx.lock().unwrap().remove(dst, tcp.get_src());

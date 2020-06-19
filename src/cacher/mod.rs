@@ -4,7 +4,9 @@ use std::io;
 use std::ops::Bound::Included;
 
 /// Represents the initial size of cache.
-const CACHE_SIZE: usize = 64 * 1024;
+const INITIAL_SIZE: usize = 64 * 1024;
+/// Represents the expansion factor of the cache. The cache will be expanded by the factor.
+const EXPANSION_FACTOR: f64 = 1.5;
 
 /// Represents the max distance of u32 values between packets in an u32 window.
 const MAX_U32_WINDOW_SIZE: usize = 4 * 1024 * 1024;
@@ -13,7 +15,7 @@ const MAX_U32_WINDOW_SIZE: usize = 4 * 1024 * 1024;
 #[derive(Debug)]
 pub struct Cacher {
     buffer: Vec<u8>,
-    extendable: bool,
+    expandable: bool,
     sequence: u32,
     head: usize,
     size: usize,
@@ -23,8 +25,8 @@ impl Cacher {
     /// Creates a new `Cacher`.
     pub fn new(sequence: u32) -> Cacher {
         Cacher {
-            buffer: vec![0; CACHE_SIZE],
-            extendable: false,
+            buffer: vec![0; INITIAL_SIZE],
+            expandable: false,
             sequence,
             head: 0,
             size: 0,
@@ -32,9 +34,9 @@ impl Cacher {
     }
 
     /// Creates a new `Cacher` which can increase its size dynamically.
-    pub fn new_extendable(sequence: u32) -> Cacher {
+    pub fn new_expandable(sequence: u32) -> Cacher {
         let mut cacher = Cacher::new(sequence);
-        cacher.extendable = true;
+        cacher.expandable = true;
 
         cacher
     }
@@ -42,9 +44,12 @@ impl Cacher {
     /// Appends some bytes to the end of the cache.
     pub fn append(&mut self, buffer: &[u8]) -> io::Result<()> {
         if buffer.len() > self.buffer.len() - self.size {
-            if self.is_extendable() {
+            if self.is_expandable() {
                 // Extend the buffer
-                let size = max(self.buffer.len() * 2, self.buffer.len() + buffer.len());
+                let size = max(
+                    (self.buffer.len() as f64 * EXPANSION_FACTOR) as usize,
+                    self.buffer.len() + buffer.len(),
+                );
 
                 let mut new_buffer = vec![0u8; size];
 
@@ -145,8 +150,8 @@ impl Cacher {
         self.size
     }
 
-    fn is_extendable(&self) -> bool {
-        self.extendable
+    fn is_expandable(&self) -> bool {
+        self.expandable
     }
 }
 
@@ -154,7 +159,7 @@ impl Cacher {
 #[derive(Debug)]
 pub struct RandomCacher {
     buffer: Vec<u8>,
-    extendable: bool,
+    expandable: bool,
     sequence: u32,
     head: usize,
     /// Represents the expected size from the head to the tail. NOT all the bytes in [head, head + size) are existed.
@@ -167,8 +172,8 @@ impl RandomCacher {
     /// Creates a new `RandomCacher`.
     pub fn new(sequence: u32) -> RandomCacher {
         RandomCacher {
-            buffer: vec![0u8; CACHE_SIZE],
-            extendable: false,
+            buffer: vec![0u8; INITIAL_SIZE],
+            expandable: false,
             sequence,
             head: 0,
             size: 0,
@@ -177,9 +182,9 @@ impl RandomCacher {
     }
 
     /// Creates a new `RandomCacher` which can increase its size dynamically.
-    pub fn new_extendable(sequence: u32) -> RandomCacher {
+    pub fn new_expandable(sequence: u32) -> RandomCacher {
         let mut cacher = RandomCacher::new(sequence);
-        cacher.extendable = true;
+        cacher.expandable = true;
 
         cacher
     }
@@ -196,9 +201,9 @@ impl RandomCacher {
 
         let size = sub_sequence + buffer.len();
         if size > self.buffer.len() {
-            if self.is_extendable() {
+            if self.is_expandable() {
                 // Extend the buffer
-                let size = max(self.buffer.len() * 2, size);
+                let size = max((self.buffer.len() as f64 * EXPANSION_FACTOR) as usize, size);
 
                 let mut new_buffer = vec![0u8; size];
 
@@ -355,7 +360,7 @@ impl RandomCacher {
         }
     }
 
-    fn is_extendable(&self) -> bool {
-        self.extendable
+    fn is_expandable(&self) -> bool {
+        self.expandable
     }
 }
