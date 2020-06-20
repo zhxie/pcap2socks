@@ -1438,12 +1438,12 @@ impl StreamWorker {
             let mut zero = 0;
             loop {
                 if a_is_closed_cloned.load(Ordering::Relaxed) {
-                    return;
+                    break;
                 }
                 match stream_cloned.read(&mut buffer) {
                     Ok(size) => {
                         if a_is_closed_cloned.load(Ordering::Relaxed) {
-                            return;
+                            break;
                         }
                         if size == 0 {
                             zero += 1;
@@ -1456,7 +1456,7 @@ impl StreamWorker {
                                     io::Error::from(io::ErrorKind::UnexpectedEof)
                                 );
                                 a_is_closed_cloned.store(true, Ordering::Relaxed);
-                                return;
+                                break;
                             }
                         }
                         debug!(
@@ -1480,7 +1480,7 @@ impl StreamWorker {
                         }
                         warn!("SOCKS: {}: {} -> {}: {}", "TCP", 0, dst, e);
                         a_is_closed_cloned.store(true, Ordering::Relaxed);
-                        return;
+                        break;
                     }
                 }
             }
@@ -1567,12 +1567,12 @@ impl DatagramWorker {
             let mut buffer = [0u8; u16::MAX as usize];
             loop {
                 if a_is_closed_cloned.load(Ordering::Relaxed) {
-                    return;
+                    break;
                 }
                 match a_datagram_cloned.recv_from(&mut buffer) {
                     Ok((size, addr)) => {
                         if a_is_closed_cloned.load(Ordering::Relaxed) {
-                            return;
+                            break;
                         }
                         debug!(
                             "receive from SOCKS: {}: {} -> {} ({} Bytes)",
@@ -1602,7 +1602,7 @@ impl DatagramWorker {
                         );
                         a_is_closed_cloned.store(true, Ordering::Relaxed);
 
-                        return;
+                        break;
                     }
                 }
             }

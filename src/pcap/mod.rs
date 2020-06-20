@@ -11,6 +11,9 @@ pub const HARDWARE_ADDR_UNSPECIFIED: HardwareAddr = pnet::datalink::MacAddr(0, 0
 pub type Sender = Box<dyn DataLinkSender>;
 pub type Receiver = Box<dyn DataLinkReceiver>;
 
+/// Represents the buffer size of pcap channels.
+const BUFFER_SIZE: usize = 256 * 1024;
+
 /// Represents a network interface and its associated addresses.
 #[derive(Clone, Debug)]
 pub struct Interface {
@@ -48,8 +51,8 @@ impl Interface {
             ))?;
 
         let mut config = Config::default();
-        config.write_buffer_size = u16::MAX as usize;
-        config.read_buffer_size = u16::MAX as usize;
+        config.write_buffer_size = BUFFER_SIZE;
+        config.read_buffer_size = BUFFER_SIZE;
         let channel = datalink::channel(&inter, config)?;
         let channel = match channel {
             Channel::Ethernet(tx, rx) => (tx, rx),
