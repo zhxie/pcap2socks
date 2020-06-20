@@ -1101,8 +1101,22 @@ impl Upstreamer {
                     // Clean up
                     tx_locked.remove(dst, tcp.get_src());
                 } else {
-                    // Send RST
-                    self.tx.lock().unwrap().send_tcp_rst(dst, tcp.get_src())?;
+                    let mut tx_locked = self.tx.lock().unwrap();
+                    #[allow(deprecated)]
+                    tx_locked.set_tcp_sequence(dst, tcp.get_src(), tcp.get_acknowledgement());
+                    tx_locked.set_tcp_acknowledgement(
+                        dst,
+                        tcp.get_src(),
+                        tcp.get_sequence().checked_add(1).unwrap_or(0),
+                    );
+                    // Send ACK/RST
+                    self.tx
+                        .lock()
+                        .unwrap()
+                        .send_tcp_ack_rst(dst, tcp.get_src())?;
+
+                    // Clean up
+                    tx_locked.remove(dst, tcp.get_src());
                 }
             }
         }
@@ -1208,8 +1222,20 @@ impl Upstreamer {
                     tx_locked.send_tcp_ack_fin(dst, tcp.get_src())?;
                 }
             } else {
-                // Send RST
-                self.tx.lock().unwrap().send_tcp_rst(dst, tcp.get_src())?;
+                // Though a RST is enough, reply with respect
+                let mut tx_locked = self.tx.lock().unwrap();
+                #[allow(deprecated)]
+                tx_locked.set_tcp_sequence(dst, tcp.get_src(), tcp.get_acknowledgement());
+                tx_locked.set_tcp_acknowledgement(
+                    dst,
+                    tcp.get_src(),
+                    tcp.get_sequence().checked_add(1).unwrap_or(0),
+                );
+                // Send ACK/FIN
+                tx_locked.send_tcp_ack_fin(dst, tcp.get_src())?;
+
+                // Clean up
+                tx_locked.remove(dst, tcp.get_src());
             }
         }
 
@@ -1417,15 +1443,11 @@ impl StreamWorker {
                         if size == 0 {
                             zero += 1;
                             if zero >= ZEROES_BEFORE_CLOSE {
-                                warn!(
-                                    "SOCKS: {}",
-                                    io::Error::new(io::ErrorKind::UnexpectedEof, "received 0")
-                                );
+                                warn!("SOCKS: {}", io::Error::from(io::ErrorKind::UnexpectedEof));
                                 a_is_closed_cloned.store(true, Ordering::Relaxed);
                                 return;
                             }
                         }
-                        zero = 0;
                         debug!(
                             "receive from SOCKS: {}: {} -> {} ({} Bytes)",
                             "TCP", dst, 0, size
