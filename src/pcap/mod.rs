@@ -99,9 +99,11 @@ pub fn interfaces() -> Vec<Interface> {
     let ifs: Vec<Interface> = inters
         .iter()
         .map(|inter| {
-            /*if !inter.is_up() {
+            /* Cannot get flags using WinPcap in Windows
+            if !inter.is_up() {
                 return Err(());
-            }*/
+            }
+            */
 
             let mut i = Interface::new();
             i.name = inter.name.clone();

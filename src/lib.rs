@@ -1403,9 +1403,12 @@ impl Upstreamer {
             if prev_src_port != 0 {
                 // Reuse
                 self.datagram_map[prev_src_port as usize] = 0;
-                warn!(
+                trace!(
                     "reuse UDP port {} = {} to {} = {}",
-                    prev_src_port, local_port, src_port, local_port
+                    prev_src_port,
+                    local_port,
+                    src_port,
+                    local_port
                 );
             }
             self.datagram_map[src_port as usize] = local_port;
@@ -1460,6 +1463,8 @@ impl StreamWorker {
                         if size == 0 {
                             zero += 1;
                             if zero >= ZEROES_BEFORE_CLOSE {
+                                // TODO: a potential bug
+                                /* This may happen frequently for unknown reason
                                 warn!(
                                     "SOCKS: {}: {} -> {}: {}",
                                     "TCP",
@@ -1467,6 +1472,7 @@ impl StreamWorker {
                                     dst,
                                     io::Error::from(io::ErrorKind::UnexpectedEof)
                                 );
+                                */
                                 a_is_closed_cloned.store(true, Ordering::Relaxed);
                                 break;
                             }

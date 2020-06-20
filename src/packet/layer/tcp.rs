@@ -277,6 +277,7 @@ impl Layer for Tcp {
     }
 
     fn get_size(&self) -> usize {
+        // TODO: the size of layers with options may be wrong
         TcpPacket::packet_size(&self.layer)
     }
 

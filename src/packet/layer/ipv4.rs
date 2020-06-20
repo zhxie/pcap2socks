@@ -188,6 +188,7 @@ impl Layer for Ipv4 {
     }
 
     fn get_size(&self) -> usize {
+        // TODO: the size of layers with options may be wrong
         Ipv4Packet::packet_size(&self.layer)
     }
 
