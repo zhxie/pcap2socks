@@ -1,4 +1,5 @@
 use log::{debug, trace, warn};
+use lru::LruCache;
 use std::cmp::min;
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
@@ -773,10 +774,11 @@ pub struct Upstreamer {
     tcp_duplicate_map: HashMap<(u16, SocketAddrV4), usize>,
     tcp_last_retransmission_map: HashMap<(u16, SocketAddrV4), Instant>,
     tcp_cache_map: HashMap<(u16, SocketAddrV4), RandomCacher>,
-    next_udp_port: u16,
     datagrams: Vec<Option<DatagramWorker>>,
+    /// Represents the map mapping a source port to a local port (datagram)
     datagram_map: Vec<u16>,
-    datagram_reverse_map: Vec<u16>,
+    /// Represents the LRU mapping a local port to a source port
+    udp_lru: LruCache<u16, u16>,
     defrag: Defraggler,
 }
 
@@ -788,7 +790,7 @@ impl Upstreamer {
         local_ip_addr: Option<Ipv4Addr>,
         remote: SocketAddrV4,
     ) -> Upstreamer {
-        let upstreamer = Upstreamer {
+        let mut upstreamer = Upstreamer {
             tx,
             is_tx_src_hardware_addr_set: false,
             src_ip_addr,
@@ -800,10 +802,9 @@ impl Upstreamer {
             tcp_duplicate_map: HashMap::new(),
             tcp_last_retransmission_map: HashMap::new(),
             tcp_cache_map: HashMap::new(),
-            next_udp_port: INITIAL_PORT,
             datagrams: (0..PORT_COUNT).map(|_| None).collect(),
             datagram_map: vec![0u16; u16::MAX as usize],
-            datagram_reverse_map: vec![0u16; PORT_COUNT],
+            udp_lru: LruCache::new(PORT_COUNT),
             defrag: Defraggler::new(),
         };
         if let Some(local_ip_addr) = local_ip_addr {
@@ -812,6 +813,9 @@ impl Upstreamer {
                 .lock()
                 .unwrap()
                 .set_local_ip_addr(local_ip_addr);
+        }
+        for i in 0..PORT_COUNT {
+            upstreamer.udp_lru.put(i as u16, 0);
         }
 
         upstreamer
@@ -1386,25 +1390,33 @@ impl Upstreamer {
     }
 
     fn get_local_udp_port(&mut self, src_port: u16) -> u16 {
-        if self.datagram_map[src_port as usize] == 0 {
-            let index = (self.next_udp_port - INITIAL_PORT) as usize;
+        let local_port = self.datagram_map[src_port as usize];
+        if local_port == 0 {
+            let pair = self.udp_lru.pop_lru().unwrap();
+            let index = pair.0;
+            let prev_src_port = pair.1;
+            let local_port = INITIAL_PORT + index;
 
-            if self.datagram_reverse_map[index] != 0 {
-                self.datagram_map[self.datagram_reverse_map[index] as usize] = 0;
-            }
-            self.datagram_map[src_port as usize] = self.next_udp_port;
-            self.datagram_reverse_map[index] = src_port;
+            // Update LRU
+            self.udp_lru.put(index, src_port);
 
-            // To next port
-            self.next_udp_port = self.next_udp_port.checked_add(1).unwrap_or(0);
-            if self.next_udp_port > INITIAL_PORT + (PORT_COUNT - 1) as u16
-                || self.next_udp_port == 0
-            {
-                self.next_udp_port = INITIAL_PORT;
+            if prev_src_port != 0 {
+                // Reuse
+                self.datagram_map[prev_src_port as usize] = 0;
+                warn!(
+                    "reuse UDP port {} = {} to {} = {}",
+                    prev_src_port, local_port, src_port, local_port
+                );
             }
+            self.datagram_map[src_port as usize] = local_port;
+
+            local_port
+        } else {
+            // Update LRU
+            self.udp_lru.get(&local_port);
+
+            local_port
         }
-
-        self.datagram_map[src_port as usize]
     }
 }
 
