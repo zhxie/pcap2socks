@@ -1110,10 +1110,7 @@ impl Upstreamer {
                         tcp.get_sequence().checked_add(1).unwrap_or(0),
                     );
                     // Send ACK/RST
-                    self.tx
-                        .lock()
-                        .unwrap()
-                        .send_tcp_ack_rst(dst, tcp.get_src())?;
+                    tx_locked.send_tcp_ack_rst(dst, tcp.get_src())?;
 
                     // Clean up
                     tx_locked.remove(dst, tcp.get_src());
