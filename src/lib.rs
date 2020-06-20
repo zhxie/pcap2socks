@@ -1021,8 +1021,16 @@ impl Upstreamer {
                             }
                             None => {
                                 // Retransmission or unordered
+                                // Update window size
+                                let mut tx_locked = self.tx.lock().unwrap();
+                                tx_locked.set_tcp_window(
+                                    dst,
+                                    tcp.get_src(),
+                                    cache.get_remaining_size(),
+                                );
+
                                 // Send ACK0
-                                self.tx.lock().unwrap().send_tcp_ack_0(dst, tcp.get_src())?;
+                                tx_locked.send_tcp_ack_0(dst, tcp.get_src())?;
                             }
                         }
                     } else {
@@ -1132,7 +1140,7 @@ impl Upstreamer {
                 // Clean up
                 self.remove(indicator);
 
-                self.update_tcp_sequence(indicator);
+                self.tcp_sequence_map.insert(key, tcp.get_sequence());
 
                 // Connect
                 let stream = StreamWorker::connect(self.get_tx(), tcp.get_src(), dst, self.remote);
@@ -1440,7 +1448,13 @@ impl StreamWorker {
                         if size == 0 {
                             zero += 1;
                             if zero >= ZEROES_BEFORE_CLOSE {
-                                warn!("SOCKS: {}", io::Error::from(io::ErrorKind::UnexpectedEof));
+                                warn!(
+                                    "SOCKS: {}: {} -> {}: {}",
+                                    "TCP",
+                                    0,
+                                    dst,
+                                    io::Error::from(io::ErrorKind::UnexpectedEof)
+                                );
                                 a_is_closed_cloned.store(true, Ordering::Relaxed);
                                 return;
                             }
@@ -1464,7 +1478,7 @@ impl StreamWorker {
                             thread::sleep(Duration::from_millis(TIMEDOUT_WAIT));
                             continue;
                         }
-                        warn!("SOCKS: {}", e);
+                        warn!("SOCKS: {}: {} -> {}: {}", "TCP", 0, dst, e);
                         a_is_closed_cloned.store(true, Ordering::Relaxed);
                         return;
                     }
@@ -1579,7 +1593,13 @@ impl DatagramWorker {
                             thread::sleep(Duration::from_millis(TIMEDOUT_WAIT));
                             continue;
                         }
-                        warn!("SOCKS: {}", e);
+                        warn!(
+                            "SOCKS: {}: {} = {}: {}",
+                            "UDP",
+                            local_port,
+                            a_src_port_cloned.load(Ordering::Relaxed),
+                            e
+                        );
                         a_is_closed_cloned.store(true, Ordering::Relaxed);
 
                         return;
