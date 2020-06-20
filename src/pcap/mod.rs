@@ -1,4 +1,4 @@
-use pnet::datalink::{self, Channel, DataLinkReceiver, DataLinkSender, MacAddr};
+use pnet::datalink::{self, Channel, Config, DataLinkReceiver, DataLinkSender, MacAddr};
 use std::clone::Clone;
 use std::fmt::{self, Display, Formatter};
 use std::io;
@@ -47,7 +47,10 @@ impl Interface {
                 "interface not found",
             ))?;
 
-        let channel = datalink::channel(&inter, Default::default())?;
+        let mut config = Config::default();
+        config.write_buffer_size = u16::MAX as usize;
+        config.read_buffer_size = u16::MAX as usize;
+        let channel = datalink::channel(&inter, config)?;
         let channel = match channel {
             Channel::Ethernet(tx, rx) => (tx, rx),
             _ => return Err(io::Error::new(io::ErrorKind::Other, "unknown link type")),
