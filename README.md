@@ -2,8 +2,6 @@
 
 **pcap2socks** is a proxy which redirect traffic to SOCKS proxy with pcap written in Rust.
 
-_This project is currently under development._
-
 ## Features
 
 - **Redirect Traffic**: Redirect TCP and UDP traffic to a SOCKS5 proxy.
