@@ -1190,11 +1190,21 @@ impl Upstreamer {
 
                 self.tcp_sequence_map.insert(key, tcp.get_sequence());
 
+                // Latency test
+                let timer = Instant::now();
+
                 // Connect
                 let stream = StreamWorker::connect(self.get_tx(), tcp.get_src(), dst, self.remote);
 
                 let stream = match stream {
                     Ok(stream) => {
+                        // Latency test result (not accurate)
+                        debug!(
+                            "Latency to {}: {} ms (RTT)",
+                            dst,
+                            timer.elapsed().as_millis()
+                        );
+
                         let mut tx_locked = self.tx.lock().unwrap();
                         // Clean up
                         tx_locked.remove(dst, tcp.get_src());
