@@ -65,12 +65,19 @@ pub fn interfaces() -> Vec<Interface> {
         .collect()
 }
 
-/// Gets a list of available network interfaces which is up for the current machine.
-fn up_interfaces() -> Vec<Interface> {
-    interfaces()
+/// Gets a list of available network interfaces which is possibly can be used for the current machine.
+fn auto_interfaces() -> Vec<Interface> {
+    // With specified IP address
+    let mut inters: Vec<Interface> = interfaces()
         .into_iter()
-        .filter(|inter| inter.is_up)
-        .collect()
+        .filter(|inter| !inter.ip_addrs[0].is_unspecified())
+        .collect();
+    // Is up
+    if inters.len() > 1 {
+        inters = inters.into_iter().filter(|inter| inter.is_up).collect();
+    }
+
+    inters
 }
 
 /// Gets an available network interface match the name.
@@ -81,7 +88,7 @@ pub fn interface(name: Option<String>) -> Option<Interface> {
             inters.retain(|current_inter| current_inter.name == name);
             inters
         }
-        None => up_interfaces(),
+        None => auto_interfaces(),
     };
 
     if inters.len() != 1 {
