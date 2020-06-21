@@ -1,6 +1,6 @@
 use log::{debug, trace, warn};
 use lru::LruCache;
-use std::cmp::min;
+use std::cmp::{max, min};
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, Shutdown, SocketAddrV4, TcpStream};
@@ -96,6 +96,11 @@ const MAX_U32_WINDOW_SIZE: usize = 256 * 1024;
 
 /// Represents the wait time after a `TimedOut` `IoError`.
 const TIMEDOUT_WAIT: u64 = 20;
+
+/// Represents the minimum packet size.
+/// Because all traffic is in Ethernet, and the 802.3 specifies the minimum is 64 Bytes.
+/// Exclude the 4 bytes used in FCS, the minimum packet size in pcap2socks is 60 Bytes.
+const MINIMUM_PACKET_SIZE: usize = 60;
 
 /// Represents the channel downstream traffic to the source in pcap.
 pub struct Downstreamer {
@@ -722,8 +727,9 @@ impl Downstreamer {
     fn send(&mut self, indicator: &Indicator) -> io::Result<()> {
         // Serialize
         let size = indicator.get_size();
-        let mut buffer = vec![0u8; size];
-        indicator.serialize(&mut buffer)?;
+        let buffer_size = max(size, MINIMUM_PACKET_SIZE);
+        let mut buffer = vec![0u8; buffer_size];
+        indicator.serialize(&mut buffer[..size])?;
 
         // Send
         self.tx.send_to(&buffer, None).unwrap_or(Ok(()))?;
@@ -735,8 +741,9 @@ impl Downstreamer {
     fn send_with_payload(&mut self, indicator: &Indicator, payload: &[u8]) -> io::Result<()> {
         // Serialize
         let size = indicator.get_size();
-        let mut buffer = vec![0u8; size + payload.len()];
-        indicator.serialize_with_payload(&mut buffer, payload)?;
+        let buffer_size = max(size + payload.len(), MINIMUM_PACKET_SIZE);
+        let mut buffer = vec![0u8; buffer_size];
+        indicator.serialize_with_payload(&mut buffer[..size + payload.len()], payload)?;
 
         // Send
         self.tx.send_to(&buffer, None).unwrap_or(Ok(()))?;
@@ -885,12 +892,14 @@ impl Upstreamer {
 
     fn handle_ipv4(&mut self, indicator: &Indicator, buffer: &[u8]) -> io::Result<()> {
         if let Some(ref ipv4) = indicator.get_ipv4() {
+            let buffer_without_padding = &buffer
+                [..indicator.get_ethernet().unwrap().get_size() + ipv4.get_total_length() as usize];
             if ipv4.get_src() == self.src_ip_addr {
                 debug!(
                     "receive from pcap: {} ({} + {} Bytes)",
                     indicator.brief(),
                     indicator.get_size(),
-                    buffer.len() - indicator.get_size()
+                    buffer_without_padding.len() - indicator.get_size()
                 );
                 // Set downstreamer's hardware address
                 if !self.is_tx_src_hardware_addr_set {
@@ -903,24 +912,32 @@ impl Upstreamer {
 
                 if ipv4.is_fragment() {
                     // Fragmentation
-                    let frag = match self.defrag.add(indicator, buffer) {
+                    let frag = match self.defrag.add(indicator, buffer_without_padding) {
                         Some(frag) => frag,
                         None => return Ok(()),
                     };
-                    let (indicator, buffer) = frag.concatenate();
+                    let (indicator, buffer_without_padding) = frag.concatenate();
 
                     if let Some(t) = indicator.get_transport_type() {
                         match t {
-                            LayerTypes::Tcp => self.handle_tcp(&indicator, buffer)?,
-                            LayerTypes::Udp => self.handle_udp(&indicator, buffer)?,
+                            LayerTypes::Tcp => {
+                                self.handle_tcp(&indicator, buffer_without_padding)?
+                            }
+                            LayerTypes::Udp => {
+                                self.handle_udp(&indicator, buffer_without_padding)?
+                            }
                             _ => unreachable!(),
                         }
                     }
                 } else {
                     if let Some(t) = indicator.get_transport_type() {
                         match t {
-                            LayerTypes::Tcp => self.handle_tcp(indicator, buffer)?,
-                            LayerTypes::Udp => self.handle_udp(indicator, buffer)?,
+                            LayerTypes::Tcp => {
+                                self.handle_tcp(indicator, buffer_without_padding)?
+                            }
+                            LayerTypes::Udp => {
+                                self.handle_udp(indicator, buffer_without_padding)?
+                            }
                             _ => unreachable!(),
                         }
                     }
