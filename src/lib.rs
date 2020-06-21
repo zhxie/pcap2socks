@@ -1,4 +1,4 @@
-use log::{debug, trace, warn};
+use log::{debug, info, trace, warn};
 use lru::LruCache;
 use std::cmp::{max, min};
 use std::collections::HashMap;
@@ -89,6 +89,26 @@ pub fn interface(name: Option<String>) -> Option<Interface> {
     } else {
         Some(inters[0].clone())
     }
+}
+
+/// Prints the dialog with information how to set up the proxied device.
+pub fn show_info(ip_addr: Ipv4Addr, gateway: Ipv4Addr, mtu: u16) {
+    let ip_addr_octets = ip_addr.octets();
+    let gateway_octets = gateway.octets();
+    let mask = Ipv4Addr::new(
+        !(ip_addr_octets[0] ^ gateway_octets[0]),
+        !(ip_addr_octets[1] ^ gateway_octets[1]),
+        !(ip_addr_octets[2] ^ gateway_octets[2]),
+        0,
+    );
+    info!("Please set the network of your device which is going to be proxied with the following parameters:");
+    info!("  ┌─{:─<10}─{:─>15}─┐", "", "");
+    info!("  │ {:<10} {:>15} │", "IP Address", ip_addr);
+    info!("  │ {:<10} {:>15} │", "Mask", mask);
+    info!("  │ {:<10} {:>15} │", "Gateway", gateway);
+    info!("  │─{:─<10}─{:─>15}─│", "", "");
+    info!("  │ {:<10} {:>15} │", "MTU", mtu);
+    info!("  └─{:─<10}─{:─>15}─┘", "", "");
 }
 
 /// Represents the max distance of `u32` values between packets in an `u32` window.

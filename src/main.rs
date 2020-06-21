@@ -31,15 +31,21 @@ fn main() {
         }
     };
     info!("Listen on {}", inter);
-    info!("MTU {}", opts.mtu);
+    info!("Break packets with MTU {}", opts.mtu);
 
     // Publish
     if let Some(publish) = opts.publish {
-        info!("Publish {}", publish);
+        info!("Publish for {}", publish);
     }
 
+    // Instructions
+    lib::show_info(
+        opts.src,
+        opts.publish.unwrap_or(inter.ip_addrs[0]),
+        opts.mtu,
+    );
+
     // Proxy
-    info!("Proxy {} to {}", opts.src, opts.dst);
     let (tx, mut rx) = match inter.open() {
         Ok((tx, rx)) => (tx, rx),
         Err(ref e) => {
@@ -60,6 +66,7 @@ fn main() {
         opts.publish,
         opts.dst,
     );
+    info!("Proxy {} to {}", opts.src, opts.dst);
     if let Err(ref e) = upstreamer.open(&mut rx) {
         error!("{}", e);
     }
