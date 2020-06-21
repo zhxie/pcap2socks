@@ -1,5 +1,5 @@
 pub use super::{Layer, LayerType, LayerTypes};
-use pnet::packet::tcp::{self, MutableTcpPacket, TcpFlags, TcpPacket};
+use pnet::packet::tcp::{self, MutableTcpPacket, TcpFlags, TcpOptionPacket, TcpPacket};
 use std::clone::Clone;
 use std::fmt::{self, Display, Formatter};
 use std::io;
@@ -277,8 +277,14 @@ impl Layer for Tcp {
     }
 
     fn get_size(&self) -> usize {
-        // TODO: the size of layers with options may be wrong
-        TcpPacket::packet_size(&self.layer)
+        let mut tcp_size = TcpPacket::packet_size(&self.layer);
+        let mut tcp_options_size = 0;
+        for option in &self.layer.options {
+            tcp_size -= 1;
+            tcp_options_size += TcpOptionPacket::packet_size(option);
+        }
+
+        tcp_size + tcp_options_size
     }
 
     fn serialize(&self, buffer: &mut [u8], _: usize) -> io::Result<usize> {
