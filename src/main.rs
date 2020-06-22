@@ -67,6 +67,7 @@ fn main() {
         opts.src,
         opts.publish,
         opts.dst,
+        opts.initial,
     );
     info!("Proxy {} to {}", opts.src, opts.dst);
     if let Err(ref e) = redirector.open(&mut rx) {

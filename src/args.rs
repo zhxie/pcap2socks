@@ -79,10 +79,14 @@ impl From<AddrParseError> for ParseError {
 
 type Result = result::Result<Opts, ParseError>;
 
+/// Represents the initial UDP port for binding in local. This will become a option in the future release.
+const INITIAL_PORT: u16 = 32768;
+
 /// Represents the options of the application.
 pub struct Opts {
     pub verbose: bool,
     pub vverbose: bool,
+    pub initial: u16,
     pub inter: Option<String>,
     pub mtu: u16,
     pub publish: Option<Ipv4Addr>,
@@ -96,6 +100,7 @@ impl Opts {
         Opts {
             verbose: false,
             vverbose: false,
+            initial: 32768,
             inter: None,
             mtu: 1400,
             publish: None,
@@ -119,8 +124,9 @@ impl Opts {
         Ok(Opts {
             verbose: flags.verbose,
             vverbose: flags.vverbose,
-            mtu: flags.mtu,
+            initial: INITIAL_PORT,
             inter: flags.inter.clone(),
+            mtu: flags.mtu,
             publish,
             src,
             dst,

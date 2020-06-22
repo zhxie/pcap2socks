@@ -800,8 +800,6 @@ const DUPLICATES_BEFORE_FAST_RETRANSMISSION: usize = 3;
 /// Represents the cool down time between 2 retransmissions.
 const RETRANSMISSION_COOL_DOWN: u128 = 1000;
 
-/// Represents the initial UDP port for binding in local.
-const INITIAL_PORT: u16 = 32768;
 /// Represents the max limit of UDP port for binding in local.
 const PORT_COUNT: usize = 64;
 
@@ -819,6 +817,7 @@ pub struct Redirector {
     tcp_last_retransmission_map: HashMap<(u16, SocketAddrV4), Instant>,
     tcp_cache_map: HashMap<(u16, SocketAddrV4), RandomCacher>,
     datagrams: Vec<Option<DatagramWorker>>,
+    udp_initial_port: u16,
     /// Represents the map mapping a source port to a local port (datagram).
     datagram_map: Vec<u16>,
     /// Represents the LRU mapping a local port to a source port.
@@ -833,6 +832,7 @@ impl Redirector {
         src_ip_addr: Ipv4Addr,
         local_ip_addr: Option<Ipv4Addr>,
         remote: SocketAddrV4,
+        initial: u16,
     ) -> Redirector {
         let mut redirector = Redirector {
             tx,
@@ -847,6 +847,7 @@ impl Redirector {
             tcp_last_retransmission_map: HashMap::new(),
             tcp_cache_map: HashMap::new(),
             datagrams: (0..PORT_COUNT).map(|_| None).collect(),
+            udp_initial_port: initial,
             datagram_map: vec![0u16; u16::MAX as usize],
             udp_lru: LruCache::new(PORT_COUNT),
             defrag: Defraggler::new(),
@@ -1318,7 +1319,7 @@ impl Redirector {
     fn handle_udp(&mut self, indicator: &Indicator, buffer: &[u8]) -> io::Result<()> {
         if let Some(ref udp) = indicator.get_udp() {
             let port = self.get_local_udp_port(udp.get_src());
-            let index = (port - INITIAL_PORT) as usize;
+            let index = (port - self.udp_initial_port) as usize;
 
             // Bind
             let is_create;
@@ -1459,7 +1460,7 @@ impl Redirector {
             let pair = self.udp_lru.pop_lru().unwrap();
             let index = pair.0;
             let prev_src_port = pair.1;
-            let local_port = INITIAL_PORT + index;
+            let local_port = self.udp_initial_port + index;
 
             // Update LRU
             self.udp_lru.put(index, src_port);
