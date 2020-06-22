@@ -1,20 +1,19 @@
+use log::info;
+use std::io::Write;
+use std::net::Ipv4Addr;
+
 pub mod args;
 pub mod cacher;
+mod datagram_worker;
 pub mod downstreamer;
 pub mod packet;
 pub mod pcap;
 pub mod socks;
+mod stream_worker;
 pub mod upstreamer;
 
-mod datagram_worker;
-mod stream_worker;
-
-use log::info;
-use pcap::Interface;
-use std::io::Write;
-use std::net::Ipv4Addr;
-
 pub use downstreamer::Downstreamer;
+use pcap::Interface;
 pub use upstreamer::Upstreamer;
 
 /// Represents the wait time after a `TimedOut` `IoError`.
@@ -22,11 +21,6 @@ const TIMEDOUT_WAIT: u64 = 20;
 
 /// Represents the max distance of `u32` values between packets in an `u32` window.
 const MAX_U32_WINDOW_SIZE: usize = 256 * 1024;
-
-/// Represents the minimum packet size.
-/// Because all traffic is in Ethernet, and the 802.3 specifies the minimum is 64 Bytes.
-/// Exclude the 4 bytes used in FCS, the minimum packet size in pcap2socks is 60 Bytes.
-const MINIMUM_PACKET_SIZE: usize = 60;
 
 /// Sets the logger.
 pub fn set_logger(flags: &args::Flags) {

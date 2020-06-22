@@ -1,4 +1,4 @@
-pub use super::{Layer, LayerType, LayerTypes};
+use super::{Layer, LayerType, LayerTypes};
 use pnet::packet::ethernet::{self, EtherTypes, EthernetPacket, MutableEthernetPacket};
 use pnet::util::MacAddr;
 use std::clone::Clone;

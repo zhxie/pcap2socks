@@ -1,21 +1,22 @@
+use super::cacher::Cacher;
+use super::packet::layer::arp::Arp;
+use super::packet::layer::ethernet::Ethernet;
+use super::packet::layer::ipv4::Ipv4;
+use super::packet::layer::tcp::Tcp;
+use super::packet::layer::udp::Udp;
+use super::packet::layer::{Layer, LayerType, Layers};
+use super::packet::Indicator;
+use super::pcap::{self, HardwareAddr, Sender};
 use log::{debug, trace};
-use std::{
-    cmp::{max, min},
-    collections::HashMap,
-    io,
-    net::{Ipv4Addr, SocketAddrV4},
-};
+use std::cmp::{max, min};
+use std::collections::HashMap;
+use std::io;
+use std::net::{Ipv4Addr, SocketAddrV4};
 
-use super::{
-    cacher::Cacher,
-    packet::{
-        layer::{
-            arp::Arp, ethernet::Ethernet, ipv4::Ipv4, tcp::Tcp, udp::Udp, Layer, LayerType, Layers,
-        },
-        Indicator,
-    },
-    pcap::{self, HardwareAddr, Sender},
-};
+/// Represents the minimum packet size.
+/// Because all traffic is in Ethernet, and the 802.3 specifies the minimum is 64 Bytes.
+/// Exclude the 4 bytes used in FCS, the minimum packet size in pcap2socks is 60 Bytes.
+const MINIMUM_PACKET_SIZE: usize = 60;
 
 /// Represents the channel downstream traffic to the source in pcap.
 pub struct Downstreamer {
@@ -642,7 +643,7 @@ impl Downstreamer {
     fn send(&mut self, indicator: &Indicator) -> io::Result<()> {
         // Serialize
         let size = indicator.get_size();
-        let buffer_size = max(size, super::MINIMUM_PACKET_SIZE);
+        let buffer_size = max(size, MINIMUM_PACKET_SIZE);
         let mut buffer = vec![0u8; buffer_size];
         indicator.serialize(&mut buffer[..size])?;
 
@@ -656,7 +657,7 @@ impl Downstreamer {
     fn send_with_payload(&mut self, indicator: &Indicator, payload: &[u8]) -> io::Result<()> {
         // Serialize
         let size = indicator.get_size();
-        let buffer_size = max(size + payload.len(), super::MINIMUM_PACKET_SIZE);
+        let buffer_size = max(size + payload.len(), MINIMUM_PACKET_SIZE);
         let mut buffer = vec![0u8; buffer_size];
         indicator.serialize_with_payload(&mut buffer[..size + payload.len()], payload)?;
 

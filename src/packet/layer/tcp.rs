@@ -1,4 +1,4 @@
-pub use super::{Layer, LayerType, LayerTypes};
+use super::{Layer, LayerType, LayerTypes};
 use pnet::packet::tcp::{self, MutableTcpPacket, TcpFlags, TcpOptionPacket, TcpPacket};
 use std::clone::Clone;
 use std::fmt::{self, Display, Formatter};

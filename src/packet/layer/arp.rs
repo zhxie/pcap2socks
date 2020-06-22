@@ -1,4 +1,4 @@
-pub use super::{Layer, LayerType, LayerTypes};
+use super::{Layer, LayerType, LayerTypes};
 use pnet::datalink::MacAddr;
 use pnet::packet::arp::{self, ArpHardwareTypes, ArpOperations, ArpPacket, MutableArpPacket};
 use pnet::packet::ethernet::EtherTypes;

@@ -80,6 +80,11 @@ pcap2socks -s <ADDRESS> -p <ADDRESS> -d <ADDRESS>
 
 1. Applications like VMWare Workstation on Windows may implement their own IP forwarding and forward packets which should be handled by pcap2socks, resulting in abnormal operations in pcap2socks.
 
+## Todo
+
+- [ ] Latency and packet lost rate test
+- [ ] Add TCP maximum segment size `MSS`, window scale `wscale`, SACK `sack` and timestamp `TS` option support.
+
 ## License
 
 pcap2socks is licensed under [the MIT License](/LICENSE).

@@ -1,4 +1,4 @@
-pub use super::{Layer, LayerType, LayerTypes};
+use super::{Layer, LayerType, LayerTypes};
 use pnet::packet::ip::IpNextHeaderProtocols;
 use pnet::packet::ipv4::{self, Ipv4Flags, Ipv4OptionPacket, Ipv4Packet, MutableIpv4Packet};
 use std::clone::Clone;

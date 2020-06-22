@@ -1,14 +1,11 @@
-use log::{debug, trace, warn};
-use std::{
-    io::{self, Read, Write},
-    net::{Shutdown, SocketAddrV4, TcpStream},
-    sync::atomic::{AtomicBool, Ordering},
-    sync::{Arc, Mutex},
-    thread::{self, JoinHandle},
-    time::Duration,
-};
-
 use super::{downstreamer::Downstreamer, socks};
+use log::{debug, trace, warn};
+use std::io::{self, Read, Write};
+use std::net::{Shutdown, SocketAddrV4, TcpStream};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 /// Represents the times the stream received 0 byte data continuously before close itself.
 const ZEROES_BEFORE_CLOSE: usize = 3;

@@ -1,4 +1,4 @@
-pub use super::{Layer, LayerType, LayerTypes};
+use super::{Layer, LayerType, LayerTypes};
 use pnet::packet::udp::{self, MutableUdpPacket, UdpPacket};
 use std::clone::Clone;
 use std::fmt::{self, Display, Formatter};

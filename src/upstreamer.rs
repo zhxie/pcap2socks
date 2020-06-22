@@ -1,25 +1,18 @@
+use super::cacher::RandomCacher;
+use super::datagram_worker::DatagramWorker;
+use super::downstreamer::Downstreamer;
+use super::packet::layer::{Layer, LayerTypes};
+use super::packet::{Defraggler, Indicator};
+use super::pcap::Receiver;
+use super::stream_worker::StreamWorker;
 use log::{debug, trace, warn};
 use lru::LruCache;
-use std::{
-    collections::HashMap,
-    io,
-    net::{Ipv4Addr, SocketAddrV4},
-    sync::{Arc, Mutex},
-    thread,
-    time::{Duration, Instant},
-};
-
-use super::{
-    cacher::RandomCacher,
-    datagram_worker::DatagramWorker,
-    downstreamer::Downstreamer,
-    packet::{
-        layer::{Layer, LayerTypes},
-        Defraggler, Indicator,
-    },
-    pcap::Receiver,
-    stream_worker::StreamWorker,
-};
+use std::collections::HashMap;
+use std::io;
+use std::net::{Ipv4Addr, SocketAddrV4};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
 
 /// Represents the TCP ACK duplicates before trigger a fast retransmission.
 const DUPLICATES_BEFORE_FAST_RETRANSMISSION: usize = 3;

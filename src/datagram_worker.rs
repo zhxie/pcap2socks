@@ -1,14 +1,11 @@
-use log::{debug, trace, warn};
-use std::{
-    io,
-    net::{Ipv4Addr, SocketAddrV4},
-    sync::atomic::{AtomicBool, AtomicU16, Ordering},
-    sync::{Arc, Mutex},
-    thread::{self, JoinHandle},
-    time::Duration,
-};
-
 use super::{downstreamer::Downstreamer, socks::SocksDatagram};
+use log::{debug, trace, warn};
+use std::io;
+use std::net::{Ipv4Addr, SocketAddrV4};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 /// Represents a worker of a SOCKS5 UDP client.
 pub struct DatagramWorker {
