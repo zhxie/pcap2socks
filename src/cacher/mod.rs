@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use std::cmp::{max, min};
 use std::collections::BTreeMap;
 use std::io;

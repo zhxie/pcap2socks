@@ -1,17 +1,19 @@
 use log::{error, info};
 use std::sync::{Arc, Mutex};
 
+use lib::args::{self, Opts};
+use lib::{Forwarder, Redirector};
 use pcap2socks as lib;
 
 fn main() {
     // Parse arguments
-    let flags = lib::args::parse();
+    let flags = args::parse();
 
     // Log
     lib::set_logger(&flags);
 
     // Validate arguments
-    let opts = match lib::args::Opts::validate(&flags) {
+    let opts = match Opts::validate(&flags) {
         Ok(opts) => opts,
         Err(ref e) => {
             error!("{}", e);
@@ -53,21 +55,21 @@ fn main() {
             return;
         }
     };
-    let downstreamer = lib::Downstreamer::new(
+    let forwarder = Forwarder::new(
         tx,
         opts.mtu,
         inter.hardware_addr,
         opts.src,
         inter.ip_addrs[0],
     );
-    let mut upstreamer = lib::Upstreamer::new(
-        Arc::new(Mutex::new(downstreamer)),
+    let mut redirector = Redirector::new(
+        Arc::new(Mutex::new(forwarder)),
         opts.src,
         opts.publish,
         opts.dst,
     );
     info!("Proxy {} to {}", opts.src, opts.dst);
-    if let Err(ref e) = upstreamer.open(&mut rx) {
+    if let Err(ref e) = redirector.open(&mut rx) {
         error!("{}", e);
     }
 }
