@@ -1,4 +1,4 @@
-use pnet::datalink::{self, Channel, DataLinkReceiver, DataLinkSender, MacAddr};
+use pnet::datalink::{self, Channel, Config, DataLinkReceiver, DataLinkSender, MacAddr};
 use std::clone::Clone;
 use std::fmt::{self, Display, Formatter};
 use std::io;
@@ -11,6 +11,9 @@ pub const HARDWARE_ADDR_UNSPECIFIED: HardwareAddr = pnet::datalink::MacAddr(0, 0
 pub type Sender = Box<dyn DataLinkSender>;
 pub type Receiver = Box<dyn DataLinkReceiver>;
 
+/// Represents the buffer size of pcap channels.
+const BUFFER_SIZE: usize = 256 * 1024;
+
 /// Represents a network interface and its associated addresses.
 #[derive(Clone, Debug)]
 pub struct Interface {
@@ -18,6 +21,7 @@ pub struct Interface {
     pub alias: Option<String>,
     pub hardware_addr: MacAddr,
     pub ip_addrs: Vec<Ipv4Addr>,
+    pub is_up: bool,
     pub is_loopback: bool,
 }
 
@@ -29,6 +33,7 @@ impl Interface {
             alias: None,
             hardware_addr: MacAddr::zero(),
             ip_addrs: vec![],
+            is_up: false,
             is_loopback: false,
         }
     }
@@ -45,7 +50,10 @@ impl Interface {
                 "interface not found",
             ))?;
 
-        let channel = datalink::channel(&inter, Default::default())?;
+        let mut config = Config::default();
+        config.write_buffer_size = BUFFER_SIZE;
+        config.read_buffer_size = BUFFER_SIZE;
+        let channel = datalink::channel(&inter, config)?;
         let channel = match channel {
             Channel::Ethernet(tx, rx) => (tx, rx),
             _ => return Err(io::Error::new(io::ErrorKind::Other, "unknown link type")),
@@ -91,9 +99,11 @@ pub fn interfaces() -> Vec<Interface> {
     let ifs: Vec<Interface> = inters
         .iter()
         .map(|inter| {
-            /*if !inter.is_up() {
+            /* Cannot get flags using WinPcap in Windows
+            if !inter.is_up() {
                 return Err(());
-            }*/
+            }
+            */
 
             let mut i = Interface::new();
             i.name = inter.name.clone();
@@ -110,9 +120,13 @@ pub fn interfaces() -> Vec<Interface> {
                 })
                 .filter_map(Result::ok)
                 .collect();
+
+            // Exclude interface without any IPv4 address
             if i.ip_addrs.len() <= 0 {
                 return Err(());
             }
+
+            i.is_up = inter.is_up();
             i.is_loopback = inter.is_loopback();
 
             Ok(i)

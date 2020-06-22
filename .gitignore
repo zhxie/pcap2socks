@@ -8,3 +8,6 @@ Packet.lib
 
 # CLion directories
 .idea/
+
+# Log
+*.log

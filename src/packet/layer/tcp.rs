@@ -1,5 +1,5 @@
 pub use super::{Layer, LayerType, LayerTypes};
-use pnet::packet::tcp::{self, MutableTcpPacket, TcpFlags, TcpPacket};
+use pnet::packet::tcp::{self, MutableTcpPacket, TcpFlags, TcpOptionPacket, TcpPacket};
 use std::clone::Clone;
 use std::fmt::{self, Display, Formatter};
 use std::io;
@@ -22,6 +22,7 @@ impl Tcp {
         dst: u16,
         sequence: u32,
         acknowledgement: u32,
+        window: u16,
     ) -> Tcp {
         Tcp {
             layer: tcp::Tcp {
@@ -32,7 +33,7 @@ impl Tcp {
                 data_offset: 5,
                 reserved: 0,
                 flags: TcpFlags::ACK,
-                window: 65535,
+                window,
                 checksum: 0,
                 urgent_ptr: 0,
                 options: vec![],
@@ -51,6 +52,7 @@ impl Tcp {
         dst: u16,
         sequence: u32,
         acknowledgement: u32,
+        window: u16,
     ) -> Tcp {
         let mut tcp = Tcp::new_ack(
             src_ip_addr,
@@ -59,8 +61,32 @@ impl Tcp {
             dst,
             sequence,
             acknowledgement,
+            window,
         );
-        tcp.layer.flags = TcpFlags::ACK | TcpFlags::SYN;
+        tcp.layer.flags |= TcpFlags::SYN;
+        tcp
+    }
+
+    /// Creates a `Tcp` represents a TCP ACK/RST.
+    pub fn new_ack_rst(
+        src_ip_addr: Ipv4Addr,
+        dst_ip_addr: Ipv4Addr,
+        src: u16,
+        dst: u16,
+        sequence: u32,
+        acknowledgement: u32,
+        window: u16,
+    ) -> Tcp {
+        let mut tcp = Tcp::new_rst(
+            src_ip_addr,
+            dst_ip_addr,
+            src,
+            dst,
+            sequence,
+            acknowledgement,
+            window,
+        );
+        tcp.layer.flags |= TcpFlags::ACK;
         tcp
     }
 
@@ -72,6 +98,7 @@ impl Tcp {
         dst: u16,
         sequence: u32,
         acknowledgement: u32,
+        window: u16,
     ) -> Tcp {
         let mut tcp = Tcp::new_ack(
             src_ip_addr,
@@ -80,8 +107,9 @@ impl Tcp {
             dst,
             sequence,
             acknowledgement,
+            window,
         );
-        tcp.layer.flags = TcpFlags::ACK | TcpFlags::FIN;
+        tcp.layer.flags |= TcpFlags::FIN;
         tcp
     }
 
@@ -93,6 +121,7 @@ impl Tcp {
         dst: u16,
         sequence: u32,
         acknowledgement: u32,
+        window: u16,
     ) -> Tcp {
         let mut tcp = Tcp::new_ack(
             src_ip_addr,
@@ -101,6 +130,7 @@ impl Tcp {
             dst,
             sequence,
             acknowledgement,
+            window,
         );
         tcp.layer.flags = TcpFlags::RST;
         tcp
@@ -167,9 +197,39 @@ impl Tcp {
         self.layer.acknowledgement
     }
 
+    /// Get the string represents the flags of the layer.
+    pub fn get_flag_string(&self) -> String {
+        let mut flags = String::from("[");
+        if self.is_syn() {
+            flags = flags + "S";
+        }
+        if self.is_rst() {
+            flags = flags + "R";
+        }
+        if self.is_fin() {
+            flags = flags + "F";
+        }
+        if self.is_ack() {
+            flags = flags + ".";
+        }
+        flags = flags + "]";
+
+        flags
+    }
+
+    /// Get the window size of the layer.
+    pub fn get_window(&self) -> u16 {
+        self.layer.window
+    }
+
     /// Returns if the `Tcp` is a TCP acknowledgement.
     pub fn is_ack(&self) -> bool {
         self.layer.flags & TcpFlags::ACK != 0
+    }
+
+    /// Returns if the `Tcp` is a TCP acknowledgement and finish.
+    pub fn is_ack_fin(&self) -> bool {
+        self.is_ack() && self.is_fin()
     }
 
     /// Returns if the `Tcp` is a TCP reset.
@@ -191,42 +251,22 @@ impl Tcp {
     pub fn is_rst_or_fin(&self) -> bool {
         self.is_rst() || self.is_fin()
     }
+
+    // Returns if the `Tcp` has zero window.
+    pub fn is_zero_window(&self) -> bool {
+        self.layer.window == 0
+    }
 }
 
 impl Display for Tcp {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        let mut flags = String::from("[");
-        flags = flags + "-";
-        if self.is_ack() {
-            flags = flags + "A";
-        } else {
-            flags = flags + ".";
-        }
-        flags = flags + "-";
-        if self.is_rst() {
-            flags = flags + "R";
-        } else {
-            flags = flags + ".";
-        }
-        if self.is_syn() {
-            flags = flags + "S";
-        } else {
-            flags = flags + ".";
-        }
-        if self.is_fin() {
-            flags = flags + "F";
-        } else {
-            flags = flags + ".";
-        }
-        flags = flags + "]";
-
         write!(
             f,
             "{}: {} -> {} {}",
             LayerTypes::Tcp,
             self.layer.source,
             self.layer.destination,
-            flags
+            self.get_flag_string()
         )
     }
 }
@@ -237,7 +277,14 @@ impl Layer for Tcp {
     }
 
     fn get_size(&self) -> usize {
-        TcpPacket::packet_size(&self.layer)
+        let mut tcp_size = TcpPacket::packet_size(&self.layer);
+        let mut tcp_options_size = 0;
+        for option in &self.layer.options {
+            tcp_size -= 1;
+            tcp_options_size += TcpOptionPacket::packet_size(option);
+        }
+
+        tcp_size + tcp_options_size
     }
 
     fn serialize(&self, buffer: &mut [u8], _: usize) -> io::Result<usize> {

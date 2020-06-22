@@ -1,6 +1,6 @@
 pub use super::{Layer, LayerType, LayerTypes};
 use pnet::packet::ip::IpNextHeaderProtocols;
-use pnet::packet::ipv4::{self, Ipv4Flags, Ipv4Packet, MutableIpv4Packet};
+use pnet::packet::ipv4::{self, Ipv4Flags, Ipv4OptionPacket, Ipv4Packet, MutableIpv4Packet};
 use std::clone::Clone;
 use std::fmt::{self, Display, Formatter};
 use std::io;
@@ -104,7 +104,7 @@ impl Ipv4 {
         }
     }
 
-    /// Creates an `Ipv4` without fragmentation accoring to an `Ipv4`.
+    /// Creates an `Ipv4` without fragmentation according to an `Ipv4`.
     pub fn defrag(ipv4: &Ipv4) -> Ipv4 {
         Ipv4 {
             layer: ipv4::Ipv4 {
@@ -188,7 +188,14 @@ impl Layer for Ipv4 {
     }
 
     fn get_size(&self) -> usize {
-        Ipv4Packet::packet_size(&self.layer)
+        let mut ipv4_size = Ipv4Packet::packet_size(&self.layer);
+        let mut ipv4_options_size = 0;
+        for option in &self.layer.options {
+            ipv4_size -= 1;
+            ipv4_options_size += Ipv4OptionPacket::packet_size(option);
+        }
+
+        ipv4_size + ipv4_options_size
     }
 
     fn serialize(&self, buffer: &mut [u8], n: usize) -> io::Result<usize> {

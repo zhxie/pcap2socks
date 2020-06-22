@@ -72,6 +72,11 @@ impl Udp {
     pub fn get_dst(&self) -> u16 {
         self.layer.destination
     }
+
+    /// Get the length of the layer.
+    pub fn get_length(&self) -> u16 {
+        self.layer.length
+    }
 }
 
 impl Display for Udp {

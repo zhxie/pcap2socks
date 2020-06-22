@@ -1,6 +1,7 @@
 use log::{error, info};
-use pcap2socks as lib;
 use std::sync::{Arc, Mutex};
+
+use pcap2socks as lib;
 
 fn main() {
     // Parse arguments
@@ -30,14 +31,21 @@ fn main() {
         }
     };
     info!("Listen on {}", inter);
+    info!("Break packets with MTU {}", opts.mtu);
 
     // Publish
     if let Some(publish) = opts.publish {
-        info!("Publish {}", publish);
+        info!("Publish for {}", publish);
     }
 
+    // Instructions
+    lib::show_info(
+        opts.src,
+        opts.publish.unwrap_or(inter.ip_addrs[0]),
+        opts.mtu,
+    );
+
     // Proxy
-    info!("Proxy {} to {}", opts.src, opts.dst);
     let (tx, mut rx) = match inter.open() {
         Ok((tx, rx)) => (tx, rx),
         Err(ref e) => {
@@ -45,13 +53,20 @@ fn main() {
             return;
         }
     };
-    let downstreamer = lib::Downstreamer::new(tx, inter.hardware_addr, opts.src, inter.ip_addrs[0]);
+    let downstreamer = lib::Downstreamer::new(
+        tx,
+        opts.mtu,
+        inter.hardware_addr,
+        opts.src,
+        inter.ip_addrs[0],
+    );
     let mut upstreamer = lib::Upstreamer::new(
         Arc::new(Mutex::new(downstreamer)),
         opts.src,
         opts.publish,
         opts.dst,
     );
+    info!("Proxy {} to {}", opts.src, opts.dst);
     if let Err(ref e) = upstreamer.open(&mut rx) {
         error!("{}", e);
     }

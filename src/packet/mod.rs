@@ -106,47 +106,39 @@ impl Indicator {
             Some(t) => match t {
                 LayerTypes::Arp => {
                     let layer = self.get_arp().unwrap();
-                    format!(
-                        "{}: {} -> {}",
-                        layer.get_type(),
-                        layer.get_src(),
-                        layer.get_dst()
-                    )
+                    format!("{}", layer)
                 }
                 LayerTypes::Ipv4 => match self.get_transport_type() {
                     Some(t) => match t {
                         LayerTypes::Tcp => {
                             let layer = self.get_tcp().unwrap();
                             format!(
-                                "{}: {}:{} -> {}:{}",
+                                "{}: {}:{} -> {}:{} {}",
                                 layer.get_type(),
                                 layer.get_src_ip_addr(),
                                 layer.get_src(),
                                 layer.get_dst_ip_addr(),
-                                layer.get_dst()
+                                layer.get_dst(),
+                                layer.get_flag_string(),
                             )
                         }
                         LayerTypes::Udp => {
                             let layer = self.get_udp().unwrap();
                             format!(
-                                "{}: {}:{} -> {}:{}",
+                                "{}: {}:{} -> {}:{}, Length = {}",
                                 layer.get_type(),
                                 layer.get_src_ip_addr(),
                                 layer.get_src(),
                                 layer.get_dst_ip_addr(),
-                                layer.get_dst()
+                                layer.get_dst(),
+                                layer.get_length(),
                             )
                         }
                         _ => unreachable!(),
                     },
                     None => {
                         let layer = self.get_ipv4().unwrap();
-                        format!(
-                            "{}: {} -> {}",
-                            layer.get_type(),
-                            layer.get_src(),
-                            layer.get_dst()
-                        )
+                        format!("{}", layer)
                     }
                 },
                 _ => unreachable!(),
@@ -154,12 +146,7 @@ impl Indicator {
             None => match self.get_link_type() {
                 LayerTypes::Ethernet => {
                     let layer = self.get_ethernet().unwrap();
-                    format!(
-                        "{}: {} -> {}",
-                        layer.get_type(),
-                        layer.get_src(),
-                        layer.get_dst()
-                    )
+                    format!("{}", layer)
                 }
                 _ => unreachable!(),
             },
