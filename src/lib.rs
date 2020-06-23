@@ -10,10 +10,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 pub mod args;
-mod cacher;
-mod packet;
-mod pcap;
-mod socks;
+pub mod cacher;
+pub mod packet;
+pub mod pcap;
+pub mod socks;
 
 use self::socks::{DatagramWorker, Forward, StreamWorker};
 use args::Flags;
@@ -1028,20 +1028,21 @@ impl Redirector {
                         tx_locked.set_tcp_send_window(dst, tcp.get_src(), tcp.get_window());
                     }
 
+                    let cache = self
+                        .tcp_cache_map
+                        .entry(key)
+                        .or_insert_with(|| RandomCacher::new(tcp.get_sequence()));
+                    let stream = self.streams.get_mut(&key).unwrap();
                     if buffer.len() > indicator.get_size() {
                         // ACK
                         // Append to cache
-                        let cache = self
-                            .tcp_cache_map
-                            .entry(key)
-                            .or_insert_with(|| RandomCacher::new(tcp.get_sequence()));
                         let payload =
                             cache.append(tcp.get_sequence(), &buffer[indicator.get_size()..])?;
 
                         match payload {
                             Some(payload) => {
                                 // Send
-                                match self.streams.get_mut(&key).unwrap().send(payload.as_slice()) {
+                                match stream.send(payload.as_slice()) {
                                     Ok(_) => {
                                         // Update window size
                                         let mut tx_locked = self.tx.lock().unwrap();
@@ -1092,7 +1093,7 @@ impl Redirector {
                             }
                         }
                     } else {
-                        // ACK0 or FIN
+                        // ACK0
                         if *self.tcp_duplicate_map.get(&key).unwrap_or(&0)
                             >= DUPLICATES_BEFORE_FAST_RETRANSMISSION
                         {
@@ -1106,15 +1107,20 @@ impl Redirector {
                                     };
                                 if !is_cooled_down {
                                     if tcp.is_fin() {
-                                        // Expect all the data is handled
+                                        // Because we cannot distinguish whether the server still have data to send,
+                                        // we wait for some continuos ACKs before sending an ACK/FIN to close.
+                                        // Expect all the data is handled by the server.
                                         let mut tx_locked = self.tx.lock().unwrap();
-                                        tx_locked.set_tcp_acknowledgement(
-                                            dst,
-                                            tcp.get_src(),
-                                            tcp.get_sequence().checked_add(1).unwrap_or(0),
-                                        );
-                                        // Send ACK/FIN
-                                        tx_locked.send_tcp_ack_fin(dst, tcp.get_src())?;
+                                        // Check if all the data are sent
+                                        if tx_locked.get_cache_size(dst, tcp.get_src()) == 0 {
+                                            tx_locked.set_tcp_acknowledgement(
+                                                dst,
+                                                tcp.get_src(),
+                                                tcp.get_sequence().checked_add(1).unwrap_or(0),
+                                            );
+                                            // Send ACK/FIN
+                                            tx_locked.send_tcp_ack_fin(dst, tcp.get_src())?;
+                                        }
                                     } else {
                                         // Fast retransmit
                                         // TODO: the procedure is in back N
@@ -1130,6 +1136,11 @@ impl Redirector {
                                 }
                             }
                         }
+                    }
+
+                    // FIN
+                    if tcp.is_fin() && cache.is_empty() {
+                        stream.finish();
                     }
 
                     // Trigger sending remaining data

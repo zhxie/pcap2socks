@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use pnet::packet::arp::ArpPacket;
 use pnet::packet::ethernet::{EtherTypes, EthernetPacket};
 use pnet::packet::ip::IpNextHeaderProtocols;

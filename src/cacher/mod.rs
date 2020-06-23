@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use std::cmp::{max, min};
 use std::collections::BTreeMap;
 use std::io;
@@ -153,6 +152,11 @@ impl Cacher {
 
     fn is_expandable(&self) -> bool {
         self.expandable
+    }
+
+    /// Returns if the cache is empty.
+    pub fn is_empty(&self) -> bool {
+        self.size == 0
     }
 }
 
@@ -363,5 +367,10 @@ impl RandomCacher {
 
     fn is_expandable(&self) -> bool {
         self.expandable
+    }
+
+    /// Returns if the cache is empty.
+    pub fn is_empty(&self) -> bool {
+        self.size == 0
     }
 }

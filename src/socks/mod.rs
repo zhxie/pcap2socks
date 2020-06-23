@@ -29,6 +29,7 @@ pub struct StreamWorker {
     dst: SocketAddrV4,
     stream: TcpStream,
     thread: Option<JoinHandle<()>>,
+    is_finished: Arc<AtomicBool>,
     is_closed: Arc<AtomicBool>,
 }
 
@@ -43,35 +44,36 @@ impl StreamWorker {
         let stream = socks::connect(remote, dst)?;
         let mut stream_cloned = stream.try_clone()?;
 
-        let is_closed = AtomicBool::new(false);
-        let a_is_closed = Arc::new(is_closed);
-        let a_is_closed_cloned = Arc::clone(&a_is_closed);
+        let is_finished = Arc::new(AtomicBool::new(false));
+        let is_finished_cloned = Arc::clone(&is_finished);
+        let is_closed = Arc::new(AtomicBool::new(false));
+        let is_closed_cloned = Arc::clone(&is_closed);
         let thread = thread::spawn(move || {
             let mut buffer = [0u8; u16::MAX as usize];
             let mut zero = 0;
             loop {
-                if a_is_closed_cloned.load(Ordering::Relaxed) {
+                if is_closed_cloned.load(Ordering::Relaxed) {
                     break;
                 }
                 match stream_cloned.read(&mut buffer) {
                     Ok(size) => {
-                        if a_is_closed_cloned.load(Ordering::Relaxed) {
+                        if is_closed_cloned.load(Ordering::Relaxed) {
                             break;
                         }
                         if size == 0 {
+                            // Close by remote
                             zero += 1;
                             if zero >= ZEROES_BEFORE_CLOSE {
-                                // TODO: a potential bug
-                                /* This may happen frequently for unknown reason
-                                warn!(
-                                    "SOCKS: {}: {} -> {}: {}",
-                                    "TCP",
-                                    0,
-                                    dst,
-                                    io::Error::from(io::ErrorKind::UnexpectedEof)
-                                );
-                                */
-                                a_is_closed_cloned.store(true, Ordering::Relaxed);
+                                if !is_finished_cloned.load(Ordering::Relaxed) {
+                                    warn!(
+                                        "SOCKS: {}: {} -> {}: {}",
+                                        "TCP",
+                                        0,
+                                        dst,
+                                        io::Error::from(io::ErrorKind::UnexpectedEof)
+                                    );
+                                }
+                                is_closed_cloned.store(true, Ordering::Relaxed);
                                 break;
                             }
                         }
@@ -95,7 +97,7 @@ impl StreamWorker {
                             continue;
                         }
                         warn!("SOCKS: {}: {} -> {}: {}", "TCP", 0, dst, e);
-                        a_is_closed_cloned.store(true, Ordering::Relaxed);
+                        is_closed_cloned.store(true, Ordering::Relaxed);
                         break;
                     }
                 }
@@ -108,7 +110,8 @@ impl StreamWorker {
             dst,
             stream,
             thread: Some(thread),
-            is_closed: a_is_closed,
+            is_finished,
+            is_closed: is_closed,
         })
     }
 
@@ -124,6 +127,12 @@ impl StreamWorker {
 
         // Send
         self.stream.write_all(buffer)
+    }
+
+    /// Announces to finish the worker.
+    pub fn finish(&mut self) {
+        self.is_finished.store(true, Ordering::Relaxed);
+        trace!("finish stream {} -> {}", 0, self.dst);
     }
 
     /// Closes the worker.
@@ -176,18 +185,17 @@ impl DatagramWorker {
         let a_src_port_cloned = Arc::clone(&a_src_port);
         let a_datagram = Arc::new(datagram);
         let a_datagram_cloned = Arc::clone(&a_datagram);
-        let is_closed = AtomicBool::new(false);
-        let a_is_closed = Arc::new(is_closed);
-        let a_is_closed_cloned = Arc::clone(&a_is_closed);
+        let is_closed = Arc::new(AtomicBool::new(false));
+        let is_closed_cloned = Arc::clone(&is_closed);
         let thread = thread::spawn(move || {
             let mut buffer = [0u8; u16::MAX as usize];
             loop {
-                if a_is_closed_cloned.load(Ordering::Relaxed) {
+                if is_closed_cloned.load(Ordering::Relaxed) {
                     break;
                 }
                 match a_datagram_cloned.recv_from(&mut buffer) {
                     Ok((size, addr)) => {
-                        if a_is_closed_cloned.load(Ordering::Relaxed) {
+                        if is_closed_cloned.load(Ordering::Relaxed) {
                             break;
                         }
                         debug!(
@@ -216,7 +224,7 @@ impl DatagramWorker {
                             a_src_port_cloned.load(Ordering::Relaxed),
                             e
                         );
-                        a_is_closed_cloned.store(true, Ordering::Relaxed);
+                        is_closed_cloned.store(true, Ordering::Relaxed);
 
                         break;
                     }
@@ -231,7 +239,7 @@ impl DatagramWorker {
             local_port,
             datagram: a_datagram,
             thread: Some(thread),
-            is_closed: a_is_closed,
+            is_closed: is_closed,
         })
     }
 
