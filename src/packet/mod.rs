@@ -50,10 +50,7 @@ impl Indicator {
             },
             EtherTypes::Ipv4 => match Ipv4Packet::new(packet.payload()) {
                 Some(ref ipv4_packet) => {
-                    let this_ipv4 = Ipv4::parse(ipv4_packet);
-                    let src = this_ipv4.get_src();
-                    let dst = this_ipv4.get_dst();
-                    let this_ipv4 = Some(Layers::Ipv4(this_ipv4));
+                    let ipv4 = Ipv4::parse(ipv4_packet);
                     // Fragment
                     if ipv4_packet.get_flags() & Ipv4Flags::MoreFragments == 0
                         && ipv4_packet.get_fragment_offset() <= 0
@@ -62,7 +59,7 @@ impl Indicator {
                             IpNextHeaderProtocols::Tcp => {
                                 match TcpPacket::new(ipv4_packet.payload()) {
                                     Some(ref tcp_packet) => {
-                                        Some(Layers::Tcp(Tcp::parse(tcp_packet, src, dst)))
+                                        Some(Layers::Tcp(Tcp::parse(tcp_packet, &ipv4)))
                                     }
                                     None => None,
                                 }
@@ -70,7 +67,7 @@ impl Indicator {
                             IpNextHeaderProtocols::Udp => {
                                 match UdpPacket::new(ipv4_packet.payload()) {
                                     Some(ref udp_packet) => {
-                                        Some(Layers::Udp(Udp::parse(udp_packet, src, dst)))
+                                        Some(Layers::Udp(Udp::parse(udp_packet, &ipv4)))
                                     }
                                     None => None,
                                 }
@@ -79,7 +76,7 @@ impl Indicator {
                         };
                     }
 
-                    this_ipv4
+                    Some(Layers::Ipv4(ipv4))
                 }
                 None => None,
             },

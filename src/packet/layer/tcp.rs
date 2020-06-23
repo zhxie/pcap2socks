@@ -1,3 +1,4 @@
+use super::ipv4::Ipv4;
 use super::{Layer, LayerType, LayerTypes};
 use pnet::packet::tcp::{self, MutableTcpPacket, TcpFlags, TcpOptionPacket, TcpPacket};
 use std::clone::Clone;
@@ -15,156 +16,105 @@ pub struct Tcp {
 
 impl Tcp {
     /// Creates a `Tcp` represents a TCP ACK.
-    pub fn new_ack(
-        src_ip_addr: Ipv4Addr,
-        dst_ip_addr: Ipv4Addr,
-        src: u16,
-        dst: u16,
-        sequence: u32,
-        acknowledgement: u32,
-        window: u16,
-    ) -> Tcp {
-        Tcp {
-            layer: tcp::Tcp {
-                source: src,
-                destination: dst,
-                sequence,
-                acknowledgement,
-                data_offset: 5,
-                reserved: 0,
-                flags: TcpFlags::ACK,
-                window,
-                checksum: 0,
-                urgent_ptr: 0,
-                options: vec![],
-                payload: vec![],
-            },
-            src: src_ip_addr,
-            dst: dst_ip_addr,
-        }
+    pub fn new_ack(src: u16, dst: u16, sequence: u32, acknowledgement: u32, window: u16) -> Tcp {
+        let d_tcp = tcp::Tcp {
+            source: src,
+            destination: dst,
+            sequence,
+            acknowledgement,
+            data_offset: 5,
+            reserved: 0,
+            flags: TcpFlags::ACK,
+            window,
+            checksum: 0,
+            urgent_ptr: 0,
+            options: vec![],
+            payload: vec![],
+        };
+        Tcp::from(d_tcp)
     }
 
     /// Creates a `Tcp` represents a TCP ACK/SYN.
     pub fn new_ack_syn(
-        src_ip_addr: Ipv4Addr,
-        dst_ip_addr: Ipv4Addr,
         src: u16,
         dst: u16,
         sequence: u32,
         acknowledgement: u32,
         window: u16,
     ) -> Tcp {
-        let mut tcp = Tcp::new_ack(
-            src_ip_addr,
-            dst_ip_addr,
-            src,
-            dst,
-            sequence,
-            acknowledgement,
-            window,
-        );
+        let mut tcp = Tcp::new_ack(src, dst, sequence, acknowledgement, window);
         tcp.layer.flags |= TcpFlags::SYN;
         tcp
     }
 
     /// Creates a `Tcp` represents a TCP ACK/RST.
     pub fn new_ack_rst(
-        src_ip_addr: Ipv4Addr,
-        dst_ip_addr: Ipv4Addr,
         src: u16,
         dst: u16,
         sequence: u32,
         acknowledgement: u32,
         window: u16,
     ) -> Tcp {
-        let mut tcp = Tcp::new_rst(
-            src_ip_addr,
-            dst_ip_addr,
-            src,
-            dst,
-            sequence,
-            acknowledgement,
-            window,
-        );
+        let mut tcp = Tcp::new_rst(src, dst, sequence, acknowledgement, window);
         tcp.layer.flags |= TcpFlags::ACK;
         tcp
     }
 
     /// Creates a `Tcp` represents a TCP ACK/FIN.
     pub fn new_ack_fin(
-        src_ip_addr: Ipv4Addr,
-        dst_ip_addr: Ipv4Addr,
         src: u16,
         dst: u16,
         sequence: u32,
         acknowledgement: u32,
         window: u16,
     ) -> Tcp {
-        let mut tcp = Tcp::new_ack(
-            src_ip_addr,
-            dst_ip_addr,
-            src,
-            dst,
-            sequence,
-            acknowledgement,
-            window,
-        );
+        let mut tcp = Tcp::new_ack(src, dst, sequence, acknowledgement, window);
         tcp.layer.flags |= TcpFlags::FIN;
         tcp
     }
 
     /// Creates a `Tcp` represents a TCP RST.
-    pub fn new_rst(
-        src_ip_addr: Ipv4Addr,
-        dst_ip_addr: Ipv4Addr,
-        src: u16,
-        dst: u16,
-        sequence: u32,
-        acknowledgement: u32,
-        window: u16,
-    ) -> Tcp {
-        let mut tcp = Tcp::new_ack(
-            src_ip_addr,
-            dst_ip_addr,
-            src,
-            dst,
-            sequence,
-            acknowledgement,
-            window,
-        );
+    pub fn new_rst(src: u16, dst: u16, sequence: u32, acknowledgement: u32, window: u16) -> Tcp {
+        let mut tcp = Tcp::new_ack(src, dst, sequence, acknowledgement, window);
         tcp.layer.flags = TcpFlags::RST;
         tcp
     }
 
     /// Creates a `Tcp` according to the given `Tcp`.
-    pub fn from(tcp: tcp::Tcp, src: Ipv4Addr, dst: Ipv4Addr) -> Tcp {
+    pub fn from(tcp: tcp::Tcp) -> Tcp {
         Tcp {
             layer: tcp,
-            src,
-            dst,
+            src: Ipv4Addr::UNSPECIFIED,
+            dst: Ipv4Addr::UNSPECIFIED,
         }
     }
 
-    /// Creates a `Tcp` according to the given TCP packet, source and destination.
-    pub fn parse(packet: &TcpPacket, src: Ipv4Addr, dst: Ipv4Addr) -> Tcp {
-        Tcp {
-            layer: tcp::Tcp {
-                source: packet.get_source(),
-                destination: packet.get_destination(),
-                sequence: packet.get_sequence(),
-                acknowledgement: packet.get_acknowledgement(),
-                data_offset: packet.get_data_offset(),
-                reserved: packet.get_reserved(),
-                flags: packet.get_flags(),
-                window: packet.get_window(),
-                checksum: packet.get_checksum(),
-                urgent_ptr: packet.get_urgent_ptr(),
-                options: packet.get_options(),
-                payload: vec![],
-            },
-            src,
-            dst,
-        }
+    /// Creates a `Tcp` according to the given TCP packet and the `Ipv4`.
+    pub fn parse(packet: &TcpPacket, ipv4: &Ipv4) -> Tcp {
+        let d_tcp = tcp::Tcp {
+            source: packet.get_source(),
+            destination: packet.get_destination(),
+            sequence: packet.get_sequence(),
+            acknowledgement: packet.get_acknowledgement(),
+            data_offset: packet.get_data_offset(),
+            reserved: packet.get_reserved(),
+            flags: packet.get_flags(),
+            window: packet.get_window(),
+            checksum: packet.get_checksum(),
+            urgent_ptr: packet.get_urgent_ptr(),
+            options: packet.get_options(),
+            payload: vec![],
+        };
+        let mut tcp = Tcp::from(d_tcp);
+        tcp.set_ipv4_layer(ipv4);
+
+        tcp
+    }
+
+    /// Sets the source and destination IP address for the layer with the given `Ipv4`.
+    pub fn set_ipv4_layer(&mut self, ipv4: &Ipv4) {
+        self.src = ipv4.get_src();
+        self.dst = ipv4.get_dst();
     }
 
     /// Get the source IP address of the layer.

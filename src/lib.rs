@@ -416,7 +416,7 @@ impl Forwarder {
         let key = (src_port, dst);
 
         // Pseudo headers
-        let tcp = Tcp::new_ack(Ipv4Addr::UNSPECIFIED, Ipv4Addr::UNSPECIFIED, 0, 0, 0, 0, 0);
+        let tcp = Tcp::new_ack(0, 0, 0, 0, 0);
         let ipv4 = Ipv4::new(
             0,
             tcp.get_type(),
@@ -438,8 +438,6 @@ impl Forwarder {
 
             // TCP
             let tcp = Tcp::new_ack(
-                dst.ip().clone(),
-                self.src_ip_addr,
                 dst.port(),
                 src_port,
                 sequence,
@@ -448,7 +446,7 @@ impl Forwarder {
             );
 
             // Send
-            self.send_ipv4_with_transport(Layers::Tcp(tcp), Some(payload))?;
+            self.send_ipv4_with_transport(dst.ip().clone(), Layers::Tcp(tcp), Some(payload))?;
 
             // Update TCP sequence
             let next_sequence = sequence
@@ -474,8 +472,6 @@ impl Forwarder {
 
         // TCP
         let tcp = Tcp::new_ack(
-            dst.ip().clone(),
-            self.src_ip_addr,
             dst.port(),
             src_port,
             *self.tcp_sequence_map.get(&key).unwrap_or(&0),
@@ -484,7 +480,7 @@ impl Forwarder {
         );
 
         // Send
-        self.send_ipv4_with_transport(Layers::Tcp(tcp), None)
+        self.send_ipv4_with_transport(dst.ip().clone(), Layers::Tcp(tcp), None)
     }
 
     /// Sends an TCP ACK/SYN packet.
@@ -493,8 +489,6 @@ impl Forwarder {
 
         // TCP
         let tcp = Tcp::new_ack_syn(
-            dst.ip().clone(),
-            self.src_ip_addr,
             dst.port(),
             src_port,
             *self.tcp_sequence_map.get(&key).unwrap_or(&0),
@@ -503,7 +497,7 @@ impl Forwarder {
         );
 
         // Send
-        self.send_ipv4_with_transport(Layers::Tcp(tcp), None)?;
+        self.send_ipv4_with_transport(dst.ip().clone(), Layers::Tcp(tcp), None)?;
 
         // Update TCP sequence
         let tcp_sequence_entry = self.tcp_sequence_map.entry(key).or_insert(0);
@@ -518,8 +512,6 @@ impl Forwarder {
 
         // TCP
         let tcp = Tcp::new_ack_rst(
-            dst.ip().clone(),
-            self.src_ip_addr,
             dst.port(),
             src_port,
             *self.tcp_sequence_map.get(&key).unwrap_or(&0),
@@ -528,7 +520,7 @@ impl Forwarder {
         );
 
         // Send
-        self.send_ipv4_with_transport(Layers::Tcp(tcp), None)
+        self.send_ipv4_with_transport(dst.ip().clone(), Layers::Tcp(tcp), None)
     }
 
     /// Sends an TCP ACK/FIN packet.
@@ -537,8 +529,6 @@ impl Forwarder {
 
         // TCP
         let tcp = Tcp::new_ack_fin(
-            dst.ip().clone(),
-            self.src_ip_addr,
             dst.port(),
             src_port,
             *self.tcp_sequence_map.get(&key).unwrap_or(&0),
@@ -547,7 +537,7 @@ impl Forwarder {
         );
 
         // Send
-        self.send_ipv4_with_transport(Layers::Tcp(tcp), None)
+        self.send_ipv4_with_transport(dst.ip().clone(), Layers::Tcp(tcp), None)
     }
 
     /// Sends an TCP RST packet.
@@ -556,8 +546,6 @@ impl Forwarder {
 
         // TCP
         let tcp = Tcp::new_rst(
-            dst.ip().clone(),
-            self.src_ip_addr,
             dst.port(),
             src_port,
             *self.tcp_sequence_map.get(&key).unwrap_or(&0),
@@ -566,13 +554,13 @@ impl Forwarder {
         );
 
         // Send
-        self.send_ipv4_with_transport(Layers::Tcp(tcp), None)
+        self.send_ipv4_with_transport(dst.ip().clone(), Layers::Tcp(tcp), None)
     }
 
     /// Sends UDP packets.
     pub fn send_udp(&mut self, dst: SocketAddrV4, src_port: u16, payload: &[u8]) -> io::Result<()> {
         // Pseudo headers
-        let udp = Udp::new(Ipv4Addr::UNSPECIFIED, Ipv4Addr::UNSPECIFIED, 0, 0);
+        let udp = Udp::new(0, 0);
         let ipv4 = Ipv4::new(
             0,
             udp.get_type(),
@@ -606,7 +594,7 @@ impl Forwarder {
             if n == 0 {
                 if remain > 0 {
                     // UDP
-                    let udp = Udp::new(dst.ip().clone(), self.src_ip_addr, dst.port(), src_port);
+                    let udp = Udp::new(dst.port(), src_port);
 
                     self.send_ipv4_more_fragment(
                         dst.ip().clone(),
@@ -645,9 +633,9 @@ impl Forwarder {
 
     fn send_udp_raw(&mut self, dst: SocketAddrV4, src_port: u16, payload: &[u8]) -> io::Result<()> {
         // UDP
-        let udp = Udp::new(dst.ip().clone(), self.src_ip_addr, dst.port(), src_port);
+        let udp = Udp::new(dst.port(), src_port);
 
-        self.send_ipv4_with_transport(Layers::Udp(udp), Some(payload))
+        self.send_ipv4_with_transport(dst.ip().clone(), Layers::Udp(udp), Some(payload))
     }
 
     fn send_ipv4_more_fragment(
@@ -655,7 +643,7 @@ impl Forwarder {
         dst_ip_addr: Ipv4Addr,
         t: LayerType,
         fragment_offset: u16,
-        transport: Option<Layers>,
+        mut transport: Option<Layers>,
         payload: &[u8],
     ) -> io::Result<()> {
         // IPv4
@@ -667,6 +655,15 @@ impl Forwarder {
             self.src_ip_addr,
         )
         .unwrap();
+
+        // Set IPv4 layer for checksum
+        if let Some(ref mut transport) = transport {
+            match transport {
+                Layers::Tcp(ref mut tcp) => tcp.set_ipv4_layer(&ipv4),
+                Layers::Udp(ref mut udp) => udp.set_ipv4_layer(&ipv4),
+                _ => {}
+            }
+        };
 
         // Send
         self.send_ethernet(Layers::Ipv4(ipv4), transport, Some(payload))
@@ -700,15 +697,10 @@ impl Forwarder {
 
     fn send_ipv4_with_transport(
         &mut self,
-        transport: Layers,
+        dst_ip_addr: Ipv4Addr,
+        mut transport: Layers,
         payload: Option<&[u8]>,
     ) -> io::Result<()> {
-        let dst_ip_addr = match transport {
-            Layers::Tcp(ref tcp) => tcp.get_src_ip_addr(),
-            Layers::Udp(ref udp) => udp.get_src_ip_addr(),
-            _ => unreachable!(),
-        };
-
         // IPv4
         let ipv4 = Ipv4::new(
             *self.ipv4_identification_map.get(&dst_ip_addr).unwrap_or(&0),
@@ -717,6 +709,13 @@ impl Forwarder {
             self.src_ip_addr,
         )
         .unwrap();
+
+        // Set IPv4 layer for checksum
+        match transport {
+            Layers::Tcp(ref mut tcp) => tcp.set_ipv4_layer(&ipv4),
+            Layers::Udp(ref mut udp) => udp.set_ipv4_layer(&ipv4),
+            _ => {}
+        }
 
         // Send
         self.send_ethernet(Layers::Ipv4(ipv4), Some(transport), payload)?;

@@ -1,3 +1,4 @@
+use super::ipv4::Ipv4;
 use super::{Layer, LayerType, LayerTypes};
 use pnet::packet::udp::{self, MutableUdpPacket, UdpPacket};
 use std::clone::Clone;
@@ -15,42 +16,45 @@ pub struct Udp {
 
 impl Udp {
     /// Creates an `Udp`.
-    pub fn new(src_ip_addr: Ipv4Addr, dst_ip_addr: Ipv4Addr, src: u16, dst: u16) -> Udp {
-        Udp {
-            layer: udp::Udp {
-                source: src,
-                destination: dst,
-                length: 0,
-                checksum: 0,
-                payload: vec![],
-            },
-            src: src_ip_addr,
-            dst: dst_ip_addr,
-        }
+    pub fn new(src: u16, dst: u16) -> Udp {
+        let d_udp = udp::Udp {
+            source: src,
+            destination: dst,
+            length: 0,
+            checksum: 0,
+            payload: vec![],
+        };
+        Udp::from(d_udp)
     }
 
     /// Creates an `Udp` according to the given `Udp`.
-    pub fn from(udp: udp::Udp, src: Ipv4Addr, dst: Ipv4Addr) -> Udp {
+    pub fn from(udp: udp::Udp) -> Udp {
         Udp {
             layer: udp,
-            src,
-            dst,
+            src: Ipv4Addr::UNSPECIFIED,
+            dst: Ipv4Addr::UNSPECIFIED,
         }
     }
 
-    /// Creates an `Udp` according to the given UDP packet, source and destination.
-    pub fn parse(packet: &UdpPacket, src: Ipv4Addr, dst: Ipv4Addr) -> Udp {
-        Udp {
-            layer: udp::Udp {
-                source: packet.get_source(),
-                destination: packet.get_destination(),
-                length: packet.get_length(),
-                checksum: packet.get_checksum(),
-                payload: vec![],
-            },
-            src,
-            dst,
-        }
+    /// Creates an `Udp` according to the given UDP packet and the `Ipv4`
+    pub fn parse(packet: &UdpPacket, ipv4: &Ipv4) -> Udp {
+        let d_udp = udp::Udp {
+            source: packet.get_source(),
+            destination: packet.get_destination(),
+            length: packet.get_length(),
+            checksum: packet.get_checksum(),
+            payload: vec![],
+        };
+        let mut udp = Udp::from(d_udp);
+        udp.set_ipv4_layer(ipv4);
+
+        udp
+    }
+
+    /// Sets the source and destination IP address for the layer with the given `Ipv4`.
+    pub fn set_ipv4_layer(&mut self, ipv4: &Ipv4) {
+        self.src = ipv4.get_src();
+        self.dst = ipv4.get_dst();
     }
 
     /// Get the source IP address of the layer.

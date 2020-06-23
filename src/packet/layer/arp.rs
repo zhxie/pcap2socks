@@ -21,20 +21,19 @@ impl Arp {
         dst_hardware_addr: MacAddr,
         dst_ip_addr: Ipv4Addr,
     ) -> Arp {
-        Arp {
-            layer: arp::Arp {
-                hardware_type: ArpHardwareTypes::Ethernet,
-                protocol_type: EtherTypes::Ipv4,
-                hw_addr_len: 6,
-                proto_addr_len: 4,
-                operation: ArpOperations::Reply,
-                sender_hw_addr: src_hardware_addr,
-                sender_proto_addr: src_ip_addr,
-                target_hw_addr: dst_hardware_addr,
-                target_proto_addr: dst_ip_addr,
-                payload: vec![],
-            },
-        }
+        let arp = arp::Arp {
+            hardware_type: ArpHardwareTypes::Ethernet,
+            protocol_type: EtherTypes::Ipv4,
+            hw_addr_len: 6,
+            proto_addr_len: 4,
+            operation: ArpOperations::Reply,
+            sender_hw_addr: src_hardware_addr,
+            sender_proto_addr: src_ip_addr,
+            target_hw_addr: dst_hardware_addr,
+            target_proto_addr: dst_ip_addr,
+            payload: vec![],
+        };
+        Arp::from(arp)
     }
 
     /// Creates an `Arp` according to the given `Arp`.
@@ -44,38 +43,36 @@ impl Arp {
 
     /// Creates an `Arp` according to the given ARP packet.
     pub fn parse(packet: &ArpPacket) -> Arp {
-        Arp {
-            layer: arp::Arp {
-                hardware_type: packet.get_hardware_type(),
-                protocol_type: packet.get_protocol_type(),
-                hw_addr_len: packet.get_hw_addr_len(),
-                proto_addr_len: packet.get_proto_addr_len(),
-                operation: packet.get_operation(),
-                sender_hw_addr: packet.get_sender_hw_addr(),
-                sender_proto_addr: packet.get_sender_proto_addr(),
-                target_hw_addr: packet.get_target_hw_addr(),
-                target_proto_addr: packet.get_target_proto_addr(),
-                payload: vec![],
-            },
-        }
+        let arp = arp::Arp {
+            hardware_type: packet.get_hardware_type(),
+            protocol_type: packet.get_protocol_type(),
+            hw_addr_len: packet.get_hw_addr_len(),
+            proto_addr_len: packet.get_proto_addr_len(),
+            operation: packet.get_operation(),
+            sender_hw_addr: packet.get_sender_hw_addr(),
+            sender_proto_addr: packet.get_sender_proto_addr(),
+            target_hw_addr: packet.get_target_hw_addr(),
+            target_proto_addr: packet.get_target_proto_addr(),
+            payload: vec![],
+        };
+        Arp::from(arp)
     }
 
     /// Creates an ARP reply according to a given `Arp`.
     pub fn reply(layer: &Arp, hardware_addr: MacAddr) -> Arp {
-        Arp {
-            layer: arp::Arp {
-                hardware_type: layer.layer.hardware_type,
-                protocol_type: layer.layer.protocol_type,
-                hw_addr_len: layer.layer.hw_addr_len,
-                proto_addr_len: layer.layer.proto_addr_len,
-                operation: ArpOperations::Reply,
-                sender_hw_addr: hardware_addr,
-                sender_proto_addr: layer.layer.target_proto_addr,
-                target_hw_addr: layer.layer.sender_hw_addr,
-                target_proto_addr: layer.layer.sender_proto_addr,
-                payload: vec![],
-            },
-        }
+        let arp = arp::Arp {
+            hardware_type: layer.layer.hardware_type,
+            protocol_type: layer.layer.protocol_type,
+            hw_addr_len: layer.layer.hw_addr_len,
+            proto_addr_len: layer.layer.proto_addr_len,
+            operation: ArpOperations::Reply,
+            sender_hw_addr: hardware_addr,
+            sender_proto_addr: layer.layer.target_proto_addr,
+            target_hw_addr: layer.layer.sender_hw_addr,
+            target_proto_addr: layer.layer.sender_proto_addr,
+            payload: vec![],
+        };
+        Arp::from(arp)
     }
 
     /// Returns if the `Arp` is an ARP request.

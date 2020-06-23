@@ -14,25 +14,18 @@ pub struct Ethernet {
 impl Ethernet {
     /// Creates an `Ethernet`.
     pub fn new(t: LayerType, src: MacAddr, dst: MacAddr) -> Option<Ethernet> {
-        match t {
-            LayerTypes::Arp => Some(Ethernet {
-                layer: ethernet::Ethernet {
-                    destination: dst,
-                    source: src,
-                    ethertype: EtherTypes::Arp,
-                    payload: vec![],
-                },
-            }),
-            LayerTypes::Ipv4 => Some(Ethernet {
-                layer: ethernet::Ethernet {
-                    destination: dst,
-                    source: src,
-                    ethertype: EtherTypes::Ipv4,
-                    payload: vec![],
-                },
-            }),
-            _ => None,
-        }
+        let ethertype = match t {
+            LayerTypes::Arp => EtherTypes::Arp,
+            LayerTypes::Ipv4 => EtherTypes::Ipv4,
+            _ => return None,
+        };
+        let ethernet = ethernet::Ethernet {
+            destination: dst,
+            source: src,
+            ethertype,
+            payload: vec![],
+        };
+        Some(Ethernet::from(ethernet))
     }
 
     /// Creates an `Ethernet` according to the given `Ethernet`.
@@ -42,14 +35,13 @@ impl Ethernet {
 
     /// Creates an `Ethernet` according to the given Ethernet packet.
     pub fn parse(packet: &EthernetPacket) -> Ethernet {
-        Ethernet {
-            layer: ethernet::Ethernet {
-                destination: packet.get_destination(),
-                source: packet.get_source(),
-                ethertype: packet.get_ethertype(),
-                payload: vec![],
-            },
-        }
+        let ethernet = ethernet::Ethernet {
+            destination: packet.get_destination(),
+            source: packet.get_source(),
+            ethertype: packet.get_ethertype(),
+            payload: vec![],
+        };
+        Ethernet::from(ethernet)
     }
 
     /// Get the source of the layer.

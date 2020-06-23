@@ -20,25 +20,24 @@ impl Ipv4 {
             LayerTypes::Udp => IpNextHeaderProtocols::Udp,
             _ => return None,
         };
-        Some(Ipv4 {
-            layer: ipv4::Ipv4 {
-                version: 4,
-                header_length: 5,
-                dscp: 0,
-                ecn: 0,
-                total_length: 0,
-                identification,
-                flags: 0,
-                fragment_offset: 0,
-                ttl: 128,
-                next_level_protocol,
-                checksum: 0,
-                source: src,
-                destination: dst,
-                options: vec![],
-                payload: vec![],
-            },
-        })
+        let d_ipv4 = ipv4::Ipv4 {
+            version: 4,
+            header_length: 5,
+            dscp: 0,
+            ecn: 0,
+            total_length: 0,
+            identification,
+            flags: 0,
+            fragment_offset: 0,
+            ttl: 128,
+            next_level_protocol,
+            checksum: 0,
+            source: src,
+            destination: dst,
+            options: vec![],
+            payload: vec![],
+        };
+        Some(Ipv4::from(d_ipv4))
     }
 
     /// Creates an `Ipv4` represents an IPv4 fragment.
@@ -83,25 +82,24 @@ impl Ipv4 {
 
     /// Creates an `Ipv4` according to the given IPv4 packet.
     pub fn parse(packet: &Ipv4Packet) -> Ipv4 {
-        Ipv4 {
-            layer: ipv4::Ipv4 {
-                version: packet.get_version(),
-                header_length: packet.get_header_length(),
-                dscp: packet.get_dscp(),
-                ecn: packet.get_ecn(),
-                total_length: packet.get_total_length(),
-                identification: packet.get_identification(),
-                flags: packet.get_flags(),
-                fragment_offset: packet.get_fragment_offset(),
-                ttl: packet.get_ttl(),
-                next_level_protocol: packet.get_next_level_protocol(),
-                checksum: packet.get_checksum(),
-                source: packet.get_source(),
-                destination: packet.get_destination(),
-                options: packet.get_options(),
-                payload: vec![],
-            },
-        }
+        let d_ipv4 = ipv4::Ipv4 {
+            version: packet.get_version(),
+            header_length: packet.get_header_length(),
+            dscp: packet.get_dscp(),
+            ecn: packet.get_ecn(),
+            total_length: packet.get_total_length(),
+            identification: packet.get_identification(),
+            flags: packet.get_flags(),
+            fragment_offset: packet.get_fragment_offset(),
+            ttl: packet.get_ttl(),
+            next_level_protocol: packet.get_next_level_protocol(),
+            checksum: packet.get_checksum(),
+            source: packet.get_source(),
+            destination: packet.get_destination(),
+            options: packet.get_options(),
+            payload: vec![],
+        };
+        Ipv4::from(d_ipv4)
     }
 
     /// Creates an `Ipv4` without fragmentation according to an `Ipv4`.
