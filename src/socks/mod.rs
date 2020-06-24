@@ -3,8 +3,8 @@ use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, Shutdown, SocketAddrV4, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
-use std::thread::{self, JoinHandle};
 use std::time::Duration;
+use tokio::time;
 
 mod socks;
 use self::socks::SocksDatagram;
@@ -21,14 +21,10 @@ pub trait Forward: Send {
 /// Represents the wait time after a `TimedOut` `IoError`.
 const TIMEDOUT_WAIT: u64 = 20;
 
-/// Represents the times the stream received 0 byte data continuously before close itself.
-const ZEROES_BEFORE_CLOSE: usize = 3;
-
 /// Represents a worker of a SOCKS5 TCP stream.
 pub struct StreamWorker {
     dst: SocketAddrV4,
     stream: TcpStream,
-    thread: Option<JoinHandle<()>>,
     is_finished: Arc<AtomicBool>,
     is_closed: Arc<AtomicBool>,
 }
@@ -48,9 +44,8 @@ impl StreamWorker {
         let is_finished_cloned = Arc::clone(&is_finished);
         let is_closed = Arc::new(AtomicBool::new(false));
         let is_closed_cloned = Arc::clone(&is_closed);
-        let thread = thread::spawn(move || {
+        tokio::spawn(async move {
             let mut buffer = [0u8; u16::MAX as usize];
-            let mut zero = 0;
             loop {
                 if is_closed_cloned.load(Ordering::Relaxed) {
                     break;
@@ -62,20 +57,17 @@ impl StreamWorker {
                         }
                         if size == 0 {
                             // Close by remote
-                            zero += 1;
-                            if zero >= ZEROES_BEFORE_CLOSE {
-                                if !is_finished_cloned.load(Ordering::Relaxed) {
-                                    warn!(
-                                        "SOCKS: {}: {} -> {}: {}",
-                                        "TCP",
-                                        0,
-                                        dst,
-                                        io::Error::from(io::ErrorKind::UnexpectedEof)
-                                    );
-                                }
-                                is_closed_cloned.store(true, Ordering::Relaxed);
-                                break;
+                            if !is_finished_cloned.load(Ordering::Relaxed) {
+                                warn!(
+                                    "SOCKS: {}: {} -> {}: {}",
+                                    "TCP",
+                                    0,
+                                    dst,
+                                    io::Error::from(io::ErrorKind::UnexpectedEof)
+                                );
                             }
+                            is_closed_cloned.store(true, Ordering::Relaxed);
+                            break;
                         }
                         debug!(
                             "receive from SOCKS: {}: {} -> {} ({} Bytes)",
@@ -93,7 +85,7 @@ impl StreamWorker {
                     }
                     Err(ref e) => {
                         if e.kind() == io::ErrorKind::TimedOut {
-                            thread::sleep(Duration::from_millis(TIMEDOUT_WAIT));
+                            time::delay_for(Duration::from_millis(TIMEDOUT_WAIT)).await;
                             continue;
                         }
                         warn!("SOCKS: {}: {} -> {}: {}", "TCP", 0, dst, e);
@@ -109,7 +101,6 @@ impl StreamWorker {
         Ok(StreamWorker {
             dst,
             stream,
-            thread: Some(thread),
             is_finished,
             is_closed: is_closed,
         })
@@ -153,9 +144,6 @@ impl Drop for StreamWorker {
         if let Err(ref e) = self.stream.shutdown(Shutdown::Both) {
             warn!("handle {}: {}", "TCP", e);
         }
-        if let Some(thread) = self.thread.take() {
-            thread.join().unwrap();
-        }
         trace!("drop stream {} -> {}", 0, self.dst);
     }
 }
@@ -165,8 +153,6 @@ pub struct DatagramWorker {
     src_port: Arc<AtomicU16>,
     local_port: u16,
     datagram: Arc<SocksDatagram>,
-    #[allow(unused)]
-    thread: Option<JoinHandle<()>>,
     is_closed: Arc<AtomicBool>,
 }
 
@@ -187,7 +173,7 @@ impl DatagramWorker {
         let a_datagram_cloned = Arc::clone(&a_datagram);
         let is_closed = Arc::new(AtomicBool::new(false));
         let is_closed_cloned = Arc::clone(&is_closed);
-        let thread = thread::spawn(move || {
+        tokio::spawn(async move {
             let mut buffer = [0u8; u16::MAX as usize];
             loop {
                 if is_closed_cloned.load(Ordering::Relaxed) {
@@ -214,7 +200,7 @@ impl DatagramWorker {
                     }
                     Err(ref e) => {
                         if e.kind() == io::ErrorKind::TimedOut {
-                            thread::sleep(Duration::from_millis(TIMEDOUT_WAIT));
+                            time::delay_for(Duration::from_millis(TIMEDOUT_WAIT)).await;
                             continue;
                         }
                         warn!(
@@ -238,7 +224,6 @@ impl DatagramWorker {
             src_port: a_src_port,
             local_port,
             datagram: a_datagram,
-            thread: Some(thread),
             is_closed: is_closed,
         })
     }

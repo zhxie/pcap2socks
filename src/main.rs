@@ -6,7 +6,8 @@ use lib::args;
 use lib::{Forwarder, Redirector};
 use pcap2socks as lib;
 
-fn main() {
+#[tokio::main]
+async fn main() {
     // Parse arguments
     let flags = args::parse();
 
