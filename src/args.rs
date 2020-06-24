@@ -1,9 +1,6 @@
 use clap::{crate_description, crate_version, Clap};
 use std::clone::Clone;
-use std::error::Error;
-use std::fmt::{self, Display, Formatter};
-use std::net::{AddrParseError, Ipv4Addr, SocketAddrV4};
-use std::result;
+use std::net::{Ipv4Addr, SocketAddrV4};
 
 /// Represents the flags of the application.
 #[derive(Clap, Clone, Debug, Eq, Hash, PartialEq)]
@@ -26,9 +23,9 @@ pub struct Flags {
     #[clap(long, about = "MTU", value_name = "VALUE", default_value = "1400")]
     pub mtu: u16,
     #[clap(long, short, about = "ARP publishing address", value_name = "ADDRESS")]
-    pub publish: Option<String>,
+    pub publish: Option<Ipv4Addr>,
     #[clap(long = "source", short, about = "Source", value_name = "ADDRESS")]
-    pub src: String,
+    pub src: Ipv4Addr,
     #[clap(
         long = "destination",
         short,
@@ -36,101 +33,10 @@ pub struct Flags {
         value_name = "ADDRESS",
         default_value = "127.0.0.1:1080"
     )]
-    pub dst: String,
+    pub dst: SocketAddrV4,
 }
 
 /// Parses the arguments.
 pub fn parse() -> Flags {
     Flags::parse()
-}
-
-/// Represents an error when parse arguments.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ParseError {
-    AddrParseError(AddrParseError),
-    OutOfRangeError(&'static str, &'static str),
-}
-
-impl Display for ParseError {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        match &self {
-            ParseError::AddrParseError(ref e) => write!(f, "parse: {}", e),
-            ParseError::OutOfRangeError(ref value, ref range) => {
-                write!(f, "parse: {} is out of range {}", value, range)
-            }
-        }
-    }
-}
-
-impl Error for ParseError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match &self {
-            ParseError::AddrParseError(ref e) => Some(e),
-            ParseError::OutOfRangeError(_, _) => None,
-        }
-    }
-}
-
-impl From<AddrParseError> for ParseError {
-    fn from(s: AddrParseError) -> Self {
-        ParseError::AddrParseError(s)
-    }
-}
-
-type Result = result::Result<Opts, ParseError>;
-
-/// Represents the initial UDP port for binding in local. This will become a option in the future release.
-const INITIAL_PORT: u16 = 32768;
-
-/// Represents the options of the application.
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub struct Opts {
-    pub verbose: bool,
-    pub vverbose: bool,
-    pub initial: u16,
-    pub inter: Option<String>,
-    pub mtu: u16,
-    pub publish: Option<Ipv4Addr>,
-    pub src: Ipv4Addr,
-    pub dst: SocketAddrV4,
-}
-
-impl Opts {
-    /// Creates a new empty `Opts`.
-    pub fn new() -> Opts {
-        Opts {
-            verbose: false,
-            vverbose: false,
-            initial: 32768,
-            inter: None,
-            mtu: 1400,
-            publish: None,
-            src: Ipv4Addr::UNSPECIFIED,
-            dst: SocketAddrV4::new("127.0.0.1".parse().unwrap(), 1080),
-        }
-    }
-
-    /// Validates flags and creates a new `Opts`.
-    pub fn validate(flags: &Flags) -> Result {
-        if flags.mtu < 576 {
-            return Err(ParseError::OutOfRangeError("MTU", "[576, 65535]"));
-        }
-        let mut publish = None;
-        if let Some(p) = &flags.publish {
-            publish = Some(p.parse()?);
-        }
-        let src = flags.src.parse()?;
-        let dst = flags.dst.parse()?;
-
-        Ok(Opts {
-            verbose: flags.verbose,
-            vverbose: flags.vverbose,
-            initial: INITIAL_PORT,
-            inter: flags.inter.clone(),
-            mtu: flags.mtu,
-            publish,
-            src,
-            dst,
-        })
-    }
 }

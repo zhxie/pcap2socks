@@ -1,5 +1,5 @@
 use env_logger::fmt::{Color, Target};
-use log::{debug, info, trace, warn, Level, LevelFilter};
+use log::{debug, trace, warn, Level, LevelFilter};
 use lru::LruCache;
 use std::cmp::{max, min};
 use std::collections::HashMap;
@@ -96,26 +96,6 @@ pub fn interface(name: Option<String>) -> Option<Interface> {
     } else {
         Some(inters[0].clone())
     }
-}
-
-/// Prints the dialog with information how to set up the proxied device.
-pub fn show_info(ip_addr: Ipv4Addr, gateway: Ipv4Addr, mtu: u16) {
-    let ip_addr_octets = ip_addr.octets();
-    let gateway_octets = gateway.octets();
-    let mask = Ipv4Addr::new(
-        !(ip_addr_octets[0] ^ gateway_octets[0]),
-        !(ip_addr_octets[1] ^ gateway_octets[1]),
-        !(ip_addr_octets[2] ^ gateway_octets[2]),
-        0,
-    );
-    info!("Please set the network of your device which is going to be proxied with the following parameters:");
-    info!("    ┌─{:─<10}─{:─>15}─┐", "", "");
-    info!("    │ {:<10} {:>15} │", "IP Address", ip_addr);
-    info!("    │ {:<10} {:>15} │", "Mask", mask);
-    info!("    │ {:<10} {:>15} │", "Gateway", gateway);
-    info!("    │─{:─<10}─{:─>15}─│", "", "");
-    info!("    │ {:<10} {:>15} │", "MTU", mtu);
-    info!("    └─{:─<10}─{:─>15}─┘", "", "");
 }
 
 /// Represents the wait time after a `TimedOut` `IoError`.
@@ -799,6 +779,9 @@ const DUPLICATES_BEFORE_FAST_RETRANSMISSION: usize = 3;
 /// Represents the cool down time between 2 retransmissions.
 const RETRANSMISSION_COOL_DOWN: u128 = 1000;
 
+/// Represents the initial UDP port for binding in local. This will become a option in the future release.
+const INITIAL_PORT: u16 = 32768;
+
 /// Represents the max limit of UDP port for binding in local.
 const PORT_COUNT: usize = 64;
 
@@ -816,7 +799,6 @@ pub struct Redirector {
     tcp_last_retransmission_map: HashMap<(u16, SocketAddrV4), Instant>,
     tcp_cache_map: HashMap<(u16, SocketAddrV4), RandomCacher>,
     datagrams: Vec<Option<DatagramWorker>>,
-    udp_initial_port: u16,
     /// Represents the map mapping a source port to a local port (datagram).
     datagram_map: Vec<u16>,
     /// Represents the LRU mapping a local port to a source port.
@@ -831,7 +813,6 @@ impl Redirector {
         src_ip_addr: Ipv4Addr,
         local_ip_addr: Option<Ipv4Addr>,
         remote: SocketAddrV4,
-        initial: u16,
     ) -> Redirector {
         let mut redirector = Redirector {
             tx,
@@ -846,7 +827,6 @@ impl Redirector {
             tcp_last_retransmission_map: HashMap::new(),
             tcp_cache_map: HashMap::new(),
             datagrams: (0..PORT_COUNT).map(|_| None).collect(),
-            udp_initial_port: initial,
             datagram_map: vec![0u16; u16::MAX as usize],
             udp_lru: LruCache::new(PORT_COUNT),
             defrag: Defraggler::new(),
@@ -1329,7 +1309,7 @@ impl Redirector {
     fn handle_udp(&mut self, indicator: &Indicator, buffer: &[u8]) -> io::Result<()> {
         if let Some(ref udp) = indicator.get_udp() {
             let port = self.get_local_udp_port(udp.get_src());
-            let index = (port - self.udp_initial_port) as usize;
+            let index = (port - INITIAL_PORT) as usize;
 
             // Bind
             let is_create;
@@ -1470,7 +1450,7 @@ impl Redirector {
             let pair = self.udp_lru.pop_lru().unwrap();
             let index = pair.0;
             let prev_src_port = pair.1;
-            let local_port = self.udp_initial_port + index;
+            let local_port = INITIAL_PORT + index;
 
             // Update LRU
             self.udp_lru.put(index, src_port);
