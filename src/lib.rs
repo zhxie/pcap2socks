@@ -83,9 +83,9 @@ fn auto_interfaces() -> Vec<Interface> {
 /// Gets an available network interface match the name.
 pub fn interface(name: Option<String>) -> Option<Interface> {
     let inters = match name {
-        Some(name) => {
+        Some(ref name) => {
             let mut inters = interfaces();
-            inters.retain(|current_inter| current_inter.name == name);
+            inters.retain(|ref current_inter| &current_inter.name == name);
             inters
         }
         None => auto_interfaces(),
@@ -1100,7 +1100,7 @@ impl Redirector {
                             if !tcp.is_zero_window() {
                                 let is_cooled_down =
                                     match self.tcp_last_retransmission_map.get(&key) {
-                                        Some(instant) => {
+                                        Some(ref instant) => {
                                             instant.elapsed().as_millis() < RETRANSMISSION_COOL_DOWN
                                         }
                                         None => false,

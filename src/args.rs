@@ -6,7 +6,7 @@ use std::net::{AddrParseError, Ipv4Addr, SocketAddrV4};
 use std::result;
 
 /// Represents the flags of the application.
-#[derive(Clap)]
+#[derive(Clap, Clone, Debug, Eq, Hash, PartialEq)]
 #[clap(
     version = crate_version!(),
     about = crate_description!()
@@ -45,7 +45,7 @@ pub fn parse() -> Flags {
 }
 
 /// Represents an error when parse arguments.
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ParseError {
     AddrParseError(AddrParseError),
     OutOfRangeError(&'static str, &'static str),
@@ -83,6 +83,7 @@ type Result = result::Result<Opts, ParseError>;
 const INITIAL_PORT: u16 = 32768;
 
 /// Represents the options of the application.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct Opts {
     pub verbose: bool,
     pub vverbose: bool,

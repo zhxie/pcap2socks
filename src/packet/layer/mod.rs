@@ -68,7 +68,7 @@ pub trait Layer: Display {
     ) -> io::Result<usize>;
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 pub enum Layers {
     Ethernet(ethernet::Ethernet),
     Arp(arp::Arp),

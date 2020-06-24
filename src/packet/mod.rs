@@ -20,7 +20,7 @@ use layer::udp::Udp;
 use layer::{Layer, LayerType, LayerTypes, Layers};
 
 /// Represents a packet indicator.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Indicator {
     pub link: Layers,
     pub network: Option<Layers>,
@@ -355,7 +355,7 @@ impl Fragmentation {
     /// Creates a `Fragmentation`.
     pub fn new(indicator: &Indicator) -> Option<Fragmentation> {
         let new_ipv4 = match indicator.get_ipv4() {
-            Some(ipv4) => Ipv4::defrag(ipv4),
+            Some(ref ipv4) => Ipv4::defrag(ipv4),
             None => return None,
         };
         let ethernet = match indicator.get_ethernet() {

@@ -15,7 +15,7 @@ pub type Receiver = Box<dyn DataLinkReceiver>;
 const BUFFER_SIZE: usize = 256 * 1024;
 
 /// Represents a network interface and its associated addresses.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct Interface {
     pub name: String,
     pub alias: Option<String>,
