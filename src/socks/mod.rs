@@ -3,8 +3,8 @@ use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, Shutdown, SocketAddrV4, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::Duration;
-use tokio::time;
 
 mod socks;
 use self::socks::SocksDatagram;
@@ -85,7 +85,7 @@ impl StreamWorker {
                     }
                     Err(ref e) => {
                         if e.kind() == io::ErrorKind::TimedOut {
-                            time::delay_for(Duration::from_millis(TIMEDOUT_WAIT)).await;
+                            thread::sleep(Duration::from_millis(TIMEDOUT_WAIT));
                             continue;
                         }
                         warn!("SOCKS: {}: {} -> {}: {}", "TCP", 0, dst, e);
@@ -200,7 +200,7 @@ impl DatagramWorker {
                     }
                     Err(ref e) => {
                         if e.kind() == io::ErrorKind::TimedOut {
-                            time::delay_for(Duration::from_millis(TIMEDOUT_WAIT)).await;
+                            thread::sleep(Duration::from_millis(TIMEDOUT_WAIT));
                             continue;
                         }
                         warn!(
