@@ -1,5 +1,5 @@
 use async_socks5;
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::Arc;
 use tokio::io::{self, BufStream};
 use tokio::net::udp::{RecvHalf, SendHalf};
@@ -55,9 +55,7 @@ impl SocksSendHalf {
         // Data
         &buf[10..].copy_from_slice(buffer);
 
-        self.send_half
-            .send_to(buf.as_slice(), &SocketAddr::V4(dst))
-            .await
+        self.send_half.send(buf.as_slice()).await
     }
 }
 
