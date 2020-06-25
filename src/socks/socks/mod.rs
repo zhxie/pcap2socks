@@ -6,8 +6,9 @@ use tokio::net::udp::{RecvHalf, SendHalf};
 use tokio::net::{TcpStream, UdpSocket};
 
 /// Connects to a target server through a SOCKS5 proxy.
-pub async fn connect(remote: SocketAddrV4, dst: SocketAddrV4) -> io::Result<TcpStream> {
-    let mut stream = TcpStream::connect(remote).await?;
+pub async fn connect(remote: SocketAddrV4, dst: SocketAddrV4) -> io::Result<BufStream<TcpStream>> {
+    let stream = TcpStream::connect(remote).await?;
+    let mut stream = BufStream::new(stream);
     if let Err(e) = async_socks5::connect(&mut stream, dst, None).await {
         match e {
             async_socks5::Error::Io(e) => return Err(e),

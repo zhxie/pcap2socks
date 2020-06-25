@@ -40,6 +40,7 @@ impl StreamWorker {
         remote: SocketAddrV4,
     ) -> io::Result<StreamWorker> {
         let stream = socks::connect(remote, dst).await?;
+        let stream = stream.into_inner();
         let (mut stream_rx, stream_tx) = stream.into_split();
 
         let is_finished = Arc::new(AtomicBool::new(false));
