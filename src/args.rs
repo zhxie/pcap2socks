@@ -9,10 +9,13 @@ use std::net::{Ipv4Addr, SocketAddrV4};
     about = crate_description!()
 )]
 pub struct Flags {
-    #[clap(long, short, about = "Prints verbose information")]
-    pub verbose: bool,
-    #[clap(long, short = "V", about = "Prints vverbose information")]
-    pub vverbose: bool,
+    #[clap(
+        long,
+        short,
+        about = "Prints verbose information (-vv for vverbose)",
+        parse(from_occurrences)
+    )]
+    pub verbose: usize,
     #[clap(
         long = "interface",
         short,

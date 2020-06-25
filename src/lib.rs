@@ -31,12 +31,10 @@ use pcap::{HardwareAddr, Receiver, Sender};
 
 /// Sets the logger.
 pub fn set_logger(flags: &Flags) {
-    let level = match &flags.vverbose {
-        true => LevelFilter::Trace,
-        false => match flags.verbose {
-            true => LevelFilter::Debug,
-            false => LevelFilter::Info,
-        },
+    let level = match &flags.verbose {
+        0 => LevelFilter::Info,
+        1 => LevelFilter::Debug,
+        _ => LevelFilter::Trace,
     };
     env_logger::builder()
         .target(Target::Stdout)

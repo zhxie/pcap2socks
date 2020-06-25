@@ -32,11 +32,9 @@ pcap2socks -s <ADDRESS> -p <ADDRESS> -d <ADDRESS>
 
 `-h, --help`: Prints help information.
 
-`-v, --verbose`: Prints verbose information.
+`-v, --verbose`: Prints verbose information (`-vv` for vverbose).
 
-`--version`: Prints version information.
-
-`-V, --vverbose`: Prints vverbose information.
+`-V, --version`: Prints version information.
 
 ### Options
 
