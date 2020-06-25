@@ -22,6 +22,10 @@ pub trait Forward: Send {
 
 /// Represents the wait time after a `TimedOut` `IoError`.
 const TIMEDOUT_WAIT: u64 = 20;
+/// Represents the wait time after receiving 0 byte from the stream.
+const RECV_ZERO_WAIT: u64 = 100;
+/// Represents the maximum count of receiving 0 byte from the stream before closing it.
+const MAX_RECV_ZERO: usize = 3;
 
 /// Represents a worker of a SOCKS5 TCP stream.
 pub struct StreamWorker {
@@ -49,6 +53,7 @@ impl StreamWorker {
         let is_closed_cloned = Arc::clone(&is_closed);
         tokio::spawn(async move {
             let mut buffer = vec![0u8; u16::MAX as usize];
+            let mut recv_zero = 0;
             loop {
                 if is_closed_cloned.load(Ordering::Relaxed) {
                     break;
@@ -59,8 +64,12 @@ impl StreamWorker {
                             break;
                         }
                         if size == 0 {
-                            // Close by remote
-                            if !is_finished_cloned.load(Ordering::Relaxed) {
+                            if is_finished_cloned.load(Ordering::Relaxed) {
+                                break;
+                            }
+                            recv_zero += 1;
+                            if recv_zero > MAX_RECV_ZERO {
+                                // Close by remote
                                 warn!(
                                     "SOCKS: {}: {} -> {}: {}",
                                     "TCP",
@@ -68,10 +77,13 @@ impl StreamWorker {
                                     dst,
                                     io::Error::from(io::ErrorKind::UnexpectedEof)
                                 );
+                                is_closed_cloned.store(true, Ordering::Relaxed);
+                                break;
                             }
-                            is_closed_cloned.store(true, Ordering::Relaxed);
-                            break;
+                            time::delay_for(Duration::from_millis(RECV_ZERO_WAIT)).await;
+                            continue;
                         }
+                        recv_zero = 0;
                         debug!(
                             "receive from SOCKS: {}: {} -> {} ({} Bytes)",
                             "TCP", dst, 0, size
