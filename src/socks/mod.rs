@@ -47,7 +47,7 @@ impl StreamWorker {
         let is_closed = Arc::new(AtomicBool::new(false));
         let is_closed_cloned = Arc::clone(&is_closed);
         tokio::spawn(async move {
-            let mut buffer = [0u8; u16::MAX as usize];
+            let mut buffer = vec![0u8; u16::MAX as usize];
             loop {
                 if is_closed_cloned.load(Ordering::Relaxed) {
                     break;
@@ -171,7 +171,7 @@ impl DatagramWorker {
         let is_closed = Arc::new(AtomicBool::new(false));
         let is_closed_cloned = Arc::clone(&is_closed);
         tokio::spawn(async move {
-            let mut buffer = [0u8; u16::MAX as usize];
+            let mut buffer = vec![0u8; u16::MAX as usize];
             loop {
                 if is_closed_cloned.load(Ordering::Relaxed) {
                     break;

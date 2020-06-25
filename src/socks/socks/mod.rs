@@ -48,7 +48,7 @@ impl SocksSendHalf {
         // ATYP
         buf[3] = ATYP_IPV4;
         // DST.ADDR
-        &buf[4..7].copy_from_slice(&dst.ip().octets());
+        &buf[4..8].copy_from_slice(&dst.ip().octets());
         // DST.PORT
         buf[8] = (dst.port() / 256) as u8;
         buf[9] = (dst.port() % 256) as u8;
