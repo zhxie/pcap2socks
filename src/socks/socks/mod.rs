@@ -1,7 +1,7 @@
 use async_socks5;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::Arc;
-use tokio::io;
+use tokio::io::{self, BufStream};
 use tokio::net::udp::{RecvHalf, SendHalf};
 use tokio::net::{TcpStream, UdpSocket};
 
@@ -30,13 +30,13 @@ const ATYP_IPV4: u8 = 1;
 /// Represents the send half of a SOCKS5 UDP client.
 #[derive(Debug)]
 pub struct SocksSendHalf {
-    stream: Arc<TcpStream>,
+    stream: Arc<BufStream<TcpStream>>,
     send_half: SendHalf,
 }
 
 impl SocksSendHalf {
     /// Creates a new `SocksSendHalf`.
-    pub fn new(stream: Arc<TcpStream>, send_half: SendHalf) -> SocksSendHalf {
+    pub fn new(stream: Arc<BufStream<TcpStream>>, send_half: SendHalf) -> SocksSendHalf {
         SocksSendHalf { stream, send_half }
     }
 
@@ -64,14 +64,14 @@ impl SocksSendHalf {
 /// Represents the receive half of a SOCKS5 UDP client.
 #[derive(Debug)]
 pub struct SocksRecvHalf {
-    stream: Arc<TcpStream>,
+    stream: Arc<BufStream<TcpStream>>,
     recv_half: RecvHalf,
     buffer: Vec<u8>,
 }
 
 impl SocksRecvHalf {
     /// Creates a new `SocksRecvHalf`.
-    pub fn new(stream: Arc<TcpStream>, recv_half: RecvHalf) -> SocksRecvHalf {
+    pub fn new(stream: Arc<BufStream<TcpStream>>, recv_half: RecvHalf) -> SocksRecvHalf {
         SocksRecvHalf {
             stream,
             recv_half,
@@ -111,6 +111,7 @@ pub async fn bind(
 ) -> io::Result<(SocksRecvHalf, SocksSendHalf)> {
     // Connect
     let stream = TcpStream::connect(remote).await?;
+    let stream = BufStream::new(stream);
     let socket = UdpSocket::bind(local).await?;
     let datagram =
         match async_socks5::SocksDatagram::associate::<SocketAddrV4>(stream, socket, None, None)
