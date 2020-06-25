@@ -62,7 +62,7 @@ async fn main() {
         flags.dst,
     );
     info!("Proxy {} to {}", flags.src, flags.dst);
-    if let Err(ref e) = redirector.open(&mut rx) {
+    if let Err(ref e) = redirector.open(&mut rx).await {
         error!("{}", e);
     }
 }

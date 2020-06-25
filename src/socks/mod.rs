@@ -1,13 +1,15 @@
 use log::{debug, trace, warn};
-use std::io::{self, Read, Write};
-use std::net::{Ipv4Addr, Shutdown, SocketAddrV4, TcpStream};
+use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
-use std::thread;
 use std::time::Duration;
+use tokio::io;
+use tokio::net::tcp::OwnedWriteHalf;
+use tokio::prelude::*;
+use tokio::time;
 
 mod socks;
-use self::socks::SocksDatagram;
+use self::socks::SocksSendHalf;
 
 /// Trait for forwarding transport layer payload.
 pub trait Forward: Send {
@@ -24,21 +26,21 @@ const TIMEDOUT_WAIT: u64 = 20;
 /// Represents a worker of a SOCKS5 TCP stream.
 pub struct StreamWorker {
     dst: SocketAddrV4,
-    stream: TcpStream,
+    stream_tx: OwnedWriteHalf,
     is_finished: Arc<AtomicBool>,
     is_closed: Arc<AtomicBool>,
 }
 
 impl StreamWorker {
     /// Opens a new `StreamWorker`.
-    pub fn connect(
+    pub async fn connect(
         tx: Arc<Mutex<dyn Forward>>,
         src_port: u16,
         dst: SocketAddrV4,
         remote: SocketAddrV4,
     ) -> io::Result<StreamWorker> {
-        let stream = socks::connect(remote, dst)?;
-        let mut stream_cloned = stream.try_clone()?;
+        let stream = socks::connect(remote, dst).await?;
+        let (mut stream_rx, stream_tx) = stream.into_split();
 
         let is_finished = Arc::new(AtomicBool::new(false));
         let is_finished_cloned = Arc::clone(&is_finished);
@@ -50,7 +52,7 @@ impl StreamWorker {
                 if is_closed_cloned.load(Ordering::Relaxed) {
                     break;
                 }
-                match stream_cloned.read(&mut buffer) {
+                match stream_rx.read(&mut buffer).await {
                     Ok(size) => {
                         if is_closed_cloned.load(Ordering::Relaxed) {
                             break;
@@ -85,7 +87,7 @@ impl StreamWorker {
                     }
                     Err(ref e) => {
                         if e.kind() == io::ErrorKind::TimedOut {
-                            thread::sleep(Duration::from_millis(TIMEDOUT_WAIT));
+                            time::delay_for(Duration::from_millis(TIMEDOUT_WAIT)).await;
                             continue;
                         }
                         warn!("SOCKS: {}: {} -> {}: {}", "TCP", 0, dst, e);
@@ -100,14 +102,14 @@ impl StreamWorker {
 
         Ok(StreamWorker {
             dst,
-            stream,
+            stream_tx,
             is_finished,
             is_closed: is_closed,
         })
     }
 
     /// Sends data on the SOCKS5 in TCP to the destination.
-    pub fn send(&mut self, buffer: &[u8]) -> io::Result<()> {
+    pub async fn send(&mut self, buffer: &[u8]) -> io::Result<()> {
         debug!(
             "send to SOCKS {}: {} -> {} ({} Bytes)",
             "TCP",
@@ -117,7 +119,7 @@ impl StreamWorker {
         );
 
         // Send
-        self.stream.write_all(buffer)
+        self.stream_tx.write_all(buffer).await
     }
 
     /// Announces to finish the worker.
@@ -141,9 +143,6 @@ impl StreamWorker {
 impl Drop for StreamWorker {
     fn drop(&mut self) {
         self.close();
-        if let Err(ref e) = self.stream.shutdown(Shutdown::Both) {
-            warn!("handle {}: {}", "TCP", e);
-        }
         trace!("drop stream {} -> {}", 0, self.dst);
     }
 }
@@ -152,25 +151,23 @@ impl Drop for StreamWorker {
 pub struct DatagramWorker {
     src_port: Arc<AtomicU16>,
     local_port: u16,
-    datagram: Arc<SocksDatagram>,
+    socks_tx: SocksSendHalf,
     is_closed: Arc<AtomicBool>,
 }
 
 impl DatagramWorker {
     /// Creates a new `DatagramWorker`.
-    pub fn bind(
+    pub async fn bind(
         tx: Arc<Mutex<dyn Forward>>,
         src_port: u16,
         local_port: u16,
         remote: SocketAddrV4,
     ) -> io::Result<DatagramWorker> {
-        let datagram =
-            SocksDatagram::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, local_port), remote)?;
+        let (mut socks_rx, socks_tx) =
+            socks::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, local_port), remote).await?;
 
         let a_src_port = Arc::new(AtomicU16::from(src_port));
         let a_src_port_cloned = Arc::clone(&a_src_port);
-        let a_datagram = Arc::new(datagram);
-        let a_datagram_cloned = Arc::clone(&a_datagram);
         let is_closed = Arc::new(AtomicBool::new(false));
         let is_closed_cloned = Arc::clone(&is_closed);
         tokio::spawn(async move {
@@ -179,7 +176,7 @@ impl DatagramWorker {
                 if is_closed_cloned.load(Ordering::Relaxed) {
                     break;
                 }
-                match a_datagram_cloned.recv_from(&mut buffer) {
+                match socks_rx.recv_from(&mut buffer).await {
                     Ok((size, addr)) => {
                         if is_closed_cloned.load(Ordering::Relaxed) {
                             break;
@@ -200,7 +197,7 @@ impl DatagramWorker {
                     }
                     Err(ref e) => {
                         if e.kind() == io::ErrorKind::TimedOut {
-                            thread::sleep(Duration::from_millis(TIMEDOUT_WAIT));
+                            time::delay_for(Duration::from_millis(TIMEDOUT_WAIT)).await;
                             continue;
                         }
                         warn!(
@@ -223,13 +220,13 @@ impl DatagramWorker {
         Ok(DatagramWorker {
             src_port: a_src_port,
             local_port,
-            datagram: a_datagram,
+            socks_tx,
             is_closed: is_closed,
         })
     }
 
     /// Sends data on the SOCKS5 in UDP to the destination.
-    pub fn send_to(&mut self, buffer: &[u8], dst: SocketAddrV4) -> io::Result<usize> {
+    pub async fn send_to(&mut self, buffer: &[u8], dst: SocketAddrV4) -> io::Result<usize> {
         debug!(
             "send to SOCKS {}: {} -> {} ({} Bytes)",
             "UDP",
@@ -239,7 +236,7 @@ impl DatagramWorker {
         );
 
         // Send
-        self.datagram.send_to(buffer, dst)
+        self.socks_tx.send_to(buffer, dst).await
     }
 
     /// Sets the source port of the `DatagramWorker`.
