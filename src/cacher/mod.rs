@@ -212,15 +212,38 @@ impl RandomCacher {
 
                 let mut new_buffer = vec![0u8; size];
 
-                // TODO: the procedure may by optimized to copy valid bytes only
-                // From the head to the end of the buffer
-                new_buffer[..self.buffer.len() - self.head]
-                    .copy_from_slice(&self.buffer[self.head..]);
+                let filled = self.get_filled();
+                for (sequence, sequence_tail) in filled {
+                    // Place in the new buffer
+                    let new_head = sequence
+                        .checked_sub(self.sequence)
+                        .unwrap_or_else(|| sequence + (u32::MAX - self.sequence))
+                        as usize;
+                    let new_head = new_head.checked_sub(self.buffer.len()).unwrap_or(new_head);
+                    let new_tail = sequence_tail
+                        .checked_sub(self.sequence)
+                        .unwrap_or_else(|| sequence_tail + (u32::MAX - self.sequence))
+                        as usize;
+                    let new_tail = new_tail.checked_sub(self.buffer.len()).unwrap_or(new_tail);
 
-                // From the begin of the buffer to the tail
-                if self.head > 0 {
-                    new_buffer[self.buffer.len() - self.head..self.buffer.len()]
-                        .copy_from_slice(&self.buffer[..self.head]);
+                    // Place in the original buffer
+                    let head = self.head + new_head;
+                    let head = head.checked_sub(self.buffer.len()).unwrap_or(head);
+                    let tail = self.head + new_tail;
+                    let tail = tail.checked_sub(self.buffer.len()).unwrap_or(tail);
+
+                    if tail < head {
+                        // From the head to the end of the buffer
+                        let length_a = self.buffer.len() - head;
+                        new_buffer[new_head..new_head + length_a]
+                            .copy_from_slice(&self.buffer[head..]);
+
+                        // From the begin of the buffer to the tail
+                        new_buffer[new_head + length_a..new_tail]
+                            .copy_from_slice(&self.buffer[..tail]);
+                    } else {
+                        new_buffer[new_head..new_tail].copy_from_slice(&self.buffer[head..tail]);
+                    }
                 }
 
                 self.buffer = new_buffer;
@@ -363,6 +386,20 @@ impl RandomCacher {
         } else {
             (self.buffer.len() - self.size) as u16
         }
+    }
+
+    /// Get the filled edges of the `RandomCacher`.
+    pub fn get_filled(&self) -> Vec<(u32, u32)> {
+        let mut v = Vec::new();
+        for (&sequence, &size) in &self.edges {
+            let begin = sequence.checked_sub(u32::MAX as u64).unwrap_or(sequence) as u32;
+            let end = begin
+                .checked_add(size as u32)
+                .unwrap_or_else(|| size as u32 - (u32::MAX - begin));
+            v.push((begin, end));
+        }
+
+        v
     }
 
     fn is_unbounded(&self) -> bool {
