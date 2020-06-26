@@ -308,7 +308,7 @@ impl Forwarder {
         let cache = self
             .tcp_cache2_map
             .entry(key)
-            .or_insert_with(|| Cacher::new_expandable(sequence));
+            .or_insert_with(|| Cacher::new_unbounded(sequence));
         cache.append(payload)?;
 
         self.send_tcp_ack(dst, src_port)

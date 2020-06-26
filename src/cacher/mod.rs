@@ -15,7 +15,7 @@ const MAX_U32_WINDOW_SIZE: usize = 4 * 1024 * 1024;
 #[derive(Debug)]
 pub struct Cacher {
     buffer: Vec<u8>,
-    expandable: bool,
+    unbounded: bool,
     sequence: u32,
     head: usize,
     size: usize,
@@ -26,7 +26,7 @@ impl Cacher {
     pub fn new(sequence: u32) -> Cacher {
         Cacher {
             buffer: vec![0; INITIAL_SIZE],
-            expandable: false,
+            unbounded: false,
             sequence,
             head: 0,
             size: 0,
@@ -34,9 +34,9 @@ impl Cacher {
     }
 
     /// Creates a new `Cacher` which can increase its size dynamically.
-    pub fn new_expandable(sequence: u32) -> Cacher {
+    pub fn new_unbounded(sequence: u32) -> Cacher {
         let mut cacher = Cacher::new(sequence);
-        cacher.expandable = true;
+        cacher.unbounded = true;
 
         cacher
     }
@@ -44,7 +44,7 @@ impl Cacher {
     /// Appends some bytes to the end of the cache.
     pub fn append(&mut self, buffer: &[u8]) -> io::Result<()> {
         if buffer.len() > self.buffer.len() - self.size {
-            if self.is_expandable() {
+            if self.is_unbounded() {
                 // Extend the buffer
                 let size = max(
                     (self.buffer.len() as f64 * EXPANSION_FACTOR) as usize,
@@ -150,8 +150,8 @@ impl Cacher {
         self.size
     }
 
-    fn is_expandable(&self) -> bool {
-        self.expandable
+    fn is_unbounded(&self) -> bool {
+        self.unbounded
     }
 
     /// Returns if the cache is empty.
@@ -164,12 +164,12 @@ impl Cacher {
 #[derive(Debug)]
 pub struct RandomCacher {
     buffer: Vec<u8>,
-    expandable: bool,
+    unbounded: bool,
     sequence: u32,
     head: usize,
-    /// Represents the expected size from the head to the tail. NOT all the bytes in [head, head + size) are existed.
+    /// Represents the expected size from the head to the tail. NOT all the bytes in [head, head + size) are filled.
     size: usize,
-    /// Represents edges of existing values. Use an u64 instead of an u32 because the sequence is used as a ring.
+    /// Represents edges of filled values. Use an u64 instead of an u32 because the sequence is used as a ring.
     edges: BTreeMap<u64, usize>,
 }
 
@@ -178,7 +178,7 @@ impl RandomCacher {
     pub fn new(sequence: u32) -> RandomCacher {
         RandomCacher {
             buffer: vec![0u8; INITIAL_SIZE],
-            expandable: false,
+            unbounded: false,
             sequence,
             head: 0,
             size: 0,
@@ -187,9 +187,9 @@ impl RandomCacher {
     }
 
     /// Creates a new `RandomCacher` which can increase its size dynamically.
-    pub fn new_expandable(sequence: u32) -> RandomCacher {
+    pub fn new_unbounded(sequence: u32) -> RandomCacher {
         let mut cacher = RandomCacher::new(sequence);
-        cacher.expandable = true;
+        cacher.unbounded = true;
 
         cacher
     }
@@ -206,7 +206,7 @@ impl RandomCacher {
 
         let size = sub_sequence + buffer.len();
         if size > self.buffer.len() {
-            if self.is_expandable() {
+            if self.is_unbounded() {
                 // Extend the buffer
                 let size = max((self.buffer.len() as f64 * EXPANSION_FACTOR) as usize, size);
 
@@ -365,8 +365,8 @@ impl RandomCacher {
         }
     }
 
-    fn is_expandable(&self) -> bool {
-        self.expandable
+    fn is_unbounded(&self) -> bool {
+        self.unbounded
     }
 
     /// Returns if the cache is empty.
