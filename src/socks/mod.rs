@@ -1,5 +1,5 @@
 use log::{debug, trace, warn};
-use std::net::{Ipv4Addr, SocketAddrV4};
+use std::net::SocketAddrV4;
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -173,11 +173,9 @@ impl DatagramWorker {
     pub async fn bind(
         tx: Arc<Mutex<dyn Forward>>,
         src_port: u16,
-        local_port: u16,
         remote: SocketAddrV4,
-    ) -> io::Result<DatagramWorker> {
-        let (mut socks_rx, socks_tx) =
-            socks::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, local_port), remote).await?;
+    ) -> io::Result<(DatagramWorker, u16)> {
+        let (mut socks_rx, socks_tx, local_port) = socks::bind(remote).await?;
 
         let a_src_port = Arc::new(AtomicU16::from(src_port));
         let a_src_port_cloned = Arc::clone(&a_src_port);
@@ -230,12 +228,15 @@ impl DatagramWorker {
 
         trace!("create datagram {} = {}", src_port, local_port);
 
-        Ok(DatagramWorker {
-            src_port: a_src_port,
+        Ok((
+            DatagramWorker {
+                src_port: a_src_port,
+                local_port,
+                socks_tx,
+                is_closed: is_closed,
+            },
             local_port,
-            socks_tx,
-            is_closed: is_closed,
-        })
+        ))
     }
 
     /// Sends data on the SOCKS5 in UDP to the destination.

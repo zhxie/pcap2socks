@@ -778,9 +778,6 @@ const DUPLICATES_BEFORE_FAST_RETRANSMISSION: usize = 3;
 /// Represents the cool down time between 2 retransmissions.
 const RETRANSMISSION_COOL_DOWN: u128 = 1000;
 
-/// Represents the initial UDP port for binding in local. This will become a option in the future release.
-const INITIAL_PORT: u16 = 32768;
-
 /// Represents the max limit of UDP port for binding in local.
 const PORT_COUNT: usize = 64;
 
@@ -797,8 +794,8 @@ pub struct Redirector {
     tcp_duplicate_map: HashMap<(u16, SocketAddrV4), usize>,
     tcp_last_retransmission_map: HashMap<(u16, SocketAddrV4), Instant>,
     tcp_cache_map: HashMap<(u16, SocketAddrV4), RandomCacher>,
-    datagrams: Vec<Option<DatagramWorker>>,
-    /// Represents the map mapping a source port to a local port (datagram).
+    datagrams: HashMap<u16, DatagramWorker>,
+    /// Represents the map mapping a source port to a local port.
     datagram_map: Vec<u16>,
     /// Represents the LRU mapping a local port to a source port.
     udp_lru: LruCache<u16, u16>,
@@ -813,7 +810,7 @@ impl Redirector {
         local_ip_addr: Option<Ipv4Addr>,
         remote: SocketAddrV4,
     ) -> Redirector {
-        let mut redirector = Redirector {
+        let redirector = Redirector {
             tx,
             is_tx_src_hardware_addr_set: false,
             src_ip_addr,
@@ -825,7 +822,7 @@ impl Redirector {
             tcp_duplicate_map: HashMap::new(),
             tcp_last_retransmission_map: HashMap::new(),
             tcp_cache_map: HashMap::new(),
-            datagrams: (0..PORT_COUNT).map(|_| None).collect(),
+            datagrams: HashMap::new(),
             datagram_map: vec![0u16; u16::MAX as usize],
             udp_lru: LruCache::new(PORT_COUNT),
             defrag: Defraggler::new(),
@@ -836,9 +833,6 @@ impl Redirector {
                 .lock()
                 .unwrap()
                 .set_local_ip_addr(local_ip_addr);
-        }
-        for i in 0..PORT_COUNT {
-            redirector.udp_lru.put(i as u16, 0);
         }
 
         redirector
@@ -1308,38 +1302,40 @@ impl Redirector {
 
     async fn handle_udp(&mut self, indicator: &Indicator, buffer: &[u8]) -> io::Result<()> {
         if let Some(ref udp) = indicator.get_udp() {
-            let port = self.get_local_udp_port(udp.get_src());
-            let index = (port - INITIAL_PORT) as usize;
+            let mut port = self.get_local_udp_port(udp.get_src());
 
             // Bind
             let is_create;
             let is_set;
-            match self.datagrams[index] {
-                Some(ref worker) => {
-                    is_create = worker.is_closed();
-                    is_set = worker.get_src_port() != udp.get_src();
-                }
-                None => {
-                    is_create = true;
-                    is_set = false;
-                }
-            };
+            if port == 0 {
+                is_create = true;
+                is_set = false;
+            } else {
+                let worker = self.datagrams.get(&port).unwrap();
+                is_create = worker.is_closed();
+                is_set = worker.get_src_port() != udp.get_src();
+            }
             if is_create {
                 // Bind
-                self.datagrams[index] = Some(
-                    DatagramWorker::bind(self.get_tx(), udp.get_src(), port, self.remote).await?,
-                );
+                let (worker, bind_port) =
+                    DatagramWorker::bind(self.get_tx(), udp.get_src(), self.remote).await?;
+                self.datagrams.insert(bind_port, worker);
+
+                // Update LRU
+                self.udp_lru.put(bind_port, udp.get_src());
+
+                port = bind_port;
             } else if is_set {
                 // Replace
-                self.datagrams[index]
-                    .as_mut()
+                self.datagrams
+                    .get_mut(&port)
                     .unwrap()
                     .set_src_port(udp.get_src());
             }
 
             // Send
-            self.datagrams[index]
-                .as_mut()
+            self.datagrams
+                .get_mut(&port)
                 .unwrap()
                 .send_to(
                     &buffer[indicator.get_size()..],
@@ -1448,28 +1444,31 @@ impl Redirector {
     fn get_local_udp_port(&mut self, src_port: u16) -> u16 {
         let local_port = self.datagram_map[src_port as usize];
         if local_port == 0 {
-            let pair = self.udp_lru.pop_lru().unwrap();
-            let index = pair.0;
-            let prev_src_port = pair.1;
-            let local_port = INITIAL_PORT + index;
+            if self.udp_lru.len() < self.udp_lru.cap() {
+                0
+            } else {
+                let pair = self.udp_lru.pop_lru().unwrap();
+                let local_port = pair.0;
+                let prev_src_port = pair.1;
 
-            // Update LRU
-            self.udp_lru.put(index, src_port);
+                if prev_src_port != 0 {
+                    // Reuse
+                    self.datagram_map[prev_src_port as usize] = 0;
+                    trace!(
+                        "reuse UDP port {} = {} to {} = {}",
+                        prev_src_port,
+                        local_port,
+                        src_port,
+                        local_port
+                    );
+                }
+                self.datagram_map[src_port as usize] = local_port;
 
-            if prev_src_port != 0 {
-                // Reuse
-                self.datagram_map[prev_src_port as usize] = 0;
-                trace!(
-                    "reuse UDP port {} = {} to {} = {}",
-                    prev_src_port,
-                    local_port,
-                    src_port,
-                    local_port
-                );
+                // Update LRU
+                self.udp_lru.put(local_port, src_port);
+
+                local_port
             }
-            self.datagram_map[src_port as usize] = local_port;
-
-            local_port
         } else {
             // Update LRU
             self.udp_lru.get(&local_port);

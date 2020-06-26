@@ -70,9 +70,7 @@ pcap2socks -s <ADDRESS> -p <ADDRESS> -d <ADDRESS>
 
 1. IPv6 is not supported yet.
 
-2. Currently, pcap2socks can only proxy 1 device. pcap2socks takes UDP ports from `32768` to `32831` for binding. The initial port for UDP binding will become a option in the future release.
-
-3. Because only SOCKS5 can forward UDP traffic, pcap2socks only support SOCKS5 at this point. A version with SOCKS4 support without redirecting UDP traffic will release in the future.
+2. Because only SOCKS5 can forward UDP traffic, pcap2socks only support SOCKS5 at this point. A version with SOCKS4 support without redirecting UDP traffic will release in the future.
 
 ## Known Issues
 

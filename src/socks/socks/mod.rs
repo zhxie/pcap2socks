@@ -104,14 +104,13 @@ impl SocksRecvHalf {
 }
 
 /// Bind a local address to a target server through a SOCKS5 proxy.
-pub async fn bind(
-    local: SocketAddrV4,
-    remote: SocketAddrV4,
-) -> io::Result<(SocksRecvHalf, SocksSendHalf)> {
+pub async fn bind(remote: SocketAddrV4) -> io::Result<(SocksRecvHalf, SocksSendHalf, u16)> {
     // Connect
     let stream = TcpStream::connect(remote).await?;
     let stream = BufStream::new(stream);
+    let local = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0);
     let socket = UdpSocket::bind(local).await?;
+    let local_port = socket.local_addr().unwrap().port();
     let datagram =
         match async_socks5::SocksDatagram::associate::<SocketAddrV4>(stream, socket, None, None)
             .await
@@ -131,5 +130,6 @@ pub async fn bind(
     Ok((
         SocksRecvHalf::new(a_stream, socket_rx),
         SocksSendHalf::new(a_stream_cloned, socket_tx),
+        local_port,
     ))
 }
