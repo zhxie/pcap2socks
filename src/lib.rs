@@ -314,7 +314,7 @@ impl Forwarder {
         self.send_tcp_ack(dst, src_port)
     }
 
-    /// Resends TCP ACK packets from first (sent) cache.
+    /// Resends TCP ACK packets from the first (sent) cache.
     pub fn resend_tcp_ack(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()> {
         let key = (src_port, dst);
 
@@ -341,7 +341,33 @@ impl Forwarder {
         Ok(())
     }
 
-    /// Sends TCP ACK packets from second (unsent) cache.
+    /// Resents TCP ACK packets from the first (sent) cache with the certain edges.
+    pub fn resend_tcp_ack_range(
+        &mut self,
+        dst: SocketAddrV4,
+        src_port: u16,
+        sequence: u32,
+        sequence_tail: u32,
+    ) -> io::Result<()> {
+        let key = (src_port, dst);
+        let size = sequence_tail
+            .checked_sub(sequence)
+            .unwrap_or_else(|| sequence_tail + (u32::MAX - sequence)) as usize;
+
+        if let None = self.tcp_cache_map.get(&key) {
+            return Err(io::Error::new(io::ErrorKind::Other, "cannot get cache"));
+        }
+
+        // Resend
+        let payload = self.tcp_cache_map.get(&key).unwrap().get(sequence, size)?;
+        if payload.len() > 0 {
+            return self.send_tcp_ack_raw(dst, src_port, sequence, payload.as_slice());
+        }
+
+        Ok(())
+    }
+
+    /// Sends TCP ACK packets from the second (unsent) cache.
     pub fn send_tcp_ack(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()> {
         let key = (src_port, dst);
 
@@ -363,7 +389,7 @@ impl Forwarder {
 
             let size = min(remain_size as usize, cache2.get_size());
             if size > 0 {
-                let payload = cache2.get(size).unwrap();
+                let payload = cache2.get(sequence, size).unwrap();
 
                 let sequence_tail = sequence
                     .checked_add(size as u32)
@@ -463,7 +489,12 @@ impl Forwarder {
     }
 
     /// Sends an TCP ACK/SYN packet.
-    pub fn send_tcp_ack_syn(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()> {
+    pub fn send_tcp_ack_syn(
+        &mut self,
+        dst: SocketAddrV4,
+        src_port: u16,
+        sack_perm: bool,
+    ) -> io::Result<()> {
         let key = (src_port, dst);
 
         // TCP
@@ -473,6 +504,7 @@ impl Forwarder {
             *self.tcp_sequence_map.get(&key).unwrap_or(&0),
             *self.tcp_acknowledgement_map.get(&key).unwrap_or(&0),
             *self.tcp_window_map.get(&key).unwrap_or(&65535),
+            sack_perm,
         );
 
         // Send
@@ -1210,7 +1242,7 @@ impl Redirector {
                             tcp.get_sequence().checked_add(1).unwrap_or(0),
                         );
                         // Send ACK/SYN
-                        tx_locked.send_tcp_ack_syn(dst, tcp.get_src())?;
+                        tx_locked.send_tcp_ack_syn(dst, tcp.get_src(), tcp.is_sack_perm())?;
 
                         stream
                     }

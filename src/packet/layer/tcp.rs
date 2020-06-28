@@ -1,6 +1,9 @@
 use super::ipv4::Ipv4;
 use super::{Layer, LayerType, LayerTypes};
-use pnet::packet::tcp::{self, MutableTcpPacket, TcpFlags, TcpOptionPacket, TcpPacket};
+use pnet::packet::tcp::{
+    self, MutableTcpOptionPacket, MutableTcpPacket, TcpFlags, TcpOption, TcpOptionNumbers,
+    TcpOptionPacket, TcpPacket,
+};
 use std::clone::Clone;
 use std::fmt::{self, Display, Formatter};
 use std::io;
@@ -41,9 +44,16 @@ impl Tcp {
         sequence: u32,
         acknowledgement: u32,
         window: u16,
+        sack_perm: bool,
     ) -> Tcp {
         let mut tcp = Tcp::new_ack(src, dst, sequence, acknowledgement, window);
         tcp.layer.flags |= TcpFlags::SYN;
+        if sack_perm {
+            tcp.layer.data_offset += 1;
+            tcp.layer.options.push(TcpOption::nop());
+            tcp.layer.options.push(TcpOption::nop());
+            tcp.layer.options.push(TcpOption::sack_perm());
+        }
         tcp
     }
 
@@ -202,9 +212,24 @@ impl Tcp {
         self.is_rst() || self.is_fin()
     }
 
-    // Returns if the `Tcp` has zero window.
+    /// Returns if the `Tcp` has zero window.
     pub fn is_zero_window(&self) -> bool {
         self.layer.window == 0
+    }
+
+    /// Returns if the `Tcp` indicates selective acknowledgements permitted.
+    pub fn is_sack_perm(&self) -> bool {
+        let buffer = vec![0u8; 40];
+        let mut packet = MutableTcpOptionPacket::owned(buffer).unwrap();
+        for ref option in &self.layer.options {
+            packet.populate(option);
+            match packet.get_number() {
+                TcpOptionNumbers::SACK_PERMITTED => return true,
+                _ => {}
+            }
+        }
+
+        false
     }
 }
 

@@ -108,12 +108,22 @@ impl Cacher {
         }
     }
 
-    /// Get the buffer from the beginning of the cache in the given size.
-    pub fn get(&self, size: usize) -> io::Result<Vec<u8>> {
+    /// Get the buffer from the certain sequence of the cache in the given size.
+    pub fn get(&self, sequence: u32, size: usize) -> io::Result<Vec<u8>> {
         if size == 0 {
             return Ok(Vec::new());
         }
-        if self.size < size {
+        let distance = sequence
+            .checked_sub(self.sequence)
+            .unwrap_or_else(|| sequence + (u32::MAX - self.sequence))
+            as usize;
+        if distance > self.size {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "cache at the certain sequence does not exist",
+            ));
+        }
+        if self.size - distance < size {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "request size too big",
@@ -123,8 +133,10 @@ impl Cacher {
         let mut vector = vec![0u8; size];
 
         // From the head to the end of the buffer
-        let length_a = min(size, self.buffer.len() - self.head);
-        vector[..length_a].copy_from_slice(&self.buffer[self.head..self.head + length_a]);
+        let head = self.head + distance;
+        let head = head.checked_sub(self.buffer.len()).unwrap_or(head);
+        let length_a = min(size, self.buffer.len() - head);
+        vector[..length_a].copy_from_slice(&self.buffer[head..head + length_a]);
 
         // From the begin of the buffer to the tail
         let length_b = size - length_a;
@@ -137,7 +149,7 @@ impl Cacher {
 
     /// Get all the buffer of the cache.
     pub fn get_all(&self) -> io::Result<Vec<u8>> {
-        self.get(self.get_size())
+        self.get(self.sequence, self.size)
     }
 
     /// Get the sequence of the cache.
