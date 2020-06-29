@@ -1,5 +1,5 @@
 use env_logger::fmt::{Color, Target};
-use log::{debug, trace, warn, Level, LevelFilter};
+use log::{debug, info, trace, warn, Level, LevelFilter};
 use lru::LruCache;
 use std::cmp::{max, min};
 use std::collections::HashMap;
@@ -1038,6 +1038,7 @@ impl Redirector {
                             .unwrap()
                             .set_src_hardware_addr(arp.get_src_hardware_addr());
                         self.is_tx_src_hardware_addr_set = true;
+                        info!("Device {} joined the network", arp.get_src_hardware_addr());
                     }
 
                     // Send
@@ -1067,6 +1068,10 @@ impl Redirector {
                         .unwrap()
                         .set_src_hardware_addr(indicator.get_ethernet().unwrap().get_src());
                     self.is_tx_src_hardware_addr_set = true;
+                    info!(
+                        "Device {} joined the network",
+                        indicator.get_ethernet().unwrap().get_src()
+                    );
                 }
 
                 if ipv4.is_fragment() {
