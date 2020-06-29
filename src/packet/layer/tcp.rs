@@ -1,10 +1,11 @@
 use super::ipv4::Ipv4;
 use super::{Layer, LayerType, LayerTypes};
 use pnet::packet::tcp::{
-    self, MutableTcpOptionPacket, MutableTcpPacket, TcpFlags, TcpOption, TcpOptionNumbers,
-    TcpOptionPacket, TcpPacket,
+    self, MutableTcpOptionPacket, MutableTcpPacket, TcpFlags, TcpOption, TcpOptionNumber,
+    TcpOptionNumbers, TcpOptionPacket, TcpPacket,
 };
 use std::clone::Clone;
+use std::cmp::min;
 use std::fmt::{self, Display, Formatter};
 use std::io;
 use std::net::Ipv4Addr;
@@ -18,9 +19,17 @@ pub struct Tcp {
 }
 
 impl Tcp {
+    // TODO: the timestamp TCP option (RFC 7323) is not implemented yet
     /// Creates a `Tcp` represents a TCP ACK.
-    pub fn new_ack(src: u16, dst: u16, sequence: u32, acknowledgement: u32, window: u16) -> Tcp {
-        let d_tcp = tcp::Tcp {
+    pub fn new_ack(
+        src: u16,
+        dst: u16,
+        sequence: u32,
+        acknowledgement: u32,
+        window: u16,
+        sacks: Option<&Vec<(u32, u32)>>,
+    ) -> Tcp {
+        let mut d_tcp = tcp::Tcp {
             source: src,
             destination: dst,
             sequence,
@@ -34,6 +43,25 @@ impl Tcp {
             options: vec![],
             payload: vec![],
         };
+        // TCP options
+        if let Some(sacks) = sacks {
+            if sacks.len() > 0 {
+                // Trim sacks
+                let size = min(4, sacks.len());
+                let mut vector = Vec::with_capacity(size * 2);
+                for i in 0..size {
+                    vector.push(sacks[i].0);
+                    vector.push(sacks[i].1);
+                }
+
+                d_tcp.data_offset += 1 + vector.len() as u8;
+                d_tcp.options.push(TcpOption::nop());
+                d_tcp.options.push(TcpOption::nop());
+                d_tcp
+                    .options
+                    .push(TcpOption::selective_ack(vector.as_slice()));
+            }
+        }
         Tcp::from(d_tcp)
     }
 
@@ -44,16 +72,30 @@ impl Tcp {
         sequence: u32,
         acknowledgement: u32,
         window: u16,
+        mss: Option<u16>,
+        wscale: Option<u8>,
         sack_perm: bool,
     ) -> Tcp {
-        let mut tcp = Tcp::new_ack(src, dst, sequence, acknowledgement, window);
+        let mut tcp = Tcp::new_ack(src, dst, sequence, acknowledgement, window, None);
         tcp.layer.flags |= TcpFlags::SYN;
+        // TCP options
+        if let Some(mss) = mss {
+            tcp.layer.data_offset += 1;
+            tcp.layer.options.push(TcpOption::mss(mss));
+        }
+        if let Some(wscale) = wscale {
+            tcp.layer.data_offset += 1;
+            tcp.layer.options.push(TcpOption::nop());
+            tcp.layer.options.push(TcpOption::nop());
+            tcp.layer.options.push(TcpOption::wscale(wscale));
+        }
         if sack_perm {
             tcp.layer.data_offset += 1;
             tcp.layer.options.push(TcpOption::nop());
             tcp.layer.options.push(TcpOption::nop());
             tcp.layer.options.push(TcpOption::sack_perm());
         }
+
         tcp
     }
 
@@ -78,14 +120,14 @@ impl Tcp {
         acknowledgement: u32,
         window: u16,
     ) -> Tcp {
-        let mut tcp = Tcp::new_ack(src, dst, sequence, acknowledgement, window);
+        let mut tcp = Tcp::new_ack(src, dst, sequence, acknowledgement, window, None);
         tcp.layer.flags |= TcpFlags::FIN;
         tcp
     }
 
     /// Creates a `Tcp` represents a TCP RST.
     pub fn new_rst(src: u16, dst: u16, sequence: u32, acknowledgement: u32, window: u16) -> Tcp {
-        let mut tcp = Tcp::new_ack(src, dst, sequence, acknowledgement, window);
+        let mut tcp = Tcp::new_ack(src, dst, sequence, acknowledgement, window, None);
         tcp.layer.flags = TcpFlags::RST;
         tcp
     }
@@ -182,6 +224,32 @@ impl Tcp {
         self.layer.window
     }
 
+    /// Get the selective acknowledgements of the layer. This function allocates space for serializing options.
+    pub fn get_sack(&self) -> Option<Vec<(u32, u32)>> {
+        let mut buffer = vec![0u8; 40];
+        let mut packet = MutableTcpOptionPacket::new(buffer.as_mut_slice()).unwrap();
+        for ref option in &self.layer.options {
+            packet.populate(option);
+            match packet.get_number() {
+                TcpOptionNumbers::SACK => {
+                    let mut vector = Vec::with_capacity(4);
+
+                    let pair_length = (buffer[1] as usize - 2) / 2;
+                    for i in 0..pair_length {
+                        let left = Tcp::bytes_to_u32(&buffer[2 + 8 * i..2 + 8 * i + 4]);
+                        let right = Tcp::bytes_to_u32(&buffer[2 + 8 * i + 4..2 + 8 * i + 8]);
+                        vector.push((left, right));
+                    }
+
+                    return Some(vector);
+                }
+                _ => {}
+            }
+        }
+
+        None
+    }
+
     /// Returns if the `Tcp` is a TCP acknowledgement.
     pub fn is_ack(&self) -> bool {
         self.layer.flags & TcpFlags::ACK != 0
@@ -217,19 +285,40 @@ impl Tcp {
         self.layer.window == 0
     }
 
-    /// Returns if the `Tcp` indicates selective acknowledgements permitted.
+    /// Returns if the `Tcp` indicates selective acknowledgements permitted. This function allocates space for serializing options.
     pub fn is_sack_perm(&self) -> bool {
-        let buffer = vec![0u8; 40];
-        let mut packet = MutableTcpOptionPacket::owned(buffer).unwrap();
         for ref option in &self.layer.options {
-            packet.populate(option);
-            match packet.get_number() {
+            match Tcp::get_number_from_option(option) {
                 TcpOptionNumbers::SACK_PERMITTED => return true,
                 _ => {}
             }
         }
 
         false
+    }
+
+    fn bytes_to_u32(bytes: &[u8]) -> u32 {
+        let mut result: u32 = 0;
+        for i in 0..min(4, bytes.len()) {
+            result = result * 256 + bytes[i] as u32;
+        }
+        result
+    }
+
+    fn get_number_from_option(option: &TcpOption) -> TcpOptionNumber {
+        let buffer = vec![0u8; 40];
+        let mut packet = MutableTcpOptionPacket::owned(buffer).unwrap();
+        packet.populate(option);
+        packet.get_number()
+
+        /* An unsafe but faster solution (not completed)
+        let r = option as *const TcpOption;
+        unsafe {
+            let tr: *const TcpOptionNumber = mem::transmute(r);
+
+            return *tr;
+        }
+        */
     }
 }
 

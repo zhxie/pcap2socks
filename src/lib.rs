@@ -121,6 +121,7 @@ pub struct Forwarder {
     tcp_sequence_map: HashMap<(u16, SocketAddrV4), u32>,
     tcp_acknowledgement_map: HashMap<(u16, SocketAddrV4), u32>,
     tcp_window_map: HashMap<(u16, SocketAddrV4), u16>,
+    tcp_sacks_map: HashMap<(u16, SocketAddrV4), Vec<(u32, u32)>>,
     tcp_cache_map: HashMap<(u16, SocketAddrV4), Cacher>,
     tcp_cache2_map: HashMap<(u16, SocketAddrV4), Cacher>,
 }
@@ -145,6 +146,7 @@ impl Forwarder {
             tcp_send_window_map: HashMap::new(),
             tcp_sequence_map: HashMap::new(),
             tcp_acknowledgement_map: HashMap::new(),
+            tcp_sacks_map: HashMap::new(),
             tcp_window_map: HashMap::new(),
             tcp_cache_map: HashMap::new(),
             tcp_cache2_map: HashMap::new(),
@@ -228,6 +230,23 @@ impl Forwarder {
         trace!("set TCP window of {} -> {} to {}", dst, src_port, window);
     }
 
+    /// Sets the selective acknowledgements of a TCP connection.
+    pub fn set_tcp_sacks(&mut self, dst: SocketAddrV4, src_port: u16, sacks: &Vec<(u32, u32)>) {
+        if sacks.len() <= 0 {
+            self.tcp_sacks_map.remove(&(src_port, dst));
+            trace!("remove TCP sack of {} -> {}", dst, src_port);
+        } else {
+            let size = min(4, sacks.len());
+            self.tcp_sacks_map
+                .insert((src_port, dst), Vec::from(&sacks[..size]));
+            let mut desc = format!("[{}, {}]", sacks[0].0, sacks[0].1);
+            if sacks.len() > 1 {
+                desc += format!(" and {} more", sacks.len() - 1).as_str();
+            }
+            trace!("set TCP sack of {} -> {} to {}", dst, src_port, desc);
+        }
+    }
+
     /// Invalidates TCP cache to the given sequence.
     pub fn invalidate_cache_to(&mut self, dst: SocketAddrV4, src_port: u16, sequence: u32) {
         if let Some(cache) = self.tcp_cache_map.get_mut(&(src_port, dst)) {
@@ -248,7 +267,9 @@ impl Forwarder {
         self.tcp_sequence_map.remove(&key);
         self.tcp_acknowledgement_map.remove(&key);
         self.tcp_window_map.remove(&key);
+        self.tcp_sacks_map.remove(&key);
         self.tcp_cache_map.remove(&key);
+        self.tcp_cache2_map.remove(&key);
         trace!("remove {} -> {}", dst, src_port);
     }
 
@@ -421,7 +442,7 @@ impl Forwarder {
         let key = (src_port, dst);
 
         // Pseudo headers
-        let tcp = Tcp::new_ack(0, 0, 0, 0, 0);
+        let tcp = Tcp::new_ack(0, 0, 0, 0, 0, None);
         let ipv4 = Ipv4::new(
             0,
             tcp.get_type(),
@@ -448,6 +469,7 @@ impl Forwarder {
                 sequence,
                 *self.tcp_acknowledgement_map.get(&key).unwrap_or(&0),
                 *self.tcp_window_map.get(&key).unwrap_or(&65535),
+                self.tcp_sacks_map.get(&key),
             );
 
             // Send
@@ -482,6 +504,7 @@ impl Forwarder {
             *self.tcp_sequence_map.get(&key).unwrap_or(&0),
             *self.tcp_acknowledgement_map.get(&key).unwrap_or(&0),
             *self.tcp_window_map.get(&key).unwrap_or(&65535),
+            self.tcp_sacks_map.get(&key),
         );
 
         // Send
@@ -493,6 +516,8 @@ impl Forwarder {
         &mut self,
         dst: SocketAddrV4,
         src_port: u16,
+        mss: Option<u16>,
+        wscale: Option<u8>,
         sack_perm: bool,
     ) -> io::Result<()> {
         let key = (src_port, dst);
@@ -504,6 +529,8 @@ impl Forwarder {
             *self.tcp_sequence_map.get(&key).unwrap_or(&0),
             *self.tcp_acknowledgement_map.get(&key).unwrap_or(&0),
             *self.tcp_window_map.get(&key).unwrap_or(&65535),
+            mss,
+            wscale,
             sack_perm,
         );
 
@@ -825,6 +852,7 @@ pub struct Redirector {
     tcp_acknowledgement_map: HashMap<(u16, SocketAddrV4), u32>,
     tcp_duplicate_map: HashMap<(u16, SocketAddrV4), usize>,
     tcp_last_retransmission_map: HashMap<(u16, SocketAddrV4), Instant>,
+    tcp_sack_perm_map: HashMap<(u16, SocketAddrV4), bool>,
     tcp_cache_map: HashMap<(u16, SocketAddrV4), RandomCacher>,
     datagrams: HashMap<u16, DatagramWorker>,
     /// Represents the map mapping a source port to a local port.
@@ -853,6 +881,7 @@ impl Redirector {
             tcp_acknowledgement_map: HashMap::new(),
             tcp_duplicate_map: HashMap::new(),
             tcp_last_retransmission_map: HashMap::new(),
+            tcp_sack_perm_map: HashMap::new(),
             tcp_cache_map: HashMap::new(),
             datagrams: HashMap::new(),
             datagram_map: vec![0u16; u16::MAX as usize],
@@ -1044,6 +1073,15 @@ impl Redirector {
                         let payload =
                             cache.append(tcp.get_sequence(), &buffer[indicator.get_size()..])?;
 
+                        // SACK
+                        if *self.tcp_sack_perm_map.get(&key).unwrap_or(&false) {
+                            let sacks = cache.get_filled();
+                            self.tx
+                                .lock()
+                                .unwrap()
+                                .set_tcp_sacks(dst, tcp.get_src(), &sacks);
+                        }
+
                         match payload {
                             Some(payload) => {
                                 // Send
@@ -1128,11 +1166,34 @@ impl Redirector {
                                         }
                                     } else {
                                         // Fast retransmit
-                                        // TODO: the procedure is in back N
-                                        self.tx
-                                            .lock()
-                                            .unwrap()
-                                            .resend_tcp_ack(dst, tcp.get_src())?;
+                                        let mut is_sr = false;
+                                        if *self.tcp_sack_perm_map.get(&key).unwrap_or(&false) {
+                                            if let Some(sacks) = tcp.get_sack() {
+                                                if sacks.len() > 0 {
+                                                    // Selective retransmission
+                                                    for sack in sacks {
+                                                        self.tx
+                                                            .lock()
+                                                            .unwrap()
+                                                            .resend_tcp_ack_range(
+                                                                dst,
+                                                                tcp.get_src(),
+                                                                sack.0,
+                                                                sack.1,
+                                                            )?;
+                                                    }
+                                                    is_sr = true;
+                                                }
+                                            }
+                                        }
+
+                                        if !is_sr {
+                                            // Back N
+                                            self.tx
+                                                .lock()
+                                                .unwrap()
+                                                .resend_tcp_ack(dst, tcp.get_src())?;
+                                        }
 
                                         self.tcp_duplicate_map.insert(key, 0);
                                         self.tcp_last_retransmission_map
@@ -1241,8 +1302,15 @@ impl Redirector {
                             tcp.get_src(),
                             tcp.get_sequence().checked_add(1).unwrap_or(0),
                         );
+                        let sack_perm = tcp.is_sack_perm();
                         // Send ACK/SYN
-                        tx_locked.send_tcp_ack_syn(dst, tcp.get_src(), tcp.is_sack_perm())?;
+                        tx_locked.send_tcp_ack_syn(dst, tcp.get_src(), None, None, sack_perm)?;
+
+                        // SACK
+                        drop(tx_locked);
+                        if sack_perm {
+                            self.perm_tcp_sack(indicator);
+                        }
 
                         stream
                     }
@@ -1454,6 +1522,19 @@ impl Redirector {
         }
     }
 
+    fn perm_tcp_sack(&mut self, indicator: &Indicator) {
+        if let Some(tcp) = indicator.get_tcp() {
+            let dst = SocketAddrV4::new(tcp.get_dst_ip_addr(), tcp.get_dst());
+            let key = (tcp.get_src(), dst);
+
+            let sack_perm = tcp.is_sack_perm();
+            if sack_perm {
+                self.tcp_sack_perm_map.insert(key, true);
+                trace!("permit TCP sack of {} -> {}", tcp.get_src(), dst);
+            }
+        }
+    }
+
     fn remove(&mut self, indicator: &Indicator) {
         if let Some(tcp) = indicator.get_tcp() {
             let dst = SocketAddrV4::new(tcp.get_dst_ip_addr(), tcp.get_dst());
@@ -1464,6 +1545,7 @@ impl Redirector {
             self.tcp_acknowledgement_map.remove(&key);
             self.tcp_duplicate_map.remove(&key);
             self.tcp_last_retransmission_map.remove(&key);
+            self.tcp_sack_perm_map.remove(&key);
             self.tcp_cache_map.remove(&key);
             trace!("remove {} -> {}", dst, tcp.get_dst());
         }
