@@ -225,16 +225,16 @@ impl RandomCacher {
                 let mut new_buffer = vec![0u8; size];
 
                 let filled = self.get_filled();
-                for (sequence, sequence_tail) in filled {
+                for (sequence, recv_next) in filled {
                     // Place in the new buffer
                     let new_head = sequence
                         .checked_sub(self.sequence)
                         .unwrap_or_else(|| sequence + (u32::MAX - self.sequence))
                         as usize;
                     let new_head = new_head.checked_sub(self.buffer.len()).unwrap_or(new_head);
-                    let new_tail = sequence_tail
+                    let new_tail = recv_next
                         .checked_sub(self.sequence)
-                        .unwrap_or_else(|| sequence_tail + (u32::MAX - self.sequence))
+                        .unwrap_or_else(|| recv_next + (u32::MAX - self.sequence))
                         as usize;
                     let new_tail = new_tail.checked_sub(self.buffer.len()).unwrap_or(new_tail);
 
@@ -281,18 +281,18 @@ impl RandomCacher {
         }
 
         // Update size
-        let tail = sequence
+        let recv_next = sequence
             .checked_add(buffer.len() as u32)
             .unwrap_or_else(|| buffer.len() as u32 - (u32::MAX - sequence));
-        let record_tail = self
+        let record_recv_next = self
             .sequence
             .checked_add(self.size as u32)
             .unwrap_or_else(|| self.size as u32 - (u32::MAX - self.sequence));
-        let sub_tail = tail
-            .checked_sub(record_tail)
-            .unwrap_or_else(|| tail + (u32::MAX - record_tail));
-        if sub_tail as usize <= MAX_U32_WINDOW_SIZE {
-            self.size += sub_tail as usize;
+        let sub_recv_next = recv_next
+            .checked_sub(record_recv_next)
+            .unwrap_or_else(|| recv_next + (u32::MAX - record_recv_next));
+        if sub_recv_next as usize <= MAX_U32_WINDOW_SIZE {
+            self.size += sub_recv_next as usize;
         }
 
         // Insert and merge ranges

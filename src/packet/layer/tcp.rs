@@ -234,10 +234,10 @@ impl Tcp {
                 TcpOptionNumbers::SACK => {
                     let mut vector = Vec::with_capacity(4);
 
-                    let pair_length = (buffer[1] as usize - 2) / 2;
+                    let pair_length = (buffer[1] as usize - 2) / 8;
                     for i in 0..pair_length {
-                        let left = Tcp::bytes_to_u32(&buffer[2 + 8 * i..2 + 8 * i + 4]);
-                        let right = Tcp::bytes_to_u32(&buffer[2 + 8 * i + 4..2 + 8 * i + 8]);
+                        let left = bytes_to_u32(&buffer[2 + 8 * i..2 + 8 * i + 4]);
+                        let right = bytes_to_u32(&buffer[2 + 8 * i + 4..2 + 8 * i + 8]);
                         vector.push((left, right));
                     }
 
@@ -288,37 +288,13 @@ impl Tcp {
     /// Returns if the `Tcp` indicates selective acknowledgements permitted. This function allocates space for serializing options.
     pub fn is_sack_perm(&self) -> bool {
         for ref option in &self.layer.options {
-            match Tcp::get_number_from_option(option) {
+            match get_number_from_option(option) {
                 TcpOptionNumbers::SACK_PERMITTED => return true,
                 _ => {}
             }
         }
 
         false
-    }
-
-    fn bytes_to_u32(bytes: &[u8]) -> u32 {
-        let mut result: u32 = 0;
-        for i in 0..min(4, bytes.len()) {
-            result = result * 256 + bytes[i] as u32;
-        }
-        result
-    }
-
-    fn get_number_from_option(option: &TcpOption) -> TcpOptionNumber {
-        let buffer = vec![0u8; 40];
-        let mut packet = MutableTcpOptionPacket::owned(buffer).unwrap();
-        packet.populate(option);
-        packet.get_number()
-
-        /* An unsafe but faster solution (not completed)
-        let r = option as *const TcpOption;
-        unsafe {
-            let tr: *const TcpOptionNumber = mem::transmute(r);
-
-            return *tr;
-        }
-        */
     }
 }
 
@@ -406,4 +382,28 @@ impl Layer for Tcp {
 
         Ok(header_length + n)
     }
+}
+
+fn bytes_to_u32(bytes: &[u8]) -> u32 {
+    let mut result: u32 = 0;
+    for i in 0..min(4, bytes.len()) {
+        result = result * 256 + bytes[i] as u32;
+    }
+    result
+}
+
+fn get_number_from_option(option: &TcpOption) -> TcpOptionNumber {
+    let buffer = vec![0u8; 40];
+    let mut packet = MutableTcpOptionPacket::owned(buffer).unwrap();
+    packet.populate(option);
+    packet.get_number()
+
+    /* An unsafe but faster solution (not completed)
+    let r = option as *const TcpOption;
+    unsafe {
+        let tr: *const TcpOptionNumber = mem::transmute(r);
+
+        return *tr;
+    }
+    */
 }

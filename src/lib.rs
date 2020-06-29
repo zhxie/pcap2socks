@@ -362,27 +362,64 @@ impl Forwarder {
         Ok(())
     }
 
-    /// Resents TCP ACK packets from the first (sent) cache with the certain edges.
-    pub fn resend_tcp_ack_range(
+    /// Resents TCP ACK packets from the first (sent) cache excluding the certain edges.
+    pub fn resend_tcp_ack_without(
         &mut self,
         dst: SocketAddrV4,
         src_port: u16,
-        sequence: u32,
-        sequence_tail: u32,
+        sacks: Vec<(u32, u32)>,
     ) -> io::Result<()> {
         let key = (src_port, dst);
-        let size = sequence_tail
-            .checked_sub(sequence)
-            .unwrap_or_else(|| sequence_tail + (u32::MAX - sequence)) as usize;
 
         if let None = self.tcp_cache_map.get(&key) {
             return Err(io::Error::new(io::ErrorKind::Other, "cannot get cache"));
         }
 
+        let mut sequence = self.tcp_cache_map.get(&key).unwrap().get_sequence();
+        let mut size = self.tcp_cache_map.get(&key).unwrap().get_size();
+        let recv_next = sequence
+            .checked_add(size as u32)
+            .unwrap_or_else(|| size as u32 - (u32::MAX - sequence));
+
+        // Find all disjointed ranges
+        let mut ranges = Vec::new();
+        ranges.push((sequence, recv_next));
+        for sack in sacks {
+            let mut temp_ranges = Vec::new();
+
+            for range in ranges {
+                for temp_range in disjoint_u32_range(range, sack) {
+                    temp_ranges.push(temp_range);
+                }
+            }
+
+            ranges = temp_ranges;
+        }
+
+        // Update the last range
+        if let Some(range) = ranges.last() {
+            let last_recv_next = range.1;
+            size = recv_next
+                .checked_sub(last_recv_next)
+                .unwrap_or_else(|| sequence + (u32::MAX - last_recv_next))
+                as usize;
+            sequence = last_recv_next;
+        }
+
         // Resend
+        for range in ranges {
+            let size = range
+                .1
+                .checked_sub(range.0)
+                .unwrap_or_else(|| range.1 + (u32::MAX - range.0)) as usize;
+            let payload = self.tcp_cache_map.get(&key).unwrap().get(range.0, size)?;
+            if payload.len() > 0 {
+                self.send_tcp_ack_raw(dst, src_port, range.0, payload.as_slice())?;
+            }
+        }
         let payload = self.tcp_cache_map.get(&key).unwrap().get(sequence, size)?;
         if payload.len() > 0 {
-            return self.send_tcp_ack_raw(dst, src_port, sequence, payload.as_slice());
+            self.send_tcp_ack_raw(dst, src_port, sequence, payload.as_slice())?;
         }
 
         Ok(())
@@ -412,10 +449,10 @@ impl Forwarder {
             if size > 0 {
                 let payload = cache2.get(sequence, size).unwrap();
 
-                let sequence_tail = sequence
+                let recv_next = sequence
                     .checked_add(size as u32)
                     .unwrap_or_else(|| size as u32 - (u32::MAX - sequence));
-                cache2.invalidate_to(sequence_tail);
+                cache2.invalidate_to(recv_next);
 
                 // Append to cache
                 let cache = self
@@ -483,7 +520,7 @@ impl Forwarder {
             let sub_sequence = next_sequence
                 .checked_sub(record_sequence)
                 .unwrap_or_else(|| next_sequence + (u32::MAX - record_sequence));
-            if (sub_sequence as usize) < MAX_U32_WINDOW_SIZE {
+            if (sub_sequence as usize) <= MAX_U32_WINDOW_SIZE {
                 self.tcp_sequence_map.insert(key, next_sequence);
             }
 
@@ -832,10 +869,61 @@ impl Forward for Forwarder {
     }
 }
 
+fn disjoint_u32_range(main: (u32, u32), sub: (u32, u32)) -> Vec<(u32, u32)> {
+    let size_main = main
+        .1
+        .checked_sub(main.0)
+        .unwrap_or_else(|| main.1 + (u32::MAX - main.0)) as usize;
+    let diff_first = sub
+        .0
+        .checked_sub(main.0)
+        .unwrap_or_else(|| sub.0 + (u32::MAX - main.0)) as usize;
+    let diff_second = sub
+        .1
+        .checked_sub(main.1)
+        .unwrap_or_else(|| sub.1 + (u32::MAX - main.1)) as usize;
+    let mut vector = Vec::with_capacity(2);
+
+    if diff_first <= MAX_U32_WINDOW_SIZE {
+        if diff_second > MAX_U32_WINDOW_SIZE {
+            // sub is in the main
+            vector.push((main.0, sub.0));
+            vector.push((sub.1, main.1));
+        } else {
+            if diff_first >= size_main {
+                // sub is in the right of the main
+                vector.push((main.0, main.1));
+            } else {
+                // sub overlaps the right part of the main
+                vector.push((main.0, sub.0));
+            }
+        }
+    } else {
+        if diff_second > MAX_U32_WINDOW_SIZE {
+            // The distance between the main's left edge and the sub's right edge
+            let diff = sub
+                .1
+                .checked_sub(main.0)
+                .unwrap_or_else(|| sub.1 + (u32::MAX - main.0)) as usize;
+            if diff > MAX_U32_WINDOW_SIZE {
+                // sub is in the left of the main
+                vector.push((main.0, main.1));
+            } else {
+                // sub overlaps the left part of the main
+                vector.push((sub.1, main.1));
+            }
+        } else {
+            // sub covers the main
+        }
+    }
+
+    vector
+}
+
 /// Represents the TCP ACK duplicates before trigger a fast retransmission.
 const DUPLICATES_BEFORE_FAST_RETRANSMISSION: usize = 3;
 /// Represents the cool down time between 2 retransmissions.
-const RETRANSMISSION_COOL_DOWN: u128 = 1000;
+const RETRANSMISSION_COOL_DOWN: u128 = 200;
 
 /// Represents the max limit of UDP port for binding in local.
 const PORT_COUNT: usize = 64;
@@ -1171,17 +1259,14 @@ impl Redirector {
                                             if let Some(sacks) = tcp.get_sack() {
                                                 if sacks.len() > 0 {
                                                     // Selective retransmission
-                                                    for sack in sacks {
-                                                        self.tx
-                                                            .lock()
-                                                            .unwrap()
-                                                            .resend_tcp_ack_range(
-                                                                dst,
-                                                                tcp.get_src(),
-                                                                sack.0,
-                                                                sack.1,
-                                                            )?;
-                                                    }
+                                                    self.tx
+                                                        .lock()
+                                                        .unwrap()
+                                                        .resend_tcp_ack_without(
+                                                            dst,
+                                                            tcp.get_src(),
+                                                            sacks,
+                                                        )?;
                                                     is_sr = true;
                                                 }
                                             }
@@ -1466,7 +1551,7 @@ impl Redirector {
                     dst,
                     tcp.get_sequence()
                 );
-            } else if sub_sequence < MAX_U32_WINDOW_SIZE as u32 {
+            } else if sub_sequence <= MAX_U32_WINDOW_SIZE as u32 {
                 self.tcp_sequence_map.insert(key, tcp.get_sequence());
 
                 trace!(
@@ -1507,7 +1592,7 @@ impl Redirector {
                     dst,
                     tcp.get_acknowledgement()
                 );
-            } else if sub_acknowledgement < MAX_U32_WINDOW_SIZE as u32 {
+            } else if sub_acknowledgement <= MAX_U32_WINDOW_SIZE as u32 {
                 self.tcp_acknowledgement_map
                     .insert(key, tcp.get_acknowledgement());
 
