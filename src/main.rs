@@ -18,9 +18,9 @@ async fn main() {
     let inter = match lib::interface(flags.inter) {
         Some(inter) => inter,
         None => {
-            println!("Cannot determine interface. Available interfaces are listed below, use -i <INTERFACE> to designate:");
+            error!("Cannot determine interface. Available interfaces are listed below, use -i <INTERFACE> to designate:");
             for inter in lib::interfaces().iter() {
-                println!("    {}", inter);
+                info!("    {}", inter);
             }
             return;
         }

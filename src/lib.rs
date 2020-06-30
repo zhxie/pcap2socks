@@ -1,9 +1,7 @@
-use env_logger::fmt::{Color, Target};
-use log::{debug, info, trace, warn, Level, LevelFilter};
+use log::{debug, info, trace, warn, LevelFilter};
 use lru::LruCache;
 use std::cmp::{max, min};
 use std::collections::HashMap;
-use std::io::Write;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -12,6 +10,7 @@ use tokio::io;
 
 pub mod args;
 pub mod cacher;
+pub mod logger;
 pub mod packet;
 pub mod pcap;
 pub mod socks;
@@ -19,6 +18,7 @@ pub mod socks;
 use self::socks::{DatagramWorker, Forward, StreamWorker};
 use args::Flags;
 use cacher::{Cacher, RandomCacher};
+use logger::Logger;
 use packet::layer::arp::Arp;
 use packet::layer::ethernet::Ethernet;
 use packet::layer::ipv4::Ipv4;
@@ -36,24 +36,7 @@ pub fn set_logger(flags: &Flags) {
         1 => LevelFilter::Debug,
         _ => LevelFilter::Trace,
     };
-    env_logger::builder()
-        .target(Target::Stdout)
-        .filter_level(level)
-        .format(|buf, record| {
-            let mut style = buf.style();
-
-            let level = match &record.level() {
-                Level::Error => style.set_bold(true).set_color(Color::Red).value("error: "),
-                Level::Warn => style
-                    .set_bold(true)
-                    .set_color(Color::Yellow)
-                    .value("warning: "),
-                Level::Info => style.set_bold(true).set_color(Color::Green).value(""),
-                _ => style.set_color(Color::Rgb(165, 165, 165)).value(""),
-            };
-            writeln!(buf, "{}{}", level, record.args())
-        })
-        .init();
+    Logger::init(level);
 }
 
 /// Gets a list of available network interfaces for the current machine.
