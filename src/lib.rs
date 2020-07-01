@@ -1608,10 +1608,13 @@ impl Redirector {
                     DatagramWorker::bind(self.get_tx(), udp.get_src(), self.remote).await?;
                 self.datagrams.insert(bind_port, worker);
 
-                // Update LRU
+                // Update map and LRU
+                self.datagram_map[udp.get_src() as usize] = bind_port;
                 self.udp_lru.put(bind_port, udp.get_src());
 
                 port = bind_port;
+
+                trace!("bind UDP port {} = {}", udp.get_src(), port);
             } else if is_set {
                 // Replace
                 self.datagrams
