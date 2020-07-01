@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{self, Duration, Instant, SystemTime};
 use tokio::io;
 
 pub mod args;
@@ -86,6 +86,14 @@ const TIMEDOUT_WAIT: u64 = 20;
 /// Represents the max distance of `u32` values between packets in an `u32` window.
 const MAX_U32_WINDOW_SIZE: usize = 256 * 1024;
 
+/// Represents if the TCP timestamp option is enabled.
+const ENABLE_TIMESTAMP: bool = false;
+/// Represents the frequency of the update of the timestamp. The
+/// [RFC 7323](https://tools.ietf.org/html/rfc7323) describes the timestamp clock
+/// must not be "too fast". And a reasonable value is 1 ms to 1 sec per tick.
+/// A `TIMESTAMP_RATE` 1 represents 1 ms and 1000 represents 1 sec per tick.
+const TIMESTAMP_RATE: u128 = 1;
+
 /// Represents the minimum packet size.
 /// Because all traffic is in Ethernet, and the 802.3 specifies the minimum is 64 Bytes.
 /// Exclude the 4 bytes used in FCS, the minimum packet size in pcap2socks is 60 Bytes.
@@ -105,6 +113,7 @@ pub struct Forwarder {
     tcp_acknowledgement_map: HashMap<(u16, SocketAddrV4), u32>,
     tcp_window_map: HashMap<(u16, SocketAddrV4), u16>,
     tcp_sacks_map: HashMap<(u16, SocketAddrV4), Vec<(u32, u32)>>,
+    tcp_ts_map: HashMap<(u16, SocketAddrV4), u32>,
     tcp_cache_map: HashMap<(u16, SocketAddrV4), Cacher>,
     tcp_cache2_map: HashMap<(u16, SocketAddrV4), Cacher>,
 }
@@ -129,8 +138,9 @@ impl Forwarder {
             tcp_send_window_map: HashMap::new(),
             tcp_sequence_map: HashMap::new(),
             tcp_acknowledgement_map: HashMap::new(),
-            tcp_sacks_map: HashMap::new(),
             tcp_window_map: HashMap::new(),
+            tcp_sacks_map: HashMap::new(),
+            tcp_ts_map: HashMap::new(),
             tcp_cache_map: HashMap::new(),
             tcp_cache2_map: HashMap::new(),
         }
@@ -230,6 +240,36 @@ impl Forwarder {
         }
     }
 
+    /// Sets the timestamp of a TCP connection, this will enable the timestamp in TCP traffic.
+    pub fn set_tcp_ts(&mut self, dst: SocketAddrV4, src_port: u16, ts: u32) {
+        self.tcp_ts_map.insert((src_port, dst), ts);
+        trace!("set TCP timestamp of {} -> {} to {}", dst, src_port, ts);
+    }
+
+    fn generate_ts(&self, dst: SocketAddrV4, src_port: u16) -> Option<(u32, u32)> {
+        let key = (src_port, dst);
+
+        if ENABLE_TIMESTAMP {
+            match self.tcp_ts_map.get(&key) {
+                Some(&ts) => {
+                    let now = SystemTime::now().duration_since(time::UNIX_EPOCH);
+
+                    match now {
+                        Ok(now) => {
+                            let now = now.as_millis() / TIMESTAMP_RATE;
+
+                            Some((now as u32, ts))
+                        }
+                        Err(_) => None,
+                    }
+                }
+                None => None,
+            }
+        } else {
+            None
+        }
+    }
+
     /// Invalidates TCP cache to the given sequence.
     pub fn invalidate_cache_to(&mut self, dst: SocketAddrV4, src_port: u16, sequence: u32) {
         if let Some(cache) = self.tcp_cache_map.get_mut(&(src_port, dst)) {
@@ -251,6 +291,7 @@ impl Forwarder {
         self.tcp_acknowledgement_map.remove(&key);
         self.tcp_window_map.remove(&key);
         self.tcp_sacks_map.remove(&key);
+        self.tcp_ts_map.remove(&key);
         self.tcp_cache_map.remove(&key);
         self.tcp_cache2_map.remove(&key);
         trace!("remove {} -> {}", dst, src_port);
@@ -462,7 +503,15 @@ impl Forwarder {
         let key = (src_port, dst);
 
         // Pseudo headers
-        let tcp = Tcp::new_ack(0, 0, 0, 0, 0, None);
+        let tcp = Tcp::new_ack(
+            0,
+            0,
+            0,
+            0,
+            0,
+            self.generate_ts(dst, src_port),
+            self.tcp_sacks_map.get(&key),
+        );
         let ipv4 = Ipv4::new(
             0,
             tcp.get_type(),
@@ -489,6 +538,7 @@ impl Forwarder {
                 sequence,
                 *self.tcp_acknowledgement_map.get(&key).unwrap_or(&0),
                 *self.tcp_window_map.get(&key).unwrap_or(&65535),
+                self.generate_ts(dst, src_port),
                 self.tcp_sacks_map.get(&key),
             );
 
@@ -524,6 +574,7 @@ impl Forwarder {
             *self.tcp_sequence_map.get(&key).unwrap_or(&0),
             *self.tcp_acknowledgement_map.get(&key).unwrap_or(&0),
             *self.tcp_window_map.get(&key).unwrap_or(&65535),
+            self.generate_ts(dst, src_port),
             self.tcp_sacks_map.get(&key),
         );
 
@@ -552,6 +603,7 @@ impl Forwarder {
             mss,
             wscale,
             sack_perm,
+            self.generate_ts(dst, src_port),
         );
 
         // Send
@@ -575,6 +627,7 @@ impl Forwarder {
             *self.tcp_sequence_map.get(&key).unwrap_or(&0),
             *self.tcp_acknowledgement_map.get(&key).unwrap_or(&0),
             *self.tcp_window_map.get(&key).unwrap_or(&65535),
+            self.generate_ts(dst, src_port),
         );
 
         // Send
@@ -592,6 +645,7 @@ impl Forwarder {
             *self.tcp_sequence_map.get(&key).unwrap_or(&0),
             *self.tcp_acknowledgement_map.get(&key).unwrap_or(&0),
             *self.tcp_window_map.get(&key).unwrap_or(&65535),
+            self.generate_ts(dst, src_port),
         );
 
         // Send
@@ -599,16 +653,26 @@ impl Forwarder {
     }
 
     /// Sends an TCP RST packet.
-    pub fn send_tcp_rst(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()> {
+    pub fn send_tcp_rst(
+        &mut self,
+        dst: SocketAddrV4,
+        src_port: u16,
+        ts: Option<u32>,
+    ) -> io::Result<()> {
         let key = (src_port, dst);
 
         // TCP
+        let ts = match ts {
+            Some(ts) => Some((ts, 0)),
+            None => None,
+        };
         let tcp = Tcp::new_rst(
             dst.port(),
             src_port,
             *self.tcp_sequence_map.get(&key).unwrap_or(&0),
             0,
             *self.tcp_window_map.get(&key).unwrap_or(&65535),
+            ts,
         );
 
         // Send
@@ -1146,8 +1210,15 @@ impl Redirector {
                     if buffer.len() > indicator.get_size() {
                         // ACK
                         // Append to cache
+                        let prev_recv_next = cache.get_recv_next();
                         let payload =
                             cache.append(tcp.get_sequence(), &buffer[indicator.get_size()..])?;
+                        if cache.get_recv_next() != prev_recv_next {
+                            if let Some(ts) = tcp.get_ts() {
+                                // Update timestamp only when received new data
+                                self.tx.lock().unwrap().set_tcp_ts(dst, tcp.get_src(), ts);
+                            }
+                        }
 
                         // SACK
                         if *self.tcp_sack_perm_map.get(&key).unwrap_or(&false) {
@@ -1237,6 +1308,9 @@ impl Redirector {
                                                 tcp.get_src(),
                                                 tcp.get_sequence().checked_add(1).unwrap_or(0),
                                             );
+                                            if let Some(ts) = tcp.get_ts() {
+                                                tx_locked.set_tcp_ts(dst, tcp.get_src(), ts);
+                                            }
                                             // Send ACK/FIN
                                             tx_locked.send_tcp_ack_fin(dst, tcp.get_src())?;
                                         }
@@ -1293,6 +1367,9 @@ impl Redirector {
                             tcp.get_src(),
                             tcp.get_sequence().checked_add(1).unwrap_or(0),
                         );
+                        if let Some(ts) = tcp.get_ts() {
+                            tx_locked.set_tcp_ts(dst, tcp.get_src(), ts);
+                        }
                         // Send ACK/FIN
                         tx_locked.send_tcp_ack_fin(dst, tcp.get_src())?;
                     } else {
@@ -1311,6 +1388,9 @@ impl Redirector {
                         tcp.get_src(),
                         tcp.get_sequence().checked_add(1).unwrap_or(0),
                     );
+                    if let Some(ts) = tcp.get_ts() {
+                        tx_locked.set_tcp_ts(dst, tcp.get_src(), ts);
+                    }
                     // Send ACK/FIN
                     tx_locked.send_tcp_ack_fin(dst, tcp.get_src())?;
 
@@ -1325,6 +1405,9 @@ impl Redirector {
                         tcp.get_src(),
                         tcp.get_sequence().checked_add(1).unwrap_or(0),
                     );
+                    if let Some(ts) = tcp.get_ts() {
+                        tx_locked.set_tcp_ts(dst, tcp.get_src(), ts);
+                    }
                     // Send ACK/RST
                     tx_locked.send_tcp_ack_rst(dst, tcp.get_src())?;
 
@@ -1376,6 +1459,9 @@ impl Redirector {
                             tcp.get_sequence().checked_add(1).unwrap_or(0),
                         );
                         let sack_perm = tcp.is_sack_perm();
+                        if let Some(ts) = tcp.get_ts() {
+                            tx_locked.set_tcp_ts(dst, tcp.get_src(), ts);
+                        }
                         // Send ACK/SYN
                         tx_locked.send_tcp_ack_syn(dst, tcp.get_src(), None, None, sack_perm)?;
 
@@ -1397,6 +1483,9 @@ impl Redirector {
                             tcp.get_src(),
                             tcp.get_sequence().checked_add(1).unwrap_or(0),
                         );
+                        if let Some(ts) = tcp.get_ts() {
+                            tx_locked.set_tcp_ts(dst, tcp.get_src(), ts);
+                        }
                         // Send ACK/RST
                         tx_locked.send_tcp_ack_rst(dst, tcp.get_src())?;
 
@@ -1449,6 +1538,9 @@ impl Redirector {
                         tcp.get_src(),
                         tcp.get_sequence().checked_add(1).unwrap_or(0),
                     );
+                    if let Some(ts) = tcp.get_ts() {
+                        tx_locked.set_tcp_ts(dst, tcp.get_src(), ts);
+                    }
                     // Send ACK/FIN
                     tx_locked.send_tcp_ack_fin(dst, tcp.get_src())?;
                 }
@@ -1462,6 +1554,9 @@ impl Redirector {
                     tcp.get_src(),
                     tcp.get_sequence().checked_add(1).unwrap_or(0),
                 );
+                if let Some(ts) = tcp.get_ts() {
+                    tx_locked.set_tcp_ts(dst, tcp.get_src(), ts);
+                }
                 // Send ACK/FIN
                 tx_locked.send_tcp_ack_fin(dst, tcp.get_src())?;
 

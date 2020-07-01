@@ -391,6 +391,13 @@ impl RandomCacher {
         self.sequence
     }
 
+    /// Get the receive next of the cache.
+    pub fn get_recv_next(&self) -> u32 {
+        self.sequence
+            .checked_add(self.size as u32)
+            .unwrap_or_else(|| self.size as u32 - (u32::MAX - self.sequence))
+    }
+
     /// Get the remaining size of the `RandomCacher`.
     pub fn get_remaining_size(&self) -> u16 {
         if self.buffer.len() - self.size > u16::MAX as usize {

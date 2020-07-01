@@ -80,7 +80,7 @@ pcap2socks -s <ADDRESS> -p <ADDRESS> -d <ADDRESS>
 
 - [x] Switch to asynchronous I/O instead of using blocking I/O thread.
 - [ ] Latency ~~and packet lost rate~~ test
-- [x] Add TCP maximum segment size `MSS`, window scale `wscale`, SACK `sack` ~~and timestamp `TS`~~ option support.
+- [x] Add TCP maximum segment size `MSS`, window scale `wscale`, SACK `sack` and timestamp `TS` option support.
 
 ## License
 
