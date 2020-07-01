@@ -972,6 +972,9 @@ const DUPLICATES_BEFORE_FAST_RETRANSMISSION: usize = 3;
 /// Represents the cool down time between 2 retransmissions.
 const RETRANSMISSION_COOL_DOWN: u128 = 200;
 
+/// Represents if reply with a valid closing packet like ACK/FIN instead of a RST.
+const LOOSE_RULES_ON_RST: bool = true;
+
 /// Represents the max limit of UDP port for binding in local.
 const PORT_COUNT: usize = 64;
 
@@ -1379,23 +1382,31 @@ impl Redirector {
                 }
             } else {
                 if tcp.is_fin() {
-                    // Though a RST is enough, reply with respect
-                    let mut tx_locked = self.tx.lock().unwrap();
-                    #[allow(deprecated)]
-                    tx_locked.set_tcp_sequence(dst, tcp.get_src(), tcp.get_acknowledgement());
-                    tx_locked.set_tcp_acknowledgement(
-                        dst,
-                        tcp.get_src(),
-                        tcp.get_sequence().checked_add(1).unwrap_or(0),
-                    );
-                    if let Some(ts) = tcp.get_ts() {
-                        tx_locked.set_tcp_ts(dst, tcp.get_src(), ts);
-                    }
-                    // Send ACK/FIN
-                    tx_locked.send_tcp_ack_fin(dst, tcp.get_src())?;
+                    if LOOSE_RULES_ON_RST {
+                        // Though a RST is enough, reply with respect
+                        let mut tx_locked = self.tx.lock().unwrap();
+                        #[allow(deprecated)]
+                        tx_locked.set_tcp_sequence(dst, tcp.get_src(), tcp.get_acknowledgement());
+                        tx_locked.set_tcp_acknowledgement(
+                            dst,
+                            tcp.get_src(),
+                            tcp.get_sequence().checked_add(1).unwrap_or(0),
+                        );
+                        if let Some(ts) = tcp.get_ts() {
+                            tx_locked.set_tcp_ts(dst, tcp.get_src(), ts);
+                        }
+                        // Send ACK/FIN
+                        tx_locked.send_tcp_ack_fin(dst, tcp.get_src())?;
 
-                    // Clean up
-                    tx_locked.remove(dst, tcp.get_src());
+                        // Clean up
+                        tx_locked.remove(dst, tcp.get_src());
+                    } else {
+                        // Send RST
+                        self.tx
+                            .lock()
+                            .unwrap()
+                            .send_tcp_rst(dst, tcp.get_src(), None)?;
+                    }
                 } else {
                     let mut tx_locked = self.tx.lock().unwrap();
                     #[allow(deprecated)]
@@ -1546,22 +1557,30 @@ impl Redirector {
                 }
             } else {
                 // Though a RST is enough, reply with respect
-                let mut tx_locked = self.tx.lock().unwrap();
-                #[allow(deprecated)]
-                tx_locked.set_tcp_sequence(dst, tcp.get_src(), tcp.get_acknowledgement());
-                tx_locked.set_tcp_acknowledgement(
-                    dst,
-                    tcp.get_src(),
-                    tcp.get_sequence().checked_add(1).unwrap_or(0),
-                );
-                if let Some(ts) = tcp.get_ts() {
-                    tx_locked.set_tcp_ts(dst, tcp.get_src(), ts);
-                }
-                // Send ACK/FIN
-                tx_locked.send_tcp_ack_fin(dst, tcp.get_src())?;
+                if LOOSE_RULES_ON_RST {
+                    let mut tx_locked = self.tx.lock().unwrap();
+                    #[allow(deprecated)]
+                    tx_locked.set_tcp_sequence(dst, tcp.get_src(), tcp.get_acknowledgement());
+                    tx_locked.set_tcp_acknowledgement(
+                        dst,
+                        tcp.get_src(),
+                        tcp.get_sequence().checked_add(1).unwrap_or(0),
+                    );
+                    if let Some(ts) = tcp.get_ts() {
+                        tx_locked.set_tcp_ts(dst, tcp.get_src(), ts);
+                    }
+                    // Send ACK/FIN
+                    tx_locked.send_tcp_ack_fin(dst, tcp.get_src())?;
 
-                // Clean up
-                tx_locked.remove(dst, tcp.get_src());
+                    // Clean up
+                    tx_locked.remove(dst, tcp.get_src());
+                } else {
+                    // Send RST
+                    self.tx
+                        .lock()
+                        .unwrap()
+                        .send_tcp_rst(dst, tcp.get_src(), None)?;
+                }
             }
         }
 
