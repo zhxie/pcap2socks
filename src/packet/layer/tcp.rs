@@ -183,6 +183,20 @@ impl Tcp {
         tcp
     }
 
+    /// Creates a `Tcp` represents a TCP FIN.
+    pub fn new_fin(
+        src: u16,
+        dst: u16,
+        sequence: u32,
+        acknowledgement: u32,
+        window: u16,
+        ts: Option<(u32, u32)>,
+    ) -> Tcp {
+        let mut tcp = Tcp::new_ack(src, dst, sequence, acknowledgement, window, ts, None);
+        tcp.layer.flags = TcpFlags::FIN;
+        tcp
+    }
+
     /// Creates a `Tcp` according to the given `Tcp`.
     pub fn from(tcp: tcp::Tcp) -> Tcp {
         Tcp {

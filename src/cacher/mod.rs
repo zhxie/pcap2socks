@@ -391,6 +391,11 @@ impl RandomCacher {
         self.sequence
     }
 
+    /// Get the size of the cache. Not all bytes in [sequence, sequence + size) are filled.
+    pub fn get_size(&self) -> usize {
+        self.size
+    }
+
     /// Get the receive next of the cache.
     pub fn get_recv_next(&self) -> u32 {
         self.sequence
