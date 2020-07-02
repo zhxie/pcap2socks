@@ -275,6 +275,44 @@ impl Tcp {
         self.layer.window
     }
 
+    /// Get the MSS of the layer. This function allocates space for serializing options.
+    pub fn get_mss(&self) -> Option<u16> {
+        let mut buffer = vec![0u8; 40];
+        let mut packet = MutableTcpOptionPacket::new(buffer.as_mut_slice()).unwrap();
+        for ref option in &self.layer.options {
+            packet.populate(option);
+            match packet.get_number() {
+                TcpOptionNumbers::MSS => {
+                    let mss = bytes_to_u16(&buffer[2..4]);
+
+                    return Some(mss);
+                }
+                _ => {}
+            }
+        }
+
+        None
+    }
+
+    /// Get the window scale of the layer. This function allocates space for serializing options.
+    pub fn get_wscale(&self) -> Option<u8> {
+        let mut buffer = vec![0u8; 40];
+        let mut packet = MutableTcpOptionPacket::new(buffer.as_mut_slice()).unwrap();
+        for ref option in &self.layer.options {
+            packet.populate(option);
+            match packet.get_number() {
+                TcpOptionNumbers::WSCALE => {
+                    let wscale = *&buffer[2];
+
+                    return Some(wscale);
+                }
+                _ => {}
+            }
+        }
+
+        None
+    }
+
     /// Get the selective acknowledgements of the layer. This function allocates space for serializing options.
     pub fn get_sack(&self) -> Option<Vec<(u32, u32)>> {
         let mut buffer = vec![0u8; 40];
@@ -471,6 +509,14 @@ impl Layer for Tcp {
 
         Ok(header_length + n)
     }
+}
+
+fn bytes_to_u16(bytes: &[u8]) -> u16 {
+    let mut result: u16 = 0;
+    for i in 0..min(2, bytes.len()) {
+        result = result * 256 + bytes[i] as u16;
+    }
+    result
 }
 
 fn bytes_to_u32(bytes: &[u8]) -> u32 {
