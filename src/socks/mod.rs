@@ -16,6 +16,9 @@ pub trait Forward: Send {
     /// Forward TCP payload.
     fn forward_tcp(&mut self, dst: SocketAddrV4, src_port: u16, payload: &[u8]) -> io::Result<()>;
 
+    /// Close a TCP connection.
+    fn close_tcp(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()>;
+
     /// Forward UDP payload.
     fn forward_udp(&mut self, dst: SocketAddrV4, src_port: u16, payload: &[u8]) -> io::Result<()>;
 }
@@ -31,8 +34,8 @@ const MAX_RECV_ZERO: usize = 3;
 pub struct StreamWorker {
     dst: SocketAddrV4,
     stream_tx: Option<OwnedWriteHalf>,
-    is_finished: Arc<AtomicBool>,
-    is_closed: Arc<AtomicBool>,
+    is_write_closed: Arc<AtomicBool>,
+    is_read_closed: Arc<AtomicBool>,
 }
 
 impl StreamWorker {
@@ -47,37 +50,32 @@ impl StreamWorker {
         let stream = stream.into_inner();
         let (mut stream_rx, stream_tx) = stream.into_split();
 
-        let is_finished = Arc::new(AtomicBool::new(false));
-        let is_finished_cloned = Arc::clone(&is_finished);
-        let is_closed = Arc::new(AtomicBool::new(false));
-        let is_closed_cloned = Arc::clone(&is_closed);
+        let is_write_closed = Arc::new(AtomicBool::new(false));
+        let is_write_closed_cloned = Arc::clone(&is_write_closed);
+        let is_read_closed = Arc::new(AtomicBool::new(false));
+        let is_read_closed_cloned = Arc::clone(&is_read_closed);
         tokio::spawn(async move {
             let mut buffer = vec![0u8; u16::MAX as usize];
             let mut recv_zero = 0;
             loop {
-                if is_closed_cloned.load(Ordering::Relaxed) {
+                if is_read_closed_cloned.load(Ordering::Relaxed) {
                     break;
                 }
                 match stream_rx.read(&mut buffer).await {
                     Ok(size) => {
-                        if is_closed_cloned.load(Ordering::Relaxed) {
+                        if is_read_closed_cloned.load(Ordering::Relaxed) {
                             break;
                         }
                         if size == 0 {
-                            if is_finished_cloned.load(Ordering::Relaxed) {
-                                break;
-                            }
                             recv_zero += 1;
                             if recv_zero > MAX_RECV_ZERO {
                                 // Close by remote
-                                warn!(
-                                    "SOCKS: {}: {} -> {}: {}",
-                                    "TCP",
-                                    0,
-                                    dst,
-                                    io::Error::from(io::ErrorKind::UnexpectedEof)
-                                );
-                                is_closed_cloned.store(true, Ordering::Relaxed);
+                                trace!("close stream read {} -> {}", dst, 0);
+
+                                if let Err(ref e) = tx.lock().unwrap().close_tcp(dst, src_port) {
+                                    warn!("handle {}: {}", "TCP", e)
+                                }
+                                is_read_closed_cloned.store(true, Ordering::Relaxed);
                                 break;
                             }
                             time::delay_for(Duration::from_millis(RECV_ZERO_WAIT)).await;
@@ -99,13 +97,13 @@ impl StreamWorker {
                         }
                     }
                     Err(ref e) => {
-                        // TODO: handle closing from the server
                         if e.kind() == io::ErrorKind::TimedOut {
                             time::delay_for(Duration::from_millis(TIMEDOUT_WAIT)).await;
                             continue;
                         }
                         warn!("SOCKS: {}: {} -> {}: {}", "TCP", 0, dst, e);
-                        is_closed_cloned.store(true, Ordering::Relaxed);
+                        is_read_closed_cloned.store(true, Ordering::Relaxed);
+                        is_write_closed_cloned.store(true, Ordering::Relaxed);
                         break;
                     }
                 }
@@ -117,8 +115,8 @@ impl StreamWorker {
         Ok(StreamWorker {
             dst,
             stream_tx: Some(stream_tx),
-            is_finished,
-            is_closed: is_closed,
+            is_write_closed,
+            is_read_closed,
         })
     }
 
@@ -139,25 +137,29 @@ impl StreamWorker {
         }
     }
 
-    /// Announces to finish the worker.
-    pub fn finish(&mut self) {
-        self.is_finished.store(true, Ordering::Relaxed);
-        trace!("finish stream {} -> {}", 0, self.dst);
+    /// Closes the write half of the worker, sends a TCP FIN to the other side.
+    pub fn close_write(&mut self) {
+        if !self.is_write_closed.load(Ordering::Relaxed) {
+            self.stream_tx.take().unwrap().forget();
+            self.is_write_closed.store(true, Ordering::Relaxed);
+            trace!("close stream write {} -> {}", 0, self.dst);
+        }
     }
 
     /// Closes the worker.
     pub fn close(&mut self) {
-        self.is_closed.store(true, Ordering::Relaxed);
-        match self.stream_tx.take() {
-            Some(tx) => tx.forget(),
-            None => {}
-        }
-        trace!("close stream {} -> {}", 0, self.dst);
+        self.close_write();
+        self.is_read_closed.store(true, Ordering::Relaxed);
     }
 
-    /// Returns if the worker is closed.
-    pub fn is_closed(&self) -> bool {
-        self.is_closed.load(Ordering::Relaxed)
+    /// Returns if the worker is closed for writing.
+    pub fn is_write_closed(&self) -> bool {
+        self.is_write_closed.load(Ordering::Relaxed)
+    }
+
+    /// Returns if the worker is closed for reading.
+    pub fn is_read_closed(&self) -> bool {
+        self.is_read_closed.load(Ordering::Relaxed)
     }
 }
 

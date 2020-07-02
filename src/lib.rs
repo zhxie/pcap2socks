@@ -1,7 +1,7 @@
 use log::{debug, info, trace, warn, LevelFilter};
 use lru::LruCache;
 use std::cmp::{max, min};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -108,6 +108,7 @@ pub struct Forwarder {
     src_ip_addr: Ipv4Addr,
     local_ip_addr: Ipv4Addr,
     ipv4_identification_map: HashMap<Ipv4Addr, u16>,
+    tcp_fin_set: HashSet<(u16, SocketAddrV4)>,
     tcp_send_window_map: HashMap<(u16, SocketAddrV4), u16>,
     tcp_sequence_map: HashMap<(u16, SocketAddrV4), u32>,
     tcp_acknowledgement_map: HashMap<(u16, SocketAddrV4), u32>,
@@ -135,6 +136,7 @@ impl Forwarder {
             src_ip_addr,
             local_ip_addr,
             ipv4_identification_map: HashMap::new(),
+            tcp_fin_set: HashSet::new(),
             tcp_send_window_map: HashMap::new(),
             tcp_sequence_map: HashMap::new(),
             tcp_acknowledgement_map: HashMap::new(),
@@ -287,6 +289,7 @@ impl Forwarder {
     pub fn remove(&mut self, dst: SocketAddrV4, src_port: u16) {
         let key = (src_port, dst);
 
+        self.tcp_fin_set.remove(&key);
         self.tcp_sequence_map.remove(&key);
         self.tcp_acknowledgement_map.remove(&key);
         self.tcp_window_map.remove(&key);
@@ -453,40 +456,53 @@ impl Forwarder {
     pub fn send_tcp_ack(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()> {
         let key = (src_port, dst);
 
-        if let None = self.tcp_cache2_map.get(&key) {
-            return Ok(());
-        }
-
-        let cache2 = self.tcp_cache2_map.get_mut(&key).unwrap();
-        let sequence = cache2.get_sequence();
-        let window = *self.tcp_send_window_map.get(&key).unwrap_or(&0);
-        if window > 0 {
-            let cache = self
-                .tcp_cache_map
-                .entry(key)
-                .or_insert_with(|| Cacher::new(sequence));
-            let sent_size = cache.get_size();
-            let remain_size = (window as usize).checked_sub(sent_size).unwrap_or(0);
-            let remain_size = min(remain_size, u16::MAX as usize) as u16;
-
-            let size = min(remain_size as usize, cache2.get_size());
-            if size > 0 {
-                let payload = cache2.get(sequence, size).unwrap();
-
-                let recv_next = sequence
-                    .checked_add(size as u32)
-                    .unwrap_or_else(|| size as u32 - (u32::MAX - sequence));
-                cache2.invalidate_to(recv_next);
-
-                // Append to cache
+        if let Some(cache2) = self.tcp_cache2_map.get_mut(&key) {
+            let sequence = cache2.get_sequence();
+            let window = *self.tcp_send_window_map.get(&key).unwrap_or(&0);
+            if window > 0 {
                 let cache = self
                     .tcp_cache_map
                     .entry(key)
                     .or_insert_with(|| Cacher::new(sequence));
-                cache.append(&payload)?;
+                let sent_size = cache.get_size();
+                let remain_size = (window as usize).checked_sub(sent_size).unwrap_or(0);
+                let remain_size = min(remain_size, u16::MAX as usize) as u16;
 
+                let size = min(remain_size as usize, cache2.get_size());
+                if size > 0 {
+                    let payload = cache2.get(sequence, size).unwrap();
+
+                    let recv_next = sequence
+                        .checked_add(size as u32)
+                        .unwrap_or_else(|| size as u32 - (u32::MAX - sequence));
+                    cache2.invalidate_to(recv_next);
+
+                    // Append to cache
+                    let cache = self
+                        .tcp_cache_map
+                        .entry(key)
+                        .or_insert_with(|| Cacher::new(sequence));
+                    cache.append(&payload)?;
+
+                    // Send
+                    self.send_tcp_ack_raw(dst, src_port, sequence, &payload)?;
+                }
+            }
+        }
+
+        // FIN
+        if self.tcp_fin_set.contains(&key) {
+            let is_cache2_empty = match self.tcp_cache2_map.get(&key) {
+                Some(cache) => cache.is_empty(),
+                None => true,
+            };
+            let is_cache_empty = match self.tcp_cache_map.get(&key) {
+                Some(cache) => cache.is_empty(),
+                None => true,
+            };
+            if is_cache2_empty && is_cache_empty {
                 // Send
-                self.send_tcp_ack_raw(dst, src_port, sequence, &payload)?;
+                self.send_tcp_fin(dst, src_port)?;
             }
         }
 
@@ -673,6 +689,23 @@ impl Forwarder {
             0,
             *self.tcp_window_map.get(&key).unwrap_or(&65535),
             ts,
+        );
+
+        // Send
+        self.send_ipv4_with_transport(dst.ip().clone(), Layers::Tcp(tcp), None)
+    }
+
+    fn send_tcp_fin(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()> {
+        let key = (src_port, dst);
+
+        // TCP
+        let tcp = Tcp::new_fin(
+            dst.port(),
+            src_port,
+            *self.tcp_sequence_map.get(&key).unwrap_or(&0),
+            *self.tcp_acknowledgement_map.get(&key).unwrap_or(&0),
+            *self.tcp_window_map.get(&key).unwrap_or(&65535),
+            self.generate_ts(dst, src_port),
         );
 
         // Send
@@ -911,6 +944,14 @@ impl Forward for Forwarder {
         self.append_to_cache(dst, src_port, payload)
     }
 
+    fn close_tcp(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()> {
+        let key = (src_port, dst);
+
+        self.tcp_fin_set.insert(key);
+
+        self.send_tcp_ack(dst, src_port)
+    }
+
     fn forward_udp(&mut self, dst: SocketAddrV4, src_port: u16, payload: &[u8]) -> io::Result<()> {
         self.send_udp(dst, src_port, payload)
     }
@@ -971,9 +1012,6 @@ fn disjoint_u32_range(main: (u32, u32), sub: (u32, u32)) -> Vec<(u32, u32)> {
 const DUPLICATES_BEFORE_FAST_RETRANSMISSION: usize = 3;
 /// Represents the cool down time between 2 retransmissions.
 const RETRANSMISSION_COOL_DOWN: u128 = 200;
-
-/// Represents if reply with a valid closing packet like ACK/FIN instead of a RST.
-const LOOSE_RULES_ON_RST: bool = true;
 
 /// Represents the max limit of UDP port for binding in local.
 const PORT_COUNT: usize = 64;
@@ -1185,246 +1223,165 @@ impl Redirector {
             let dst = SocketAddrV4::new(tcp.get_dst_ip_addr(), tcp.get_dst());
             let key = (tcp.get_src(), dst);
             let is_exist = self.streams.get(&key).is_some();
-            let is_alive = match self.streams.get(&key) {
-                Some(ref stream) => !stream.is_closed(),
+            let is_writable = match self.streams.get(&key) {
+                Some(ref stream) => !stream.is_write_closed(),
                 None => false,
             };
 
             if is_exist {
-                if is_alive {
-                    // ACK
-                    self.update_tcp_sequence(indicator);
-                    self.update_tcp_acknowledgement(indicator);
-                    {
-                        let mut tx_locked = self.tx.lock().unwrap();
-                        tx_locked.invalidate_cache_to(
-                            dst,
-                            tcp.get_src(),
-                            tcp.get_acknowledgement(),
-                        );
-                        tx_locked.set_tcp_send_window(dst, tcp.get_src(), tcp.get_window());
-                    }
-
-                    let cache = self
-                        .tcp_cache_map
-                        .entry(key)
-                        .or_insert_with(|| RandomCacher::new(tcp.get_sequence()));
-                    let stream = self.streams.get_mut(&key).unwrap();
-                    if buffer.len() > indicator.get_size() {
-                        // ACK
-                        // Append to cache
-                        let prev_recv_next = cache.get_recv_next();
-                        let payload =
-                            cache.append(tcp.get_sequence(), &buffer[indicator.get_size()..])?;
-                        if cache.get_recv_next() != prev_recv_next {
-                            if let Some(ts) = tcp.get_ts() {
-                                // Update timestamp only when received new data
-                                self.tx.lock().unwrap().set_tcp_ts(dst, tcp.get_src(), ts);
-                            }
-                        }
-
-                        // SACK
-                        if *self.tcp_sack_perm_map.get(&key).unwrap_or(&false) {
-                            let sacks = cache.get_filled();
-                            self.tx
-                                .lock()
-                                .unwrap()
-                                .set_tcp_sacks(dst, tcp.get_src(), &sacks);
-                        }
-
-                        match payload {
-                            Some(payload) => {
-                                // Send
-                                match stream.send(payload.as_slice()).await {
-                                    Ok(_) => {
-                                        // Update window size
-                                        let mut tx_locked = self.tx.lock().unwrap();
-                                        tx_locked.set_tcp_window(
-                                            dst,
-                                            tcp.get_src(),
-                                            cache.get_remaining_size(),
-                                        );
-
-                                        // Update TCP acknowledgement
-                                        tx_locked.add_tcp_acknowledgement(
-                                            dst,
-                                            tcp.get_src(),
-                                            payload.len() as u32,
-                                        );
-
-                                        // Send ACK0
-                                        // If there is a heavy traffic, the ACK reported may be inaccurate, which would results in retransmission
-                                        tx_locked.send_tcp_ack_0(dst, tcp.get_src())?;
-                                    }
-                                    Err(e) => {
-                                        // Clean up
-                                        self.remove(indicator);
-
-                                        // Send ACK/RST
-                                        let mut tx_locked = self.tx.lock().unwrap();
-                                        tx_locked.send_tcp_ack_rst(dst, tcp.get_src())?;
-
-                                        // Clean up
-                                        tx_locked.remove(dst, tcp.get_src());
-
-                                        return Err(e);
-                                    }
-                                }
-                            }
-                            None => {
-                                // Retransmission or unordered
-                                // Update window size
-                                let mut tx_locked = self.tx.lock().unwrap();
-                                tx_locked.set_tcp_window(
-                                    dst,
-                                    tcp.get_src(),
-                                    cache.get_remaining_size(),
-                                );
-
-                                // Send ACK0
-                                tx_locked.send_tcp_ack_0(dst, tcp.get_src())?;
-                            }
-                        }
-                    } else {
-                        // ACK0
-                        if *self.tcp_duplicate_map.get(&key).unwrap_or(&0)
-                            >= DUPLICATES_BEFORE_FAST_RETRANSMISSION
-                        {
-                            if !tcp.is_zero_window() {
-                                let is_cooled_down =
-                                    match self.tcp_last_retransmission_map.get(&key) {
-                                        Some(ref instant) => {
-                                            instant.elapsed().as_millis() < RETRANSMISSION_COOL_DOWN
-                                        }
-                                        None => false,
-                                    };
-                                if !is_cooled_down {
-                                    if tcp.is_fin() {
-                                        // Because we cannot distinguish whether the server still have data to send,
-                                        // we wait for some continuos ACKs before sending an ACK/FIN to close.
-                                        // Expect all the data is handled by the server.
-                                        let mut tx_locked = self.tx.lock().unwrap();
-                                        // Check if all the data are sent
-                                        if tx_locked.get_cache_size(dst, tcp.get_src()) == 0 {
-                                            tx_locked.set_tcp_acknowledgement(
-                                                dst,
-                                                tcp.get_src(),
-                                                tcp.get_sequence().checked_add(1).unwrap_or(0),
-                                            );
-                                            if let Some(ts) = tcp.get_ts() {
-                                                tx_locked.set_tcp_ts(dst, tcp.get_src(), ts);
-                                            }
-                                            // Send ACK/FIN
-                                            tx_locked.send_tcp_ack_fin(dst, tcp.get_src())?;
-                                        }
-                                    } else {
-                                        // Fast retransmit
-                                        let mut is_sr = false;
-                                        if *self.tcp_sack_perm_map.get(&key).unwrap_or(&false) {
-                                            if let Some(sacks) = tcp.get_sack() {
-                                                if sacks.len() > 0 {
-                                                    // Selective retransmission
-                                                    self.tx
-                                                        .lock()
-                                                        .unwrap()
-                                                        .resend_tcp_ack_without(
-                                                            dst,
-                                                            tcp.get_src(),
-                                                            sacks,
-                                                        )?;
-                                                    is_sr = true;
-                                                }
-                                            }
-                                        }
-
-                                        if !is_sr {
-                                            // Back N
-                                            self.tx
-                                                .lock()
-                                                .unwrap()
-                                                .resend_tcp_ack(dst, tcp.get_src())?;
-                                        }
-
-                                        self.tcp_duplicate_map.insert(key, 0);
-                                        self.tcp_last_retransmission_map
-                                            .insert(key, Instant::now());
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // FIN
-                    if tcp.is_fin() && cache.is_empty() {
-                        stream.finish();
-                    }
-
-                    // Trigger sending remaining data
-                    self.tx.lock().unwrap().send_tcp_ack(dst, tcp.get_src())?;
-                } else {
-                    // Expect in LAST_ACK state (or the stream met an error)
-                    if tcp.is_fin() {
-                        let mut tx_locked = self.tx.lock().unwrap();
-                        tx_locked.set_tcp_acknowledgement(
-                            dst,
-                            tcp.get_src(),
-                            tcp.get_sequence().checked_add(1).unwrap_or(0),
-                        );
-                        if let Some(ts) = tcp.get_ts() {
-                            tx_locked.set_tcp_ts(dst, tcp.get_src(), ts);
-                        }
-                        // Send ACK/FIN
-                        tx_locked.send_tcp_ack_fin(dst, tcp.get_src())?;
-                    } else {
-                        self.remove(indicator);
-                        self.tx.lock().unwrap().remove(dst, tcp.get_src());
-                    }
+                // ACK
+                self.update_tcp_sequence(indicator);
+                self.update_tcp_acknowledgement(indicator);
+                {
+                    let mut tx_locked = self.tx.lock().unwrap();
+                    tx_locked.invalidate_cache_to(dst, tcp.get_src(), tcp.get_acknowledgement());
+                    tx_locked.set_tcp_send_window(dst, tcp.get_src(), tcp.get_window());
                 }
-            } else {
-                if tcp.is_fin() {
-                    if LOOSE_RULES_ON_RST {
-                        // Though a RST is enough, reply with respect
-                        let mut tx_locked = self.tx.lock().unwrap();
-                        #[allow(deprecated)]
-                        tx_locked.set_tcp_sequence(dst, tcp.get_src(), tcp.get_acknowledgement());
-                        tx_locked.set_tcp_acknowledgement(
-                            dst,
-                            tcp.get_src(),
-                            tcp.get_sequence().checked_add(1).unwrap_or(0),
-                        );
-                        if let Some(ts) = tcp.get_ts() {
-                            tx_locked.set_tcp_ts(dst, tcp.get_src(), ts);
-                        }
-                        // Send ACK/FIN
-                        tx_locked.send_tcp_ack_fin(dst, tcp.get_src())?;
 
-                        // Clean up
-                        tx_locked.remove(dst, tcp.get_src());
-                    } else {
-                        // Send RST
+                let cache = self
+                    .tcp_cache_map
+                    .entry(key)
+                    .or_insert_with(|| RandomCacher::new(tcp.get_sequence()));
+                let stream = self.streams.get_mut(&key).unwrap();
+                if buffer.len() > indicator.get_size() {
+                    // ACK
+                    // Append to cache
+                    let prev_recv_next = cache.get_recv_next();
+                    let payload =
+                        cache.append(tcp.get_sequence(), &buffer[indicator.get_size()..])?;
+                    if cache.get_recv_next() != prev_recv_next {
+                        if let Some(ts) = tcp.get_ts() {
+                            // Update timestamp only when received new data
+                            self.tx.lock().unwrap().set_tcp_ts(dst, tcp.get_src(), ts);
+                        }
+                    }
+
+                    // SACK
+                    if *self.tcp_sack_perm_map.get(&key).unwrap_or(&false) {
+                        let sacks = cache.get_filled();
                         self.tx
                             .lock()
                             .unwrap()
-                            .send_tcp_rst(dst, tcp.get_src(), None)?;
+                            .set_tcp_sacks(dst, tcp.get_src(), &sacks);
+                    }
+
+                    match payload {
+                        Some(payload) => {
+                            // Send
+                            match stream.send(payload.as_slice()).await {
+                                Ok(_) => {
+                                    // Update window size
+                                    let mut tx_locked = self.tx.lock().unwrap();
+                                    tx_locked.set_tcp_window(
+                                        dst,
+                                        tcp.get_src(),
+                                        cache.get_remaining_size(),
+                                    );
+
+                                    // Update TCP acknowledgement
+                                    tx_locked.add_tcp_acknowledgement(
+                                        dst,
+                                        tcp.get_src(),
+                                        payload.len() as u32,
+                                    );
+
+                                    // Send ACK0
+                                    // If there is a heavy traffic, the ACK reported may be inaccurate, which would results in retransmission
+                                    tx_locked.send_tcp_ack_0(dst, tcp.get_src())?;
+                                }
+                                Err(e) => {
+                                    // Clean up
+                                    self.remove(indicator);
+
+                                    // Send ACK/RST
+                                    let mut tx_locked = self.tx.lock().unwrap();
+                                    tx_locked.send_tcp_ack_rst(dst, tcp.get_src())?;
+
+                                    // Clean up
+                                    tx_locked.remove(dst, tcp.get_src());
+
+                                    return Err(e);
+                                }
+                            }
+                        }
+                        None => {
+                            // Retransmission or unordered
+                            // Update window size
+                            let mut tx_locked = self.tx.lock().unwrap();
+                            tx_locked.set_tcp_window(
+                                dst,
+                                tcp.get_src(),
+                                cache.get_remaining_size(),
+                            );
+
+                            // Send ACK0
+                            tx_locked.send_tcp_ack_0(dst, tcp.get_src())?;
+                        }
                     }
                 } else {
-                    let mut tx_locked = self.tx.lock().unwrap();
-                    #[allow(deprecated)]
-                    tx_locked.set_tcp_sequence(dst, tcp.get_src(), tcp.get_acknowledgement());
-                    tx_locked.set_tcp_acknowledgement(
-                        dst,
-                        tcp.get_src(),
-                        tcp.get_sequence().checked_add(1).unwrap_or(0),
-                    );
-                    if let Some(ts) = tcp.get_ts() {
-                        tx_locked.set_tcp_ts(dst, tcp.get_src(), ts);
-                    }
-                    // Send ACK/RST
-                    tx_locked.send_tcp_ack_rst(dst, tcp.get_src())?;
+                    // ACK0
+                    if !is_writable
+                        && self.tx.lock().unwrap().get_cache_size(dst, tcp.get_src()) == 0
+                    {
+                        // LAST_ACK
+                        // Clean up
+                        self.remove(indicator);
+                        self.tx.lock().unwrap().remove(dst, tcp.get_src());
 
-                    // Clean up
-                    tx_locked.remove(dst, tcp.get_src());
+                        return Ok(());
+                    } else if *self.tcp_duplicate_map.get(&key).unwrap_or(&0)
+                        >= DUPLICATES_BEFORE_FAST_RETRANSMISSION
+                    {
+                        // Duplicate ACK
+                        if !tcp.is_zero_window() {
+                            let is_cooled_down = match self.tcp_last_retransmission_map.get(&key) {
+                                Some(ref instant) => {
+                                    instant.elapsed().as_millis() < RETRANSMISSION_COOL_DOWN
+                                }
+                                None => false,
+                            };
+                            if !is_cooled_down {
+                                // Fast retransmit
+                                let mut is_sr = false;
+                                if *self.tcp_sack_perm_map.get(&key).unwrap_or(&false) {
+                                    if let Some(sacks) = tcp.get_sack() {
+                                        if sacks.len() > 0 {
+                                            // Selective retransmission
+                                            self.tx.lock().unwrap().resend_tcp_ack_without(
+                                                dst,
+                                                tcp.get_src(),
+                                                sacks,
+                                            )?;
+                                            is_sr = true;
+                                        }
+                                    }
+                                }
+
+                                if !is_sr {
+                                    // Back N
+                                    self.tx.lock().unwrap().resend_tcp_ack(dst, tcp.get_src())?;
+                                }
+
+                                self.tcp_duplicate_map.insert(key, 0);
+                                self.tcp_last_retransmission_map.insert(key, Instant::now());
+                            }
+                        }
+                    }
                 }
+
+                // FIN
+                if tcp.is_fin() && cache.is_empty() {
+                    return self.handle_tcp_fin(indicator);
+                }
+
+                // Trigger sending remaining data
+                self.tx.lock().unwrap().send_tcp_ack(dst, tcp.get_src())?;
+            } else {
+                // Send RST
+                self.tx
+                    .lock()
+                    .unwrap()
+                    .send_tcp_rst(dst, tcp.get_src(), None)?;
             }
         }
 
@@ -1533,16 +1490,17 @@ impl Redirector {
             let dst = SocketAddrV4::new(tcp.get_dst_ip_addr(), tcp.get_dst());
             let key = (tcp.get_src(), dst);
             let is_exist = self.streams.get(&key).is_some();
+            let is_readable = match self.streams.get(&key) {
+                Some(ref stream) => !stream.is_read_closed(),
+                None => false,
+            };
 
             if is_exist {
-                let remain_cache_size = self.tx.lock().unwrap().get_cache_size(dst, tcp.get_src());
-                if remain_cache_size > 0 {
-                    // Trigger sending remaining data
-                    self.tx.lock().unwrap().send_tcp_ack(dst, tcp.get_src())?;
-                } else {
-                    let stream = self.streams.get_mut(&key).unwrap();
-                    stream.close();
-
+                let is_cache_empty = match self.tcp_cache_map.get(&key) {
+                    Some(cache) => cache.is_empty(),
+                    None => true,
+                };
+                if is_cache_empty {
                     let mut tx_locked = self.tx.lock().unwrap();
                     tx_locked.set_tcp_acknowledgement(
                         dst,
@@ -1552,35 +1510,29 @@ impl Redirector {
                     if let Some(ts) = tcp.get_ts() {
                         tx_locked.set_tcp_ts(dst, tcp.get_src(), ts);
                     }
-                    // Send ACK/FIN
-                    tx_locked.send_tcp_ack_fin(dst, tcp.get_src())?;
+                    // Send ACK0
+                    tx_locked.send_tcp_ack_0(dst, tcp.get_src())?;
+                    if is_readable {
+                        // Close by local
+                        let stream = self.streams.get_mut(&key).unwrap();
+                        stream.close();
+                    } else {
+                        // Close by remote
+                        // Clean up
+                        tx_locked.remove(dst, tcp.get_src());
+                        drop(tx_locked);
+                        self.remove(indicator);
+                    }
+                } else {
+                    // Send ACK0
+                    self.tx.lock().unwrap().send_tcp_ack_0(dst, tcp.get_src())?;
                 }
             } else {
-                // Though a RST is enough, reply with respect
-                if LOOSE_RULES_ON_RST {
-                    let mut tx_locked = self.tx.lock().unwrap();
-                    #[allow(deprecated)]
-                    tx_locked.set_tcp_sequence(dst, tcp.get_src(), tcp.get_acknowledgement());
-                    tx_locked.set_tcp_acknowledgement(
-                        dst,
-                        tcp.get_src(),
-                        tcp.get_sequence().checked_add(1).unwrap_or(0),
-                    );
-                    if let Some(ts) = tcp.get_ts() {
-                        tx_locked.set_tcp_ts(dst, tcp.get_src(), ts);
-                    }
-                    // Send ACK/FIN
-                    tx_locked.send_tcp_ack_fin(dst, tcp.get_src())?;
-
-                    // Clean up
-                    tx_locked.remove(dst, tcp.get_src());
-                } else {
-                    // Send RST
-                    self.tx
-                        .lock()
-                        .unwrap()
-                        .send_tcp_rst(dst, tcp.get_src(), None)?;
-                }
+                // Send RST
+                self.tx
+                    .lock()
+                    .unwrap()
+                    .send_tcp_rst(dst, tcp.get_src(), None)?;
             }
         }
 
