@@ -30,7 +30,7 @@ const MAX_RECV_ZERO: usize = 3;
 /// Represents a worker of a SOCKS5 TCP stream.
 pub struct StreamWorker {
     dst: SocketAddrV4,
-    stream_tx: OwnedWriteHalf,
+    stream_tx: Option<OwnedWriteHalf>,
     is_finished: Arc<AtomicBool>,
     is_closed: Arc<AtomicBool>,
 }
@@ -99,6 +99,7 @@ impl StreamWorker {
                         }
                     }
                     Err(ref e) => {
+                        // TODO: handle closing from the server
                         if e.kind() == io::ErrorKind::TimedOut {
                             time::delay_for(Duration::from_millis(TIMEDOUT_WAIT)).await;
                             continue;
@@ -115,7 +116,7 @@ impl StreamWorker {
 
         Ok(StreamWorker {
             dst,
-            stream_tx,
+            stream_tx: Some(stream_tx),
             is_finished,
             is_closed: is_closed,
         })
@@ -132,7 +133,10 @@ impl StreamWorker {
         );
 
         // Send
-        self.stream_tx.write_all(buffer).await
+        match &mut self.stream_tx {
+            Some(tx) => tx.write_all(buffer).await,
+            None => return Err(io::Error::from(io::ErrorKind::NotConnected)),
+        }
     }
 
     /// Announces to finish the worker.
@@ -144,6 +148,10 @@ impl StreamWorker {
     /// Closes the worker.
     pub fn close(&mut self) {
         self.is_closed.store(true, Ordering::Relaxed);
+        match self.stream_tx.take() {
+            Some(tx) => tx.forget(),
+            None => {}
+        }
         trace!("close stream {} -> {}", 0, self.dst);
     }
 
