@@ -108,6 +108,7 @@ pub async fn bind(remote: SocketAddrV4) -> io::Result<(SocksRecvHalf, SocksSendH
     // Connect
     let stream = TcpStream::connect(remote).await?;
     let stream = BufStream::new(stream);
+
     let local = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0);
     let socket = UdpSocket::bind(local).await?;
     let local_port = socket.local_addr().unwrap().port();
@@ -124,6 +125,7 @@ pub async fn bind(remote: SocketAddrV4) -> io::Result<(SocksRecvHalf, SocksSendH
 
     let (stream, socket) = datagram.into_inner();
     let (socket_rx, socket_tx) = socket.split();
+
     let a_stream = Arc::new(stream);
     let a_stream_cloned = Arc::clone(&a_stream);
 

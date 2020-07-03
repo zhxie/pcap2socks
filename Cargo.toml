@@ -1,6 +1,6 @@
 [package]
 name = "pcap2socks"
-version = "0.2.0"
+version = "0.3.0-alpha"
 authors = ["Xie Zhihao <xzh1206@gmail.com>"]
 edition = "2018"
 description = "Redirect traffic to SOCKS proxy with pcap."
@@ -15,5 +15,4 @@ ipnetwork = "0.16.0"
 log = "0.4.8"
 lru = "0.5.2"
 pnet = "0.26.0"
-socks = "0.3.2"
 tokio = { version = "0.2.21", features = ["macros", "rt-core", "rt-threaded", "tcp", "time", "udp"] }
