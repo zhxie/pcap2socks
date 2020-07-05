@@ -2,6 +2,8 @@
 
 **pcap2socks** is a proxy which redirect traffic to a SOCKS proxy with pcap written in Rust.
 
+*pcap2socks is designed to accelerate games in game consoles.*
+
 ## Features
 
 - **Redirect Traffic**: Redirect TCP and UDP traffic to a SOCKS proxy.
@@ -17,7 +19,7 @@
 
 ### Windows
 
-If you want to build **pcap2socks** in Windows, you must meet all the three requirements described in [libpnet](https://github.com/libpnet/libpnet#windows).
+If you want to build pcap2socks in Windows, you must meet all the three requirements described in [libpnet](https://github.com/libpnet/libpnet#windows).
 
 ## Usage
 
