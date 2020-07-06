@@ -11,7 +11,7 @@ use tokio::time;
 mod socks;
 use self::socks::SocksSendHalf;
 
-/// Trait for forwarding transport layer payload.
+/// Trait for forwarding TCP/UDP payload.
 pub trait Forward: Send {
     /// Forward TCP payload.
     fn forward_tcp(&mut self, dst: SocketAddrV4, src_port: u16, payload: &[u8]) -> io::Result<()>;

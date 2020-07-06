@@ -4,11 +4,15 @@ use std::fmt::{self, Display, Formatter};
 use std::io;
 use std::net::Ipv4Addr;
 
+/// Represents a hardware address MAC in an Ethernet network.
 pub type HardwareAddr = pnet::datalink::MacAddr;
 
+/// Represents an unspecified hardware address `00:00:00:00:00:00` in an Ethernet network.
 pub const HARDWARE_ADDR_UNSPECIFIED: HardwareAddr = pnet::datalink::MacAddr(0, 0, 0, 0, 0, 0);
 
+/// Represents the send half of a pcap device.
 pub type Sender = Box<dyn DataLinkSender>;
+/// Represents the receive half of a pcap device.
 pub type Receiver = Box<dyn DataLinkReceiver>;
 
 /// Represents the buffer size of pcap channels.
