@@ -2,7 +2,7 @@
 
 **pcap2socks** is a proxy which redirect traffic to a SOCKS proxy with pcap written in Rust.
 
-*pcap2socks is designed to accelerate games in game consoles.*
+_pcap2socks is designed to accelerate games in game consoles._
 
 ## Features
 
@@ -80,7 +80,7 @@ pcap2socks -s <ADDRESS> -p <ADDRESS> -d <ADDRESS>
 
 ## Todo
 
-- [ ] Latency ~~and packet lost rate~~ test
+- [x] Latency ~~and packet lost rate~~ test ([dnsping](https://github.com/zhxie/dnsping))
 
 ## License
 
