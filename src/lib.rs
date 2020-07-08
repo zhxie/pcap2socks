@@ -1,4 +1,6 @@
-use log::{debug, info, trace, warn, LevelFilter};
+//! Redirect traffic to a SOCKS proxy with pcap.
+
+use log::{debug, info, trace, warn};
 use lru::LruCache;
 use std::cmp::{max, min};
 use std::collections::{HashMap, HashSet};
@@ -8,17 +10,13 @@ use std::thread;
 use std::time::{self, Duration, Instant, SystemTime};
 use tokio::io;
 
-pub mod args;
 pub mod cacher;
-pub mod logger;
 pub mod packet;
 pub mod pcap;
 pub mod socks;
 
 use self::socks::{DatagramWorker, Forward, StreamWorker};
-use args::Flags;
 use cacher::{Cacher, RandomCacher};
-use logger::Logger;
 use packet::layer::arp::Arp;
 use packet::layer::ethernet::Ethernet;
 use packet::layer::ipv4::Ipv4;
@@ -28,16 +26,6 @@ use packet::layer::{Layer, LayerType, LayerTypes, Layers};
 use packet::{Defraggler, Indicator};
 use pcap::Interface;
 use pcap::{HardwareAddr, Receiver, Sender};
-
-/// Sets the logger.
-pub fn set_logger(flags: &Flags) {
-    let level = match &flags.verbose {
-        0 => LevelFilter::Info,
-        1 => LevelFilter::Debug,
-        _ => LevelFilter::Trace,
-    };
-    Logger::init(level);
-}
 
 /// Gets a list of available network interfaces for the current machine.
 pub fn interfaces() -> Vec<Interface> {
@@ -99,7 +87,7 @@ const TIMESTAMP_RATE: u128 = 1;
 /// Exclude the 4 bytes used in FCS, the minimum packet size in pcap2socks is 60 Bytes.
 const MINIMUM_PACKET_SIZE: usize = 60;
 
-/// Represents the channel forward traffic to the source in pcap.
+/// Represents a channel forward traffic to the source in pcap.
 pub struct Forwarder {
     tx: Sender,
     mtu: u16,
@@ -1016,7 +1004,7 @@ const RETRANSMISSION_COOL_DOWN: u128 = 200;
 /// Represents the max limit of UDP port for binding in local.
 const PORT_COUNT: usize = 64;
 
-/// Represents the channel redirect traffic to the proxy of SOCKS or loopback to the source in pcap.
+/// Represents a channel redirect traffic to the proxy of SOCKS or loopback to the source in pcap.
 pub struct Redirector {
     tx: Arc<Mutex<Forwarder>>,
     is_tx_src_hardware_addr_set: bool,

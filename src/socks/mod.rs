@@ -1,3 +1,5 @@
+//! Support for handling SOCKS proxies.
+
 use log::{debug, trace, warn};
 use std::net::SocketAddrV4;
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};

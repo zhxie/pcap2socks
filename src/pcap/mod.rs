@@ -1,10 +1,12 @@
+//! Support for handling pcap interfaces.
+
 use pnet::datalink::{self, Channel, Config, DataLinkReceiver, DataLinkSender, MacAddr};
 use std::clone::Clone;
 use std::fmt::{self, Display, Formatter};
 use std::io;
 use std::net::Ipv4Addr;
 
-/// Represents a hardware address MAC in an Ethernet network.
+/// Represents the hardware address MAC in an Ethernet network.
 pub type HardwareAddr = pnet::datalink::MacAddr;
 
 /// Represents an unspecified hardware address `00:00:00:00:00:00` in an Ethernet network.

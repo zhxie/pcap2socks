@@ -1,3 +1,5 @@
+//! Support for serializing and deserializing packets.
+
 use pnet::packet::arp::ArpPacket;
 use pnet::packet::ethernet::{EtherTypes, EthernetPacket};
 use pnet::packet::ip::IpNextHeaderProtocols;

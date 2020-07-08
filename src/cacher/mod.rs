@@ -1,3 +1,5 @@
+//! Support for caching and keeping send & receive window.
+
 use std::cmp::{max, min};
 use std::collections::BTreeMap;
 use std::io;
@@ -11,7 +13,7 @@ const EXPANSION_FACTOR: f64 = 1.5;
 /// Represents the max distance of u32 values between packets in an u32 window.
 const MAX_U32_WINDOW_SIZE: usize = 4 * 1024 * 1024;
 
-/// Represents the linear cache.
+/// Represents a linear cache.
 #[derive(Debug)]
 pub struct Cacher {
     buffer: Vec<u8>,
@@ -172,7 +174,7 @@ impl Cacher {
     }
 }
 
-/// Represents the random cache.
+/// Represents a random cache.
 #[derive(Debug)]
 pub struct RandomCacher {
     buffer: Vec<u8>,
