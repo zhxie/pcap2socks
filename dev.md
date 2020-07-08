@@ -6,13 +6,13 @@ This is the development documentation of pcap2socks.
 
 ### Differences with the Standard [RFC 793](https://tools.ietf.org/html/rfc793) and Its Updates
 
-- pcap2socks does not resend TCP data after not receiving ACK for a certain time, which is also recognized as 2MSL, since pcap2socks does not own the send timestamp and the timer in its send cache.
+- pcap2socks does not resend TCP data after not receiving ACK for a certain time, which is also recognized as MSL, since pcap2socks does not own the send timestamp and the timer in its send cache.
 
 - pcap2socks does not consider the wait time in states like `TIME_WAIT` since the source should maintain its state.
 
 - pcap2socks does not realize `mss` ([RFC 793](https://tools.ietf.org/html/rfc793)) option since the way getting interface's MSS in difference kernels and systems are totally different, and one workable dependency crate [interfaces](https://crates.io/crates/interfaces) cannot be compiled in Windows successfully with MSVC.
 
-- pcap2socks does not realize `sndwnd` ([RFC 7323](https://tools.ietf.org/html/rfc7323)) option because the receive cache of pcap2socks is infinity in theory, and the traffic will drop all its options through the SOCKS, pcap2socks cannot examine how large the windows should be set at this point.
+- pcap2socks does not realize `sndwnd` ([RFC 7323](https://tools.ietf.org/html/rfc7323)) option because the receive cache of pcap2socks is infinity in theory, and the traffic will drop all its options through the SOCKS, pcap2socks cannot examine how large the window should be set at this point.
 
 - pcap2socks sends all TCP data in `TCP_NODELAY` since pcap2socks owns no timers.
 
