@@ -103,8 +103,8 @@ pub struct Forwarder {
     tcp_window_map: HashMap<(u16, SocketAddrV4), u16>,
     tcp_sacks_map: HashMap<(u16, SocketAddrV4), Vec<(u32, u32)>>,
     tcp_ts_map: HashMap<(u16, SocketAddrV4), u32>,
-    tcp_cache_map: HashMap<(u16, SocketAddrV4), Cacher>,
-    tcp_cache2_map: HashMap<(u16, SocketAddrV4), Cacher>,
+    tcp_sent_cache_map: HashMap<(u16, SocketAddrV4), Cacher>,
+    tcp_unsent_cache_map: HashMap<(u16, SocketAddrV4), Cacher>,
 }
 
 impl Forwarder {
@@ -131,8 +131,8 @@ impl Forwarder {
             tcp_window_map: HashMap::new(),
             tcp_sacks_map: HashMap::new(),
             tcp_ts_map: HashMap::new(),
-            tcp_cache_map: HashMap::new(),
-            tcp_cache2_map: HashMap::new(),
+            tcp_sent_cache_map: HashMap::new(),
+            tcp_unsent_cache_map: HashMap::new(),
         }
     }
 
@@ -262,7 +262,7 @@ impl Forwarder {
 
     /// Invalidates TCP cache to the given sequence.
     pub fn invalidate_cache_to(&mut self, dst: SocketAddrV4, src_port: u16, sequence: u32) {
-        if let Some(cache) = self.tcp_cache_map.get_mut(&(src_port, dst)) {
+        if let Some(cache) = self.tcp_sent_cache_map.get_mut(&(src_port, dst)) {
             cache.invalidate_to(sequence);
         }
         trace!(
@@ -283,8 +283,8 @@ impl Forwarder {
         self.tcp_window_map.remove(&key);
         self.tcp_sacks_map.remove(&key);
         self.tcp_ts_map.remove(&key);
-        self.tcp_cache_map.remove(&key);
-        self.tcp_cache2_map.remove(&key);
+        self.tcp_sent_cache_map.remove(&key);
+        self.tcp_unsent_cache_map.remove(&key);
         trace!("remove {} -> {}", dst, src_port);
     }
 
@@ -293,10 +293,10 @@ impl Forwarder {
         let key = (src_port, dst);
 
         let mut size = 0;
-        if let Some(cache) = self.tcp_cache_map.get(&key) {
+        if let Some(cache) = self.tcp_sent_cache_map.get(&key) {
             size += cache.get_size();
         }
-        if let Some(cache) = self.tcp_cache2_map.get(&key) {
+        if let Some(cache) = self.tcp_unsent_cache_map.get(&key) {
             size += cache.get_size();
         }
 
@@ -342,7 +342,7 @@ impl Forwarder {
 
         // Append to cache
         let cache = self
-            .tcp_cache2_map
+            .tcp_unsent_cache_map
             .entry(key)
             .or_insert_with(|| Cacher::new_unbounded(sequence));
         cache.append(payload)?;
@@ -357,7 +357,7 @@ impl Forwarder {
         // Resend
         let payload;
         let sequence;
-        match self.tcp_cache_map.get(&key) {
+        match self.tcp_sent_cache_map.get(&key) {
             Some(cache) => {
                 match cache.get_all() {
                     Ok(buffer) => {
@@ -386,12 +386,12 @@ impl Forwarder {
     ) -> io::Result<()> {
         let key = (src_port, dst);
 
-        if let None = self.tcp_cache_map.get(&key) {
+        if let None = self.tcp_sent_cache_map.get(&key) {
             return Err(io::Error::new(io::ErrorKind::Other, "cannot get cache"));
         }
 
-        let mut sequence = self.tcp_cache_map.get(&key).unwrap().get_sequence();
-        let mut size = self.tcp_cache_map.get(&key).unwrap().get_size();
+        let mut sequence = self.tcp_sent_cache_map.get(&key).unwrap().get_sequence();
+        let mut size = self.tcp_sent_cache_map.get(&key).unwrap().get_size();
         let recv_next = sequence
             .checked_add(size as u32)
             .unwrap_or_else(|| size as u32 - (u32::MAX - sequence));
@@ -427,12 +427,20 @@ impl Forwarder {
                 .1
                 .checked_sub(range.0)
                 .unwrap_or_else(|| range.1 + (u32::MAX - range.0)) as usize;
-            let payload = self.tcp_cache_map.get(&key).unwrap().get(range.0, size)?;
+            let payload = self
+                .tcp_sent_cache_map
+                .get(&key)
+                .unwrap()
+                .get(range.0, size)?;
             if payload.len() > 0 {
                 self.send_tcp_ack_raw(dst, src_port, range.0, payload.as_slice())?;
             }
         }
-        let payload = self.tcp_cache_map.get(&key).unwrap().get(sequence, size)?;
+        let payload = self
+            .tcp_sent_cache_map
+            .get(&key)
+            .unwrap()
+            .get(sequence, size)?;
         if payload.len() > 0 {
             self.send_tcp_ack_raw(dst, src_port, sequence, payload.as_slice())?;
         }
@@ -444,12 +452,12 @@ impl Forwarder {
     pub fn send_tcp_ack(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()> {
         let key = (src_port, dst);
 
-        if let Some(cache2) = self.tcp_cache2_map.get_mut(&key) {
+        if let Some(cache2) = self.tcp_unsent_cache_map.get_mut(&key) {
             let sequence = cache2.get_sequence();
             let window = *self.tcp_send_window_map.get(&key).unwrap_or(&0);
             if window > 0 {
                 let cache = self
-                    .tcp_cache_map
+                    .tcp_sent_cache_map
                     .entry(key)
                     .or_insert_with(|| Cacher::new(sequence));
                 let sent_size = cache.get_size();
@@ -467,7 +475,7 @@ impl Forwarder {
 
                     // Append to cache
                     let cache = self
-                        .tcp_cache_map
+                        .tcp_sent_cache_map
                         .entry(key)
                         .or_insert_with(|| Cacher::new(sequence));
                     cache.append(&payload)?;
@@ -480,11 +488,11 @@ impl Forwarder {
 
         // FIN
         if self.tcp_fin_set.contains(&key) {
-            let is_cache2_empty = match self.tcp_cache2_map.get(&key) {
+            let is_cache2_empty = match self.tcp_unsent_cache_map.get(&key) {
                 Some(cache) => cache.is_empty(),
                 None => true,
             };
-            let is_cache_empty = match self.tcp_cache_map.get(&key) {
+            let is_cache_empty = match self.tcp_sent_cache_map.get(&key) {
                 Some(cache) => cache.is_empty(),
                 None => true,
             };
