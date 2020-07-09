@@ -64,6 +64,6 @@ pcap2socks has some defects in the view of engineering.
 
 - Without timers, some data may be left in the cache and cannot be send out.
 
-- The structure of the `Redirector`, the `SocksStream` & `SocksDatagram` and the `Forwarder` looks like a chaos. Caches and states should be set in the `SocksStream` & `SocksDatagram` instead of the `Redirector` and the `Forwarder`.
+- The structure of the `Redirector`, the `SocksStream` & `SocksDatagram` and the `Forwarder` looks like a chaos. Caches and states should be located in the `SocksStream` & `SocksDatagram` instead of the `Redirector` and the `Forwarder`.
 
 - pcap2socks cannot close gracefully, all the data in the receive and send cache will be dropped. The connections will be closed (or shutdown, depending on the kernel or the system) immediately.

@@ -15,7 +15,7 @@ pub mod packet;
 pub mod pcap;
 pub mod socks;
 
-use self::socks::{DatagramWorker, Forward, StreamWorker};
+use self::socks::{DatagramWorker, ForwardDatagram, ForwardStream, StreamWorker};
 use cacher::{Cacher, RandomCacher};
 use packet::layer::arp::Arp;
 use packet::layer::ethernet::Ethernet;
@@ -284,7 +284,25 @@ impl Forwarder {
         self.tcp_sacks_map.remove(&key);
         self.tcp_ts_map.remove(&key);
         self.tcp_sent_cache_map.remove(&key);
+        if let Some(cache) = self.tcp_sent_cache_map.get(&key) {
+            if !cache.is_empty() {
+                trace!(
+                    "sent cache {} -> {} was removed while the cache is not empty",
+                    dst,
+                    src_port
+                );
+            }
+        }
         self.tcp_unsent_cache_map.remove(&key);
+        if let Some(cache) = self.tcp_unsent_cache_map.get(&key) {
+            if !cache.is_empty() {
+                trace!(
+                    "unsent cache {} -> {} was removed while the cache is not empty",
+                    dst,
+                    src_port
+                );
+            }
+        }
         trace!("remove {} -> {}", dst, src_port);
     }
 
@@ -935,20 +953,22 @@ impl Forwarder {
     }
 }
 
-impl Forward for Forwarder {
-    fn forward_tcp(&mut self, dst: SocketAddrV4, src_port: u16, payload: &[u8]) -> io::Result<()> {
+impl ForwardStream for Forwarder {
+    fn forward(&mut self, dst: SocketAddrV4, src_port: u16, payload: &[u8]) -> io::Result<()> {
         self.append_to_cache(dst, src_port, payload)
     }
 
-    fn close_tcp(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()> {
+    fn close(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()> {
         let key = (src_port, dst);
 
         self.tcp_fin_set.insert(key);
 
         self.send_tcp_ack(dst, src_port)
     }
+}
 
-    fn forward_udp(&mut self, dst: SocketAddrV4, src_port: u16, payload: &[u8]) -> io::Result<()> {
+impl ForwardDatagram for Forwarder {
+    fn forward(&mut self, dst: SocketAddrV4, src_port: u16, payload: &[u8]) -> io::Result<()> {
         self.send_udp(dst, src_port, payload)
     }
 }
@@ -1684,8 +1704,17 @@ impl Redirector {
             self.tcp_duplicate_map.remove(&key);
             self.tcp_last_retransmission_map.remove(&key);
             self.tcp_sack_perm_map.remove(&key);
+            if let Some(cache) = self.tcp_cache_map.get(&key) {
+                if !cache.is_empty() {
+                    trace!(
+                        "cache {} -> {} was removed while the cache is not empty",
+                        tcp.get_src(),
+                        dst
+                    );
+                }
+            }
             self.tcp_cache_map.remove(&key);
-            trace!("remove {} -> {}", dst, tcp.get_dst());
+            trace!("remove {} -> {}", tcp.get_src(), dst);
         }
     }
 

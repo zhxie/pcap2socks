@@ -13,16 +13,13 @@ use tokio::time;
 mod socks;
 use self::socks::SocksSendHalf;
 
-/// Trait for forwarding TCP/UDP payload.
-pub trait Forward: Send {
-    /// Forward TCP payload.
-    fn forward_tcp(&mut self, dst: SocketAddrV4, src_port: u16, payload: &[u8]) -> io::Result<()>;
+/// Trait for forwarding stream.
+pub trait ForwardStream: Send {
+    /// Forward stream.
+    fn forward(&mut self, dst: SocketAddrV4, src_port: u16, payload: &[u8]) -> io::Result<()>;
 
-    /// Close a TCP connection.
-    fn close_tcp(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()>;
-
-    /// Forward UDP payload.
-    fn forward_udp(&mut self, dst: SocketAddrV4, src_port: u16, payload: &[u8]) -> io::Result<()>;
+    /// Close a stream connection.
+    fn close(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()>;
 }
 
 /// Represents the wait time after a `TimedOut` `IoError`.
@@ -43,7 +40,7 @@ pub struct StreamWorker {
 impl StreamWorker {
     /// Opens a new `StreamWorker`.
     pub async fn connect(
-        tx: Arc<Mutex<dyn Forward>>,
+        tx: Arc<Mutex<dyn ForwardStream>>,
         src_port: u16,
         dst: SocketAddrV4,
         remote: SocketAddrV4,
@@ -74,7 +71,7 @@ impl StreamWorker {
                                 // Close by remote
                                 trace!("close stream read {} -> {}", dst, 0);
 
-                                if let Err(ref e) = tx.lock().unwrap().close_tcp(dst, src_port) {
+                                if let Err(ref e) = tx.lock().unwrap().close(dst, src_port) {
                                     warn!("handle {}: {}", "TCP", e)
                                 }
                                 is_read_closed_cloned.store(true, Ordering::Relaxed);
@@ -91,9 +88,7 @@ impl StreamWorker {
 
                         // Send
                         if let Err(ref e) =
-                            tx.lock()
-                                .unwrap()
-                                .forward_tcp(dst, src_port, &buffer[..size])
+                            tx.lock().unwrap().forward(dst, src_port, &buffer[..size])
                         {
                             warn!("handle {}: {}", "TCP", e);
                         }
@@ -172,6 +167,12 @@ impl Drop for StreamWorker {
     }
 }
 
+/// Trait for forwarding datagram.
+pub trait ForwardDatagram: Send {
+    /// Forwards datagram.
+    fn forward(&mut self, dst: SocketAddrV4, src_port: u16, payload: &[u8]) -> io::Result<()>;
+}
+
 /// Represents a worker of a SOCKS5 UDP client.
 pub struct DatagramWorker {
     src_port: Arc<AtomicU16>,
@@ -183,7 +184,7 @@ pub struct DatagramWorker {
 impl DatagramWorker {
     /// Creates a new `DatagramWorker`.
     pub async fn bind(
-        tx: Arc<Mutex<dyn Forward>>,
+        tx: Arc<Mutex<dyn ForwardDatagram>>,
         src_port: u16,
         remote: SocketAddrV4,
     ) -> io::Result<(DatagramWorker, u16)> {
@@ -210,7 +211,7 @@ impl DatagramWorker {
                         );
 
                         // Send
-                        if let Err(ref e) = tx.lock().unwrap().forward_udp(
+                        if let Err(ref e) = tx.lock().unwrap().forward(
                             addr,
                             a_src_port_cloned.load(Ordering::Relaxed),
                             &buffer[..size],
