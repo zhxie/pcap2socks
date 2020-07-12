@@ -114,7 +114,6 @@ impl Tcp {
         if let Some(wscale) = wscale {
             tcp.layer.data_offset += 1;
             tcp.layer.options.push(TcpOption::nop());
-            tcp.layer.options.push(TcpOption::nop());
             tcp.layer.options.push(TcpOption::wscale(wscale));
         }
         let is_ts = ts.is_some();
