@@ -6,7 +6,7 @@ use std::io;
 use std::ops::Bound::Included;
 
 /// Represents the initial size of cache.
-const INITIAL_SIZE: usize = 64 * 1024;
+const INITIAL_SIZE: usize = u16::MAX as usize;
 /// Represents the expansion factor of the cache. The cache will be expanded by the factor.
 const EXPANSION_FACTOR: f64 = 1.5;
 
@@ -26,8 +26,13 @@ pub struct Cacher {
 impl Cacher {
     /// Creates a new `Cacher`.
     pub fn new(sequence: u32) -> Cacher {
+        Cacher::with_capacity(INITIAL_SIZE, sequence)
+    }
+
+    /// Creates a new `Cacher` with the specified capacity.
+    pub fn with_capacity(capacity: usize, sequence: u32) -> Cacher {
         Cacher {
-            buffer: vec![0; INITIAL_SIZE],
+            buffer: vec![0; capacity],
             unbounded: false,
             sequence,
             head: 0,
@@ -190,8 +195,13 @@ pub struct RandomCacher {
 impl RandomCacher {
     /// Creates a new `RandomCacher`.
     pub fn new(sequence: u32) -> RandomCacher {
+        RandomCacher::with_capacity(INITIAL_SIZE, sequence)
+    }
+
+    /// Creates a new `RandomCacher` with the specified capacity.
+    pub fn with_capacity(capacity: usize, sequence: u32) -> RandomCacher {
         RandomCacher {
-            buffer: vec![0u8; INITIAL_SIZE],
+            buffer: vec![0u8; capacity],
             unbounded: false,
             sequence,
             head: 0,
@@ -406,12 +416,8 @@ impl RandomCacher {
     }
 
     /// Get the remaining size of the `RandomCacher`.
-    pub fn remaining_size(&self) -> u16 {
-        if self.buffer.len() - self.size > u16::MAX as usize {
-            u16::MAX
-        } else {
-            (self.buffer.len() - self.size) as u16
-        }
+    pub fn remaining_size(&self) -> usize {
+        self.buffer.len() - self.size
     }
 
     /// Get the filled edges of the `RandomCacher`.

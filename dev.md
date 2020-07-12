@@ -10,9 +10,9 @@ This is the development documentation of pcap2socks.
 
 - pcap2socks does not consider the wait time in states like `TIME_WAIT` since the source should maintain its state.
 
-- pcap2socks does not realize `mss` ([RFC 793](https://tools.ietf.org/html/rfc793)) option since the way getting interface's MSS in difference kernels and systems are totally different, and one workable dependency crate [interfaces](https://crates.io/crates/interfaces) cannot be compiled in Windows successfully with MSVC.
+- pcap2socks does not realize MSS ([RFC 793](https://tools.ietf.org/html/rfc793)) option since the way getting interface's MSS in difference kernels and systems are totally different, and one workable dependency crate [interfaces](https://crates.io/crates/interfaces) cannot be compiled in Windows successfully with MSVC.
 
-- pcap2socks does not realize `sndwnd` ([RFC 7323](https://tools.ietf.org/html/rfc7323)) option because the receive cache of pcap2socks is infinity in theory, and the traffic will drop all its options through the SOCKS, pcap2socks cannot examine how large the window should be set at this point.
+- pcap2socks does not calculate for window scale ([RFC 7323](https://tools.ietf.org/html/rfc7323)) option and will open a same-size receive window as the source by default.
 
 - pcap2socks sends all TCP data in `TCP_NODELAY` since pcap2socks owns no timers.
 
@@ -55,6 +55,12 @@ This is the development documentation of pcap2socks.
 `DUPLICATES_BEFORE_FAST_RETRANSMISSION`: Represents the TCP ACK duplicates before trigger a fast retransmission, also recognized as fast retransmission. Default as `3`.
 
 `RETRANSMISSION_COOL_DOWN`: Represents the cool down time between 2 retransmissions. Default as `200` ms.
+
+`ENABLE_WSCALE`: Represents if the TCP window scale ([RFC 7323](https://tools.ietf.org/html/rfc7323)) option is enabled. Default as `true`.
+
+`MAX_RECV_WSCALE`: Represents the max window scale of the receive window. pcap2socks will open a same-size receive window as the source by default unless the window scale is over the limitation. Default as `8` (x256), or 16MB.
+
+`ENABLE_SACK`: Represents if the TCP selective acknowledgment ([RFC 7323](https://tools.ietf.org/html/rfc7323)) option is enabled. Default as `true`.
 
 `PORT_COUNT`: Represents the max limit of UDP port for binding in local. If the value is too small, rebind will happen frequently and the previous UDP "connection" will be dropped, and may not able to connect to other peer. If the value is too big, the system resource may be largely consumed, so set with a reasonable value. Default as `64`.
 

@@ -97,10 +97,11 @@ pub struct Forwarder {
     local_ip_addr: Ipv4Addr,
     ipv4_identification_map: HashMap<Ipv4Addr, u16>,
     tcp_fin_set: HashSet<(u16, SocketAddrV4)>,
-    tcp_send_window_map: HashMap<(u16, SocketAddrV4), u16>,
+    tcp_send_window_map: HashMap<(u16, SocketAddrV4), usize>,
     tcp_sequence_map: HashMap<(u16, SocketAddrV4), u32>,
     tcp_acknowledgement_map: HashMap<(u16, SocketAddrV4), u32>,
-    tcp_window_map: HashMap<(u16, SocketAddrV4), u16>,
+    tcp_window_map: HashMap<(u16, SocketAddrV4), usize>,
+    tcp_wscale_map: HashMap<(u16, SocketAddrV4), u8>,
     tcp_sacks_map: HashMap<(u16, SocketAddrV4), Vec<(u32, u32)>>,
     tcp_ts_map: HashMap<(u16, SocketAddrV4), u32>,
     tcp_cache_map: HashMap<(u16, SocketAddrV4), Cacher>,
@@ -129,6 +130,7 @@ impl Forwarder {
             tcp_sequence_map: HashMap::new(),
             tcp_acknowledgement_map: HashMap::new(),
             tcp_window_map: HashMap::new(),
+            tcp_wscale_map: HashMap::new(),
             tcp_sacks_map: HashMap::new(),
             tcp_ts_map: HashMap::new(),
             tcp_cache_map: HashMap::new(),
@@ -154,8 +156,8 @@ impl Forwarder {
         trace!("increase IPv4 identification of {} to {}", ip_addr, entry);
     }
 
-    /// Sets the send window size of a TCP connection. This window
-    pub fn set_tcp_send_window(&mut self, dst: SocketAddrV4, src_port: u16, window: u16) {
+    /// Sets the send window size of a TCP connection.
+    pub fn set_tcp_send_window(&mut self, dst: SocketAddrV4, src_port: u16, window: usize) {
         self.tcp_send_window_map.insert((src_port, dst), window);
         trace!(
             "set TCP send window of {} -> {} to {}",
@@ -208,9 +210,15 @@ impl Forwarder {
     }
 
     /// Sets the window size of a TCP connection.
-    pub fn set_tcp_window(&mut self, dst: SocketAddrV4, src_port: u16, window: u16) {
+    pub fn set_tcp_window(&mut self, dst: SocketAddrV4, src_port: u16, window: usize) {
         self.tcp_window_map.insert((src_port, dst), window);
         trace!("set TCP window of {} -> {} to {}", dst, src_port, window);
+    }
+
+    /// Sets the window scale of a TCP connection.
+    pub fn set_tcp_wscale(&mut self, dst: SocketAddrV4, src_port: u16, wscale: u8) {
+        self.tcp_wscale_map.insert((src_port, dst), wscale);
+        trace!("set TCP wscale of {} -> {} to {}", dst, src_port, wscale);
     }
 
     /// Sets the selective acknowledgements of a TCP connection.
@@ -281,6 +289,7 @@ impl Forwarder {
         self.tcp_sequence_map.remove(&key);
         self.tcp_acknowledgement_map.remove(&key);
         self.tcp_window_map.remove(&key);
+        self.tcp_wscale_map.remove(&key);
         self.tcp_sacks_map.remove(&key);
         self.tcp_ts_map.remove(&key);
         self.tcp_cache_map.remove(&key);
@@ -460,13 +469,13 @@ impl Forwarder {
             if window > 0 {
                 // TCP sequence
                 let sequence = *self.tcp_sequence_map.get(&key).unwrap_or(&0);
+                let wscale = *self.tcp_wscale_map.get(&key).unwrap_or(&0);
 
-                let cache = self
-                    .tcp_cache_map
-                    .entry(key)
-                    .or_insert_with(|| Cacher::new(sequence));
+                let cache = self.tcp_cache_map.entry(key).or_insert_with(|| {
+                    Cacher::with_capacity((u16::MAX as usize) << wscale as usize, sequence)
+                });
                 let sent_size = cache.len();
-                let remain_size = (window as usize).checked_sub(sent_size).unwrap_or(0);
+                let remain_size = window.checked_sub(sent_size).unwrap_or(0);
                 let remain_size = min(remain_size, u16::MAX as usize) as u16;
 
                 let size = min(remain_size as usize, queue.len());
@@ -474,10 +483,9 @@ impl Forwarder {
                     let payload: Vec<u8> = queue.drain(..size).collect();
 
                     // Append to cache
-                    let cache = self
-                        .tcp_cache_map
-                        .entry(key)
-                        .or_insert_with(|| Cacher::new(sequence));
+                    let cache = self.tcp_cache_map.entry(key).or_insert_with(|| {
+                        Cacher::with_capacity((u16::MAX as usize) << wscale as usize, sequence)
+                    });
                     cache.append(&payload)?;
 
                     // Send
@@ -514,6 +522,8 @@ impl Forwarder {
     ) -> io::Result<()> {
         let key = (src_port, dst);
 
+        let wscale = *self.tcp_wscale_map.get(&key).unwrap_or(&0);
+
         // Pseudo headers
         let tcp = Tcp::new_ack(
             0,
@@ -543,7 +553,7 @@ impl Forwarder {
                 src_port,
                 sequence,
                 *self.tcp_acknowledgement_map.get(&key).unwrap_or(&0),
-                *self.tcp_window_map.get(&key).unwrap_or(&65535),
+                (*self.tcp_window_map.get(&key).unwrap_or(&65535) << wscale as usize) as u16,
                 self.generate_ts(dst, src_port),
                 self.tcp_sacks_map.get(&key),
             );
@@ -573,13 +583,15 @@ impl Forwarder {
     pub fn send_tcp_ack_0(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()> {
         let key = (src_port, dst);
 
+        let wscale = *self.tcp_wscale_map.get(&key).unwrap_or(&0);
+
         // TCP
         let tcp = Tcp::new_ack(
             dst.port(),
             src_port,
             *self.tcp_sequence_map.get(&key).unwrap_or(&0),
             *self.tcp_acknowledgement_map.get(&key).unwrap_or(&0),
-            *self.tcp_window_map.get(&key).unwrap_or(&65535),
+            (*self.tcp_window_map.get(&key).unwrap_or(&65535) << wscale as usize) as u16,
             self.generate_ts(dst, src_port),
             self.tcp_sacks_map.get(&key),
         );
@@ -599,13 +611,15 @@ impl Forwarder {
     ) -> io::Result<()> {
         let key = (src_port, dst);
 
+        let wscale_c = *self.tcp_wscale_map.get(&key).unwrap_or(&0);
+
         // TCP
         let tcp = Tcp::new_ack_syn(
             dst.port(),
             src_port,
             *self.tcp_sequence_map.get(&key).unwrap_or(&0),
             *self.tcp_acknowledgement_map.get(&key).unwrap_or(&0),
-            *self.tcp_window_map.get(&key).unwrap_or(&65535),
+            (*self.tcp_window_map.get(&key).unwrap_or(&65535) << wscale_c as usize) as u16,
             mss,
             wscale,
             sack_perm,
@@ -626,13 +640,15 @@ impl Forwarder {
     pub fn send_tcp_ack_rst(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()> {
         let key = (src_port, dst);
 
+        let wscale = *self.tcp_wscale_map.get(&key).unwrap_or(&0);
+
         // TCP
         let tcp = Tcp::new_ack_rst(
             dst.port(),
             src_port,
             *self.tcp_sequence_map.get(&key).unwrap_or(&0),
             *self.tcp_acknowledgement_map.get(&key).unwrap_or(&0),
-            *self.tcp_window_map.get(&key).unwrap_or(&65535),
+            (*self.tcp_window_map.get(&key).unwrap_or(&65535) << wscale as usize) as u16,
             self.generate_ts(dst, src_port),
         );
 
@@ -644,13 +660,15 @@ impl Forwarder {
     pub fn send_tcp_ack_fin(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()> {
         let key = (src_port, dst);
 
+        let wscale = *self.tcp_wscale_map.get(&key).unwrap_or(&0);
+
         // TCP
         let tcp = Tcp::new_ack_fin(
             dst.port(),
             src_port,
             *self.tcp_sequence_map.get(&key).unwrap_or(&0),
             *self.tcp_acknowledgement_map.get(&key).unwrap_or(&0),
-            *self.tcp_window_map.get(&key).unwrap_or(&65535),
+            (*self.tcp_window_map.get(&key).unwrap_or(&65535) << wscale as usize) as u16,
             self.generate_ts(dst, src_port),
         );
 
@@ -667,6 +685,8 @@ impl Forwarder {
     ) -> io::Result<()> {
         let key = (src_port, dst);
 
+        let wscale = *self.tcp_wscale_map.get(&key).unwrap_or(&0);
+
         // TCP
         let ts = match ts {
             Some(ts) => Some((ts, 0)),
@@ -677,7 +697,7 @@ impl Forwarder {
             src_port,
             *self.tcp_sequence_map.get(&key).unwrap_or(&0),
             0,
-            *self.tcp_window_map.get(&key).unwrap_or(&65535),
+            (*self.tcp_window_map.get(&key).unwrap_or(&65535) << wscale as usize) as u16,
             ts,
         );
 
@@ -688,13 +708,15 @@ impl Forwarder {
     fn send_tcp_fin(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()> {
         let key = (src_port, dst);
 
+        let wscale = *self.tcp_wscale_map.get(&key).unwrap_or(&0);
+
         // TCP
         let tcp = Tcp::new_fin(
             dst.port(),
             src_port,
             *self.tcp_sequence_map.get(&key).unwrap_or(&0),
             *self.tcp_acknowledgement_map.get(&key).unwrap_or(&0),
-            *self.tcp_window_map.get(&key).unwrap_or(&65535),
+            (*self.tcp_window_map.get(&key).unwrap_or(&65535) << wscale as usize) as u16,
             self.generate_ts(dst, src_port),
         );
 
@@ -999,6 +1021,14 @@ const DUPLICATES_BEFORE_FAST_RETRANSMISSION: usize = 3;
 /// Represents the cool down time between 2 retransmissions.
 const RETRANSMISSION_COOL_DOWN: u128 = 200;
 
+/// Represents if the TCP window scale option is enabled.
+const ENABLE_WSCALE: bool = true;
+/// Represents the max window scale of the receive window.
+const MAX_RECV_WSCALE: u8 = 8;
+
+/// Represents if the TCP selective acknowledgment option is enabled.
+const ENABLE_SACK: bool = true;
+
 /// Represents the max limit of UDP port for binding in local.
 const PORT_COUNT: usize = 64;
 
@@ -1014,6 +1044,7 @@ pub struct Redirector {
     tcp_acknowledgement_map: HashMap<(u16, SocketAddrV4), u32>,
     tcp_duplicate_map: HashMap<(u16, SocketAddrV4), usize>,
     tcp_last_retransmission_map: HashMap<(u16, SocketAddrV4), Instant>,
+    tcp_wscale_map: HashMap<(u16, SocketAddrV4), u8>,
     tcp_sack_perm_map: HashMap<(u16, SocketAddrV4), bool>,
     tcp_cache_map: HashMap<(u16, SocketAddrV4), RandomCacher>,
     datagrams: HashMap<u16, DatagramWorker>,
@@ -1043,6 +1074,7 @@ impl Redirector {
             tcp_acknowledgement_map: HashMap::new(),
             tcp_duplicate_map: HashMap::new(),
             tcp_last_retransmission_map: HashMap::new(),
+            tcp_wscale_map: HashMap::new(),
             tcp_sack_perm_map: HashMap::new(),
             tcp_cache_map: HashMap::new(),
             datagrams: HashMap::new(),
@@ -1218,16 +1250,23 @@ impl Redirector {
                 // ACK
                 self.update_tcp_sequence(indicator);
                 self.update_tcp_acknowledgement(indicator);
+                let wscale = *self.tcp_wscale_map.get(&key).unwrap_or(&0);
                 {
                     let mut tx_locked = self.tx.lock().unwrap();
                     tx_locked.invalidate_cache_to(dst, tcp.src(), tcp.acknowledgement());
-                    tx_locked.set_tcp_send_window(dst, tcp.src(), tcp.window());
+                    tx_locked.set_tcp_send_window(
+                        dst,
+                        tcp.src(),
+                        (tcp.window() as usize) << wscale as usize,
+                    );
                 }
 
-                let cache = self
-                    .tcp_cache_map
-                    .entry(key)
-                    .or_insert_with(|| RandomCacher::new(tcp.sequence()));
+                let cache = self.tcp_cache_map.entry(key).or_insert_with(|| {
+                    RandomCacher::with_capacity(
+                        (u16::MAX as usize) << wscale as usize,
+                        tcp.sequence(),
+                    )
+                });
                 let stream = self.streams.get_mut(&key).unwrap();
                 if buffer.len() > indicator.len() {
                     // ACK
@@ -1402,16 +1441,31 @@ impl Redirector {
                             tcp.src(),
                             tcp.sequence().checked_add(1).unwrap_or(0),
                         );
-                        let sack_perm = tcp.is_sack_perm();
-                        if let Some(ts) = tcp.ts() {
-                            tx_locked.set_tcp_ts(dst, tcp.src(), ts);
-                        }
-                        // Send ACK/SYN
-                        tx_locked.send_tcp_ack_syn(dst, tcp.src(), None, None, sack_perm)?;
 
-                        // SACK
+                        // Options
+                        let wscale = match ENABLE_WSCALE {
+                            true => tcp.wscale(),
+                            false => None,
+                        };
+                        if let Some(wscale) = wscale {
+                            tx_locked.set_tcp_wscale(dst, tcp.src(), min(wscale, MAX_RECV_WSCALE));
+                        }
+                        let sack_perm = tcp.is_sack_perm() && ENABLE_SACK;
+                        if ENABLE_TIMESTAMP {
+                            if let Some(ts) = tcp.ts() {
+                                tx_locked.set_tcp_ts(dst, tcp.src(), ts);
+                            }
+                        }
+
+                        // Send ACK/SYN
+                        tx_locked.send_tcp_ack_syn(dst, tcp.src(), None, wscale, sack_perm)?;
+
+                        // Options
                         drop(tx_locked);
-                        if sack_perm {
+                        if let Some(wscale) = wscale {
+                            self.tcp_wscale_map.insert(key, wscale);
+                        }
+                        if sack_perm && ENABLE_SACK {
                             self.perm_tcp_sack(indicator);
                         }
 
@@ -1660,6 +1714,7 @@ impl Redirector {
             self.tcp_acknowledgement_map.remove(&key);
             self.tcp_duplicate_map.remove(&key);
             self.tcp_last_retransmission_map.remove(&key);
+            self.tcp_wscale_map.remove(&key);
             self.tcp_sack_perm_map.remove(&key);
             if let Some(cache) = self.tcp_cache_map.get(&key) {
                 if !cache.is_empty() {
