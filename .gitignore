@@ -11,3 +11,6 @@ Packet.lib
 
 # Log
 *.log
+
+# Configurations
+*.json

@@ -31,36 +31,40 @@ async fn main() {
     info!("Break packets with MTU {}", flags.mtu);
 
     // Route
-    let src = match flags.preset.as_str() {
-        "" => flags.src.unwrap(),
-        "t" | "tencent" => "10.6.0.1".parse().unwrap(),
-        "n" | "netease" | "u" | "uu" => {
-            let mut ip_octets = inter.ip_addrs[0].octets();
-            ip_octets[0] = 172;
-            ip_octets[1] = 24;
-            ip_octets[2] = ip_octets[2].checked_add(1).unwrap_or(0);
+    let src = match flags.preset {
+        Some(ref preset) => match preset.as_str() {
+            "t" | "tencent" => "10.6.0.1".parse().unwrap(),
+            "n" | "netease" | "u" | "uu" => {
+                let mut ip_octets = inter.ip_addrs[0].octets();
+                ip_octets[0] = 172;
+                ip_octets[1] = 24;
+                ip_octets[2] = ip_octets[2].checked_add(1).unwrap_or(0);
 
-            Ipv4Addr::from(ip_octets)
-        }
-        _ => {
-            error!("Preset {} is not available", flags.preset);
-            return;
-        }
+                Ipv4Addr::from(ip_octets)
+            }
+            _ => {
+                error!("Preset {} is not available", preset);
+                return;
+            }
+        },
+        None => flags.src.unwrap(),
     };
-    let publish = match flags.preset.as_str() {
-        "" => flags.publish,
-        "t" | "tencent" => Some("10.6.0.2".parse().unwrap()),
-        "n" | "netease" | "u" | "uu" => {
-            let mut ip_octets = inter.ip_addrs[0].octets();
-            ip_octets[0] = 172;
-            ip_octets[1] = 24;
+    let publish = match flags.preset {
+        Some(ref preset) => match preset.as_str() {
+            "t" | "tencent" => Some("10.6.0.2".parse().unwrap()),
+            "n" | "netease" | "u" | "uu" => {
+                let mut ip_octets = inter.ip_addrs[0].octets();
+                ip_octets[0] = 172;
+                ip_octets[1] = 24;
 
-            Some(Ipv4Addr::from(ip_octets))
-        }
-        _ => {
-            error!("Preset {} is not available", flags.preset);
-            return;
-        }
+                Some(Ipv4Addr::from(ip_octets))
+            }
+            _ => {
+                error!("Preset {} is not available", preset);
+                return;
+            }
+        },
+        None => flags.publish,
     };
 
     // Publish
@@ -112,41 +116,35 @@ struct Flags {
     #[structopt(
         long,
         short,
-        about = "Prints verbose information (-vv for vverbose)",
+        help = "Prints verbose information (-vv for vverbose)",
         parse(from_occurrences)
     )]
     pub verbose: usize,
     #[structopt(
         long = "interface",
         short,
-        about = "Interface for listening",
+        help = "Interface for listening",
         value_name = "INTERFACE"
     )]
     pub inter: Option<String>,
-    #[structopt(long, about = "MTU", value_name = "VALUE", default_value = "1400")]
+    #[structopt(long, help = "MTU", value_name = "VALUE", default_value = "1400")]
     pub mtu: u16,
-    #[structopt(
-        long,
-        short = "P",
-        about = "Preset",
-        value_name = "PRESET",
-        default_value = ""
-    )]
-    pub preset: String,
-    #[structopt(long, short, about = "ARP publishing address", value_name = "ADDRESS")]
+    #[structopt(long, short = "P", help = "Preset", value_name = "PRESET")]
+    pub preset: Option<String>,
+    #[structopt(long, short, help = "ARP publishing address", value_name = "ADDRESS")]
     pub publish: Option<Ipv4Addr>,
     #[structopt(
         long = "source",
         short,
-        about = "Source",
+        help = "Source",
         value_name = "ADDRESS",
-        required_if("preset", "")
+        required_unless("preset")
     )]
     pub src: Option<Ipv4Addr>,
     #[structopt(
         long = "destination",
         short,
-        about = "Destination",
+        help = "Destination",
         value_name = "ADDRESS",
         default_value = "127.0.0.1:1080"
     )]

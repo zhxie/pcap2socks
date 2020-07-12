@@ -44,7 +44,7 @@ pcap2socks -s <ADDRESS> -p <ADDRESS> -d <ADDRESS>
 
 `--mtu <VALUE>`: MTU, default as `1400`. MTU is set in traffic from local to the source.
 
-`-P, --preset <PRESET>`: Preset, default as empty. You can use preset source and publish of game accelerators in the market. Available values are `t`, `tencent` for [Tencent Online Game Accelerator](https://jiasu.qq.com/) and `n`, `netease`, `u`, `uu` for [Netease UU Game Accelerator](https://uu.163.com/).
+`-P, --preset <PRESET>`: Preset. You can use preset source and publish of game accelerators in the market. Available values are `t`, `tencent` for [Tencent Online Game Accelerator](https://jiasu.qq.com/) and `n`, `netease`, `u`, `uu` for [Netease UU Game Accelerator](https://uu.163.com/).
 
 `-s, --source <ADDRESS>`: Source.
 
