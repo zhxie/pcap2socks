@@ -80,10 +80,6 @@ pcap2socks -s <ADDRESS> -p <ADDRESS> -d <ADDRESS>
 
 1. Applications like VMWare Workstation on Windows may implement their own IP forwarding and forward packets which should be handled by pcap2socks, resulting in abnormal operations in pcap2socks.
 
-## Todo
-
-- [x] Latency ~~and packet lost rate~~ test ([dnsping](https://github.com/zhxie/dnsping))
-
 ## License
 
 pcap2socks is licensed under [the MIT License](/LICENSE).
