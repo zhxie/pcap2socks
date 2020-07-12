@@ -1,5 +1,5 @@
 use super::ipv4::Ipv4;
-use super::{Layer, LayerType, LayerTypes};
+use super::{Layer, LayerKind, LayerKinds};
 use pnet::packet::udp::{self, MutableUdpPacket, UdpPacket};
 use std::clone::Clone;
 use std::fmt::{self, Display, Formatter};
@@ -53,32 +53,32 @@ impl Udp {
 
     /// Sets the source and destination IP address for the layer with the given `Ipv4`.
     pub fn set_ipv4_layer(&mut self, ipv4: &Ipv4) {
-        self.src = ipv4.get_src();
-        self.dst = ipv4.get_dst();
+        self.src = ipv4.src();
+        self.dst = ipv4.dst();
     }
 
     /// Get the source IP address of the layer.
-    pub fn get_src_ip_addr(&self) -> Ipv4Addr {
+    pub fn src_ip_addr(&self) -> Ipv4Addr {
         self.src
     }
 
     /// Get the destination IP address of the layer.
-    pub fn get_dst_ip_addr(&self) -> Ipv4Addr {
+    pub fn dst_ip_addr(&self) -> Ipv4Addr {
         self.dst
     }
 
     /// Get the source of the layer.
-    pub fn get_src(&self) -> u16 {
+    pub fn src(&self) -> u16 {
         self.layer.source
     }
 
     /// Get the destination of the layer.
-    pub fn get_dst(&self) -> u16 {
+    pub fn dst(&self) -> u16 {
         self.layer.destination
     }
 
     /// Get the length of the layer.
-    pub fn get_length(&self) -> u16 {
+    pub fn length(&self) -> u16 {
         self.layer.length
     }
 }
@@ -88,7 +88,7 @@ impl Display for Udp {
         write!(
             f,
             "{}: {} -> {}, Length = {}",
-            LayerTypes::Udp,
+            LayerKinds::Udp,
             self.layer.source,
             self.layer.destination,
             self.layer.length
@@ -97,11 +97,11 @@ impl Display for Udp {
 }
 
 impl Layer for Udp {
-    fn get_type(&self) -> LayerType {
-        LayerTypes::Udp
+    fn kind(&self) -> LayerKind {
+        LayerKinds::Udp
     }
 
-    fn get_size(&self) -> usize {
+    fn len(&self) -> usize {
         UdpPacket::packet_size(&self.layer)
     }
 
@@ -123,12 +123,12 @@ impl Layer for Udp {
         // Compute checksum
         let checksum = udp::ipv4_checksum(
             &packet.to_immutable(),
-            &self.get_src_ip_addr(),
-            &self.get_dst_ip_addr(),
+            &self.src_ip_addr(),
+            &self.dst_ip_addr(),
         );
         packet.set_checksum(checksum);
 
-        Ok(self.get_size())
+        Ok(self.len())
     }
 
     fn serialize_with_payload(
@@ -157,11 +157,11 @@ impl Layer for Udp {
         // Compute checksum
         let checksum = udp::ipv4_checksum(
             &packet.to_immutable(),
-            &self.get_src_ip_addr(),
-            &self.get_dst_ip_addr(),
+            &self.src_ip_addr(),
+            &self.dst_ip_addr(),
         );
         packet.set_checksum(checksum);
 
-        Ok(self.get_size() + n)
+        Ok(self.len() + n)
     }
 }

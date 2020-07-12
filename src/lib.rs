@@ -22,7 +22,7 @@ use packet::layer::ethernet::Ethernet;
 use packet::layer::ipv4::Ipv4;
 use packet::layer::tcp::Tcp;
 use packet::layer::udp::Udp;
-use packet::layer::{Layer, LayerType, LayerTypes, Layers};
+use packet::layer::{Layer, LayerKind, LayerKinds, Layers};
 use packet::{Defraggler, Indicator};
 use pcap::Interface;
 use pcap::{HardwareAddr, Receiver, Sender};
@@ -312,10 +312,10 @@ impl Forwarder {
 
         let mut size = 0;
         if let Some(cache) = self.tcp_cache_map.get(&key) {
-            size += cache.get_size();
+            size += cache.len();
         }
         if let Some(queue) = self.tcp_queue_map.get(&key) {
-            size += queue.get_size();
+            size += queue.len();
         }
 
         size
@@ -332,12 +332,8 @@ impl Forwarder {
         );
 
         // Ethernet
-        let ethernet = Ethernet::new(
-            arp.get_type(),
-            arp.get_src_hardware_addr(),
-            arp.get_dst_hardware_addr(),
-        )
-        .unwrap();
+        let ethernet =
+            Ethernet::new(arp.kind(), arp.src_hardware_addr(), arp.dst_hardware_addr()).unwrap();
 
         // Indicator
         let indicator = Indicator::new(Layers::Ethernet(ethernet), Some(Layers::Arp(arp)), None);
@@ -383,7 +379,7 @@ impl Forwarder {
                     }
                     Err(e) => return Err(e),
                 }
-                sequence = cache.get_sequence();
+                sequence = cache.sequence();
             }
             None => return Ok(()),
         };
@@ -408,8 +404,8 @@ impl Forwarder {
             return Err(io::Error::new(io::ErrorKind::Other, "cannot get cache"));
         }
 
-        let mut sequence = self.tcp_cache_map.get(&key).unwrap().get_sequence();
-        let mut size = self.tcp_cache_map.get(&key).unwrap().get_size();
+        let mut sequence = self.tcp_cache_map.get(&key).unwrap().sequence();
+        let mut size = self.tcp_cache_map.get(&key).unwrap().len();
         let recv_next = sequence
             .checked_add(size as u32)
             .unwrap_or_else(|| size as u32 - (u32::MAX - sequence));
@@ -463,18 +459,18 @@ impl Forwarder {
         let key = (src_port, dst);
 
         if let Some(queue) = self.tcp_queue_map.get_mut(&key) {
-            let sequence = queue.get_sequence();
+            let sequence = queue.sequence();
             let window = *self.tcp_send_window_map.get(&key).unwrap_or(&0);
             if window > 0 {
                 let cache = self
                     .tcp_cache_map
                     .entry(key)
                     .or_insert_with(|| Cacher::new(sequence));
-                let sent_size = cache.get_size();
+                let sent_size = cache.len();
                 let remain_size = (window as usize).checked_sub(sent_size).unwrap_or(0);
                 let remain_size = min(remain_size, u16::MAX as usize) as u16;
 
-                let size = min(remain_size as usize, queue.get_size());
+                let size = min(remain_size as usize, queue.len());
                 if size > 0 {
                     let payload = queue.get(sequence, size).unwrap();
 
@@ -534,16 +530,10 @@ impl Forwarder {
             self.generate_ts(dst, src_port),
             self.tcp_sacks_map.get(&key),
         );
-        let ipv4 = Ipv4::new(
-            0,
-            tcp.get_type(),
-            Ipv4Addr::UNSPECIFIED,
-            Ipv4Addr::UNSPECIFIED,
-        )
-        .unwrap();
+        let ipv4 = Ipv4::new(0, tcp.kind(), Ipv4Addr::UNSPECIFIED, Ipv4Addr::UNSPECIFIED).unwrap();
 
         // Segmentation
-        let header_size = ipv4.get_size() + tcp.get_size();
+        let header_size = ipv4.len() + tcp.len();
         let max_payload_size = self.mtu as usize - header_size;
         let mut i = 0;
         while max_payload_size * i < payload.len() {
@@ -722,17 +712,11 @@ impl Forwarder {
     pub fn send_udp(&mut self, dst: SocketAddrV4, src_port: u16, payload: &[u8]) -> io::Result<()> {
         // Pseudo headers
         let udp = Udp::new(0, 0);
-        let ipv4 = Ipv4::new(
-            0,
-            udp.get_type(),
-            Ipv4Addr::UNSPECIFIED,
-            Ipv4Addr::UNSPECIFIED,
-        )
-        .unwrap();
+        let ipv4 = Ipv4::new(0, udp.kind(), Ipv4Addr::UNSPECIFIED, Ipv4Addr::UNSPECIFIED).unwrap();
 
         // Fragmentation
-        let ipv4_header_size = ipv4.get_size();
-        let udp_header_size = udp.get_size();
+        let ipv4_header_size = ipv4.len();
+        let udp_header_size = udp.len();
 
         let size = udp_header_size + payload.len();
         let mut n = 0;
@@ -759,7 +743,7 @@ impl Forwarder {
 
                     self.send_ipv4_more_fragment(
                         dst.ip().clone(),
-                        udp.get_type(),
+                        udp.kind(),
                         (n / 8) as u16,
                         Some(Layers::Udp(udp)),
                         &payload[..length - udp_header_size],
@@ -771,7 +755,7 @@ impl Forwarder {
                 if remain > 0 {
                     self.send_ipv4_more_fragment(
                         dst.ip().clone(),
-                        udp.get_type(),
+                        udp.kind(),
                         (n / 8) as u16,
                         None,
                         &payload[n - udp_header_size..n + length - udp_header_size],
@@ -779,7 +763,7 @@ impl Forwarder {
                 } else {
                     self.send_ipv4_last_fragment(
                         dst.ip().clone(),
-                        udp.get_type(),
+                        udp.kind(),
                         (n / 8) as u16,
                         &payload[n - udp_header_size..n + length - udp_header_size],
                     )?;
@@ -802,7 +786,7 @@ impl Forwarder {
     fn send_ipv4_more_fragment(
         &mut self,
         dst_ip_addr: Ipv4Addr,
-        t: LayerType,
+        t: LayerKind,
         fragment_offset: u16,
         mut transport: Option<Layers>,
         payload: &[u8],
@@ -833,7 +817,7 @@ impl Forwarder {
     fn send_ipv4_last_fragment(
         &mut self,
         dst_ip_addr: Ipv4Addr,
-        t: LayerType,
+        t: LayerKind,
         fragment_offset: u16,
         payload: &[u8],
     ) -> io::Result<()> {
@@ -865,7 +849,7 @@ impl Forwarder {
         // IPv4
         let ipv4 = Ipv4::new(
             *self.ipv4_identification_map.get(&dst_ip_addr).unwrap_or(&0),
-            transport.get_type(),
+            transport.kind(),
             dst_ip_addr,
             self.src_ip_addr,
         )
@@ -895,7 +879,7 @@ impl Forwarder {
     ) -> io::Result<()> {
         // Ethernet
         let ethernet = Ethernet::new(
-            network.get_type(),
+            network.kind(),
             self.local_hardware_addr,
             self.src_hardware_addr,
         )
@@ -913,7 +897,7 @@ impl Forwarder {
 
     fn send(&mut self, indicator: &Indicator) -> io::Result<()> {
         // Serialize
-        let size = indicator.get_size();
+        let size = indicator.len();
         let buffer_size = max(size, MINIMUM_PACKET_SIZE);
         let mut buffer = vec![0u8; buffer_size];
         indicator.serialize(&mut buffer[..size])?;
@@ -927,7 +911,7 @@ impl Forwarder {
 
     fn send_with_payload(&mut self, indicator: &Indicator, payload: &[u8]) -> io::Result<()> {
         // Serialize
-        let size = indicator.get_size();
+        let size = indicator.len();
         let buffer_size = max(size + payload.len(), MINIMUM_PACKET_SIZE);
         let mut buffer = vec![0u8; buffer_size];
         indicator.serialize_with_payload(&mut buffer[..size + payload.len()], payload)?;
@@ -1089,14 +1073,14 @@ impl Redirector {
             match rx.next() {
                 Ok(frame) => {
                     if let Some(ref indicator) = Indicator::from(frame) {
-                        if let Some(t) = indicator.get_network_type() {
+                        if let Some(t) = indicator.network_kind() {
                             match t {
-                                LayerTypes::Arp => {
+                                LayerKinds::Arp => {
                                     if let Err(ref e) = self.handle_arp(indicator) {
                                         warn!("handle {}: {}", indicator.brief(), e);
                                     }
                                 }
-                                LayerTypes::Ipv4 => {
+                                LayerKinds::Ipv4 => {
                                     if let Err(ref e) = self.handle_ipv4(indicator, frame).await {
                                         warn!("handle {}: {}", indicator.brief(), e);
                                     }
@@ -1119,12 +1103,12 @@ impl Redirector {
 
     fn handle_arp(&mut self, indicator: &Indicator) -> io::Result<()> {
         if let Some(local_ip_addr) = self.local_ip_addr {
-            if let Some(arp) = indicator.get_arp() {
+            if let Some(arp) = indicator.arp() {
                 if arp.is_request_of(self.src_ip_addr, local_ip_addr) {
                     debug!(
                         "receive from pcap: {} ({} Bytes)",
                         indicator.brief(),
-                        indicator.get_size()
+                        indicator.len()
                     );
 
                     // Set forwarder's hardware address
@@ -1132,9 +1116,9 @@ impl Redirector {
                         self.tx
                             .lock()
                             .unwrap()
-                            .set_src_hardware_addr(arp.get_src_hardware_addr());
+                            .set_src_hardware_addr(arp.src_hardware_addr());
                         self.is_tx_src_hardware_addr_set = true;
-                        info!("Device {} joined the network", arp.get_src_hardware_addr());
+                        info!("Device {} joined the network", arp.src_hardware_addr());
                     }
 
                     // Send
@@ -1147,26 +1131,26 @@ impl Redirector {
     }
 
     async fn handle_ipv4(&mut self, indicator: &Indicator, buffer: &[u8]) -> io::Result<()> {
-        if let Some(ref ipv4) = indicator.get_ipv4() {
-            let buffer_without_padding = &buffer
-                [..indicator.get_ethernet().unwrap().get_size() + ipv4.get_total_length() as usize];
-            if ipv4.get_src() == self.src_ip_addr {
+        if let Some(ref ipv4) = indicator.ipv4() {
+            let buffer_without_padding =
+                &buffer[..indicator.ethernet().unwrap().len() + ipv4.total_length() as usize];
+            if ipv4.src() == self.src_ip_addr {
                 debug!(
                     "receive from pcap: {} ({} + {} Bytes)",
                     indicator.brief(),
-                    indicator.get_size(),
-                    buffer_without_padding.len() - indicator.get_size()
+                    indicator.len(),
+                    buffer_without_padding.len() - indicator.len()
                 );
                 // Set forwarder's hardware address
                 if !self.is_tx_src_hardware_addr_set {
                     self.tx
                         .lock()
                         .unwrap()
-                        .set_src_hardware_addr(indicator.get_ethernet().unwrap().get_src());
+                        .set_src_hardware_addr(indicator.ethernet().unwrap().src());
                     self.is_tx_src_hardware_addr_set = true;
                     info!(
                         "Device {} joined the network",
-                        indicator.get_ethernet().unwrap().get_src()
+                        indicator.ethernet().unwrap().src()
                     );
                 }
 
@@ -1178,24 +1162,24 @@ impl Redirector {
                     };
                     let (indicator, buffer_without_padding) = frag.concatenate();
 
-                    if let Some(t) = indicator.get_transport_type() {
+                    if let Some(t) = indicator.transport_kind() {
                         match t {
-                            LayerTypes::Tcp => {
+                            LayerKinds::Tcp => {
                                 self.handle_tcp(&indicator, buffer_without_padding).await?
                             }
-                            LayerTypes::Udp => {
+                            LayerKinds::Udp => {
                                 self.handle_udp(&indicator, buffer_without_padding).await?
                             }
                             _ => unreachable!(),
                         }
                     }
                 } else {
-                    if let Some(t) = indicator.get_transport_type() {
+                    if let Some(t) = indicator.transport_kind() {
                         match t {
-                            LayerTypes::Tcp => {
+                            LayerKinds::Tcp => {
                                 self.handle_tcp(indicator, buffer_without_padding).await?
                             }
-                            LayerTypes::Udp => {
+                            LayerKinds::Udp => {
                                 self.handle_udp(indicator, buffer_without_padding).await?
                             }
                             _ => unreachable!(),
@@ -1209,7 +1193,7 @@ impl Redirector {
     }
 
     async fn handle_tcp(&mut self, indicator: &Indicator, buffer: &[u8]) -> io::Result<()> {
-        if let Some(ref tcp) = indicator.get_tcp() {
+        if let Some(ref tcp) = indicator.tcp() {
             if tcp.is_rst() {
                 self.handle_tcp_rst(indicator);
             } else if tcp.is_ack() {
@@ -1227,9 +1211,9 @@ impl Redirector {
     }
 
     async fn handle_tcp_ack(&mut self, indicator: &Indicator, buffer: &[u8]) -> io::Result<()> {
-        if let Some(tcp) = indicator.get_tcp() {
-            let dst = SocketAddrV4::new(tcp.get_dst_ip_addr(), tcp.get_dst());
-            let key = (tcp.get_src(), dst);
+        if let Some(tcp) = indicator.tcp() {
+            let dst = SocketAddrV4::new(tcp.dst_ip_addr(), tcp.dst());
+            let key = (tcp.src(), dst);
             let is_exist = self.streams.get(&key).is_some();
             let is_writable = match self.streams.get(&key) {
                 Some(ref stream) => !stream.is_write_closed(),
@@ -1242,35 +1226,34 @@ impl Redirector {
                 self.update_tcp_acknowledgement(indicator);
                 {
                     let mut tx_locked = self.tx.lock().unwrap();
-                    tx_locked.invalidate_cache_to(dst, tcp.get_src(), tcp.get_acknowledgement());
-                    tx_locked.set_tcp_send_window(dst, tcp.get_src(), tcp.get_window());
+                    tx_locked.invalidate_cache_to(dst, tcp.src(), tcp.acknowledgement());
+                    tx_locked.set_tcp_send_window(dst, tcp.src(), tcp.window());
                 }
 
                 let cache = self
                     .tcp_cache_map
                     .entry(key)
-                    .or_insert_with(|| RandomCacher::new(tcp.get_sequence()));
+                    .or_insert_with(|| RandomCacher::new(tcp.sequence()));
                 let stream = self.streams.get_mut(&key).unwrap();
-                if buffer.len() > indicator.get_size() {
+                if buffer.len() > indicator.len() {
                     // ACK
                     // Append to cache
-                    let prev_recv_next = cache.get_recv_next();
-                    let payload =
-                        cache.append(tcp.get_sequence(), &buffer[indicator.get_size()..])?;
-                    if cache.get_recv_next() != prev_recv_next {
-                        if let Some(ts) = tcp.get_ts() {
+                    let prev_recv_next = cache.recv_next();
+                    let payload = cache.append(tcp.sequence(), &buffer[indicator.len()..])?;
+                    if cache.recv_next() != prev_recv_next {
+                        if let Some(ts) = tcp.ts() {
                             // Update timestamp only when received new data
-                            self.tx.lock().unwrap().set_tcp_ts(dst, tcp.get_src(), ts);
+                            self.tx.lock().unwrap().set_tcp_ts(dst, tcp.src(), ts);
                         }
                     }
 
                     // SACK
                     if *self.tcp_sack_perm_map.get(&key).unwrap_or(&false) {
-                        let sacks = cache.get_filled();
+                        let sacks = cache.filled();
                         self.tx
                             .lock()
                             .unwrap()
-                            .set_tcp_sacks(dst, tcp.get_src(), &sacks);
+                            .set_tcp_sacks(dst, tcp.src(), &sacks);
                     }
 
                     match payload {
@@ -1282,20 +1265,20 @@ impl Redirector {
                                     let mut tx_locked = self.tx.lock().unwrap();
                                     tx_locked.set_tcp_window(
                                         dst,
-                                        tcp.get_src(),
-                                        cache.get_remaining_size(),
+                                        tcp.src(),
+                                        cache.remaining_size(),
                                     );
 
                                     // Update TCP acknowledgement
                                     tx_locked.add_tcp_acknowledgement(
                                         dst,
-                                        tcp.get_src(),
+                                        tcp.src(),
                                         payload.len() as u32,
                                     );
 
                                     // Send ACK0
                                     // If there is a heavy traffic, the ACK reported may be inaccurate, which would results in retransmission
-                                    tx_locked.send_tcp_ack_0(dst, tcp.get_src())?;
+                                    tx_locked.send_tcp_ack_0(dst, tcp.src())?;
                                 }
                                 Err(e) => {
                                     // Clean up
@@ -1303,10 +1286,10 @@ impl Redirector {
 
                                     // Send ACK/RST
                                     let mut tx_locked = self.tx.lock().unwrap();
-                                    tx_locked.send_tcp_ack_rst(dst, tcp.get_src())?;
+                                    tx_locked.send_tcp_ack_rst(dst, tcp.src())?;
 
                                     // Clean up
-                                    tx_locked.remove(dst, tcp.get_src());
+                                    tx_locked.remove(dst, tcp.src());
 
                                     return Err(e);
                                 }
@@ -1316,25 +1299,19 @@ impl Redirector {
                             // Retransmission or unordered
                             // Update window size
                             let mut tx_locked = self.tx.lock().unwrap();
-                            tx_locked.set_tcp_window(
-                                dst,
-                                tcp.get_src(),
-                                cache.get_remaining_size(),
-                            );
+                            tx_locked.set_tcp_window(dst, tcp.src(), cache.remaining_size());
 
                             // Send ACK0
-                            tx_locked.send_tcp_ack_0(dst, tcp.get_src())?;
+                            tx_locked.send_tcp_ack_0(dst, tcp.src())?;
                         }
                     }
                 } else {
                     // ACK0
-                    if !is_writable
-                        && self.tx.lock().unwrap().get_cache_size(dst, tcp.get_src()) == 0
-                    {
+                    if !is_writable && self.tx.lock().unwrap().get_cache_size(dst, tcp.src()) == 0 {
                         // LAST_ACK
                         // Clean up
                         self.remove(indicator);
-                        self.tx.lock().unwrap().remove(dst, tcp.get_src());
+                        self.tx.lock().unwrap().remove(dst, tcp.src());
 
                         return Ok(());
                     } else if *self.tcp_duplicate_map.get(&key).unwrap_or(&0)
@@ -1352,12 +1329,12 @@ impl Redirector {
                                 // Fast retransmit
                                 let mut is_sr = false;
                                 if *self.tcp_sack_perm_map.get(&key).unwrap_or(&false) {
-                                    if let Some(sacks) = tcp.get_sack() {
+                                    if let Some(sacks) = tcp.sack() {
                                         if sacks.len() > 0 {
                                             // Selective retransmission
                                             self.tx.lock().unwrap().resend_tcp_ack_without(
                                                 dst,
-                                                tcp.get_src(),
+                                                tcp.src(),
                                                 sacks,
                                             )?;
                                             is_sr = true;
@@ -1367,7 +1344,7 @@ impl Redirector {
 
                                 if !is_sr {
                                     // Back N
-                                    self.tx.lock().unwrap().resend_tcp_ack(dst, tcp.get_src())?;
+                                    self.tx.lock().unwrap().resend_tcp_ack(dst, tcp.src())?;
                                 }
 
                                 self.tcp_duplicate_map.insert(key, 0);
@@ -1383,13 +1360,10 @@ impl Redirector {
                 }
 
                 // Trigger sending remaining data
-                self.tx.lock().unwrap().send_tcp_ack(dst, tcp.get_src())?;
+                self.tx.lock().unwrap().send_tcp_ack(dst, tcp.src())?;
             } else {
                 // Send RST
-                self.tx
-                    .lock()
-                    .unwrap()
-                    .send_tcp_rst(dst, tcp.get_src(), None)?;
+                self.tx.lock().unwrap().send_tcp_rst(dst, tcp.src(), None)?;
             }
         }
 
@@ -1397,9 +1371,9 @@ impl Redirector {
     }
 
     async fn handle_tcp_syn(&mut self, indicator: &Indicator) -> io::Result<()> {
-        if let Some(tcp) = indicator.get_tcp() {
-            let dst = SocketAddrV4::new(tcp.get_dst_ip_addr(), tcp.get_dst());
-            let key = (tcp.get_src(), dst);
+        if let Some(tcp) = indicator.tcp() {
+            let dst = SocketAddrV4::new(tcp.dst_ip_addr(), tcp.dst());
+            let key = (tcp.src(), dst);
             let is_exist = self.streams.get(&key).is_some();
 
             // Connect if not connected, drop if established
@@ -1407,14 +1381,14 @@ impl Redirector {
                 // Clean up
                 self.remove(indicator);
 
-                self.tcp_sequence_map.insert(key, tcp.get_sequence());
+                self.tcp_sequence_map.insert(key, tcp.sequence());
 
                 // Latency test
                 let timer = Instant::now();
 
                 // Connect
                 let stream =
-                    StreamWorker::connect(self.get_tx(), tcp.get_src(), dst, self.remote).await;
+                    StreamWorker::connect(self.get_tx(), tcp.src(), dst, self.remote).await;
 
                 let stream = match stream {
                     Ok(stream) => {
@@ -1427,19 +1401,19 @@ impl Redirector {
 
                         let mut tx_locked = self.tx.lock().unwrap();
                         // Clean up
-                        tx_locked.remove(dst, tcp.get_src());
+                        tx_locked.remove(dst, tcp.src());
 
                         tx_locked.set_tcp_acknowledgement(
                             dst,
-                            tcp.get_src(),
-                            tcp.get_sequence().checked_add(1).unwrap_or(0),
+                            tcp.src(),
+                            tcp.sequence().checked_add(1).unwrap_or(0),
                         );
                         let sack_perm = tcp.is_sack_perm();
-                        if let Some(ts) = tcp.get_ts() {
-                            tx_locked.set_tcp_ts(dst, tcp.get_src(), ts);
+                        if let Some(ts) = tcp.ts() {
+                            tx_locked.set_tcp_ts(dst, tcp.src(), ts);
                         }
                         // Send ACK/SYN
-                        tx_locked.send_tcp_ack_syn(dst, tcp.get_src(), None, None, sack_perm)?;
+                        tx_locked.send_tcp_ack_syn(dst, tcp.src(), None, None, sack_perm)?;
 
                         // SACK
                         drop(tx_locked);
@@ -1456,17 +1430,17 @@ impl Redirector {
                         let mut tx_locked = self.tx.lock().unwrap();
                         tx_locked.set_tcp_acknowledgement(
                             dst,
-                            tcp.get_src(),
-                            tcp.get_sequence().checked_add(1).unwrap_or(0),
+                            tcp.src(),
+                            tcp.sequence().checked_add(1).unwrap_or(0),
                         );
-                        if let Some(ts) = tcp.get_ts() {
-                            tx_locked.set_tcp_ts(dst, tcp.get_src(), ts);
+                        if let Some(ts) = tcp.ts() {
+                            tx_locked.set_tcp_ts(dst, tcp.src(), ts);
                         }
                         // Send ACK/RST
-                        tx_locked.send_tcp_ack_rst(dst, tcp.get_src())?;
+                        tx_locked.send_tcp_ack_rst(dst, tcp.src())?;
 
                         // Clean up
-                        tx_locked.remove(dst, tcp.get_src());
+                        tx_locked.remove(dst, tcp.src());
 
                         return Err(e);
                     }
@@ -1480,23 +1454,23 @@ impl Redirector {
     }
 
     fn handle_tcp_rst(&mut self, indicator: &Indicator) {
-        if let Some(ref tcp) = indicator.get_tcp() {
-            let dst = SocketAddrV4::new(tcp.get_dst_ip_addr(), tcp.get_dst());
-            let key = (tcp.get_src(), dst);
+        if let Some(ref tcp) = indicator.tcp() {
+            let dst = SocketAddrV4::new(tcp.dst_ip_addr(), tcp.dst());
+            let key = (tcp.src(), dst);
             let is_exist = self.streams.get(&key).is_some();
 
             if is_exist {
                 // Clean up
                 self.remove(indicator);
-                self.tx.lock().unwrap().remove(dst, tcp.get_src());
+                self.tx.lock().unwrap().remove(dst, tcp.src());
             }
         }
     }
 
     fn handle_tcp_fin(&mut self, indicator: &Indicator) -> io::Result<()> {
-        if let Some(ref tcp) = indicator.get_tcp() {
-            let dst = SocketAddrV4::new(tcp.get_dst_ip_addr(), tcp.get_dst());
-            let key = (tcp.get_src(), dst);
+        if let Some(ref tcp) = indicator.tcp() {
+            let dst = SocketAddrV4::new(tcp.dst_ip_addr(), tcp.dst());
+            let key = (tcp.src(), dst);
             let is_exist = self.streams.get(&key).is_some();
             let is_readable = match self.streams.get(&key) {
                 Some(ref stream) => !stream.is_read_closed(),
@@ -1512,14 +1486,14 @@ impl Redirector {
                     let mut tx_locked = self.tx.lock().unwrap();
                     tx_locked.set_tcp_acknowledgement(
                         dst,
-                        tcp.get_src(),
-                        tcp.get_sequence().checked_add(1).unwrap_or(0),
+                        tcp.src(),
+                        tcp.sequence().checked_add(1).unwrap_or(0),
                     );
-                    if let Some(ts) = tcp.get_ts() {
-                        tx_locked.set_tcp_ts(dst, tcp.get_src(), ts);
+                    if let Some(ts) = tcp.ts() {
+                        tx_locked.set_tcp_ts(dst, tcp.src(), ts);
                     }
                     // Send ACK0
-                    tx_locked.send_tcp_ack_0(dst, tcp.get_src())?;
+                    tx_locked.send_tcp_ack_0(dst, tcp.src())?;
                     if is_readable {
                         // Close by local
                         let stream = self.streams.get_mut(&key).unwrap();
@@ -1527,20 +1501,17 @@ impl Redirector {
                     } else {
                         // Close by remote
                         // Clean up
-                        tx_locked.remove(dst, tcp.get_src());
+                        tx_locked.remove(dst, tcp.src());
                         drop(tx_locked);
                         self.remove(indicator);
                     }
                 } else {
                     // Send ACK0
-                    self.tx.lock().unwrap().send_tcp_ack_0(dst, tcp.get_src())?;
+                    self.tx.lock().unwrap().send_tcp_ack_0(dst, tcp.src())?;
                 }
             } else {
                 // Send RST
-                self.tx
-                    .lock()
-                    .unwrap()
-                    .send_tcp_rst(dst, tcp.get_src(), None)?;
+                self.tx.lock().unwrap().send_tcp_rst(dst, tcp.src(), None)?;
             }
         }
 
@@ -1548,8 +1519,8 @@ impl Redirector {
     }
 
     async fn handle_udp(&mut self, indicator: &Indicator, buffer: &[u8]) -> io::Result<()> {
-        if let Some(ref udp) = indicator.get_udp() {
-            let mut port = self.get_local_udp_port(udp.get_src());
+        if let Some(ref udp) = indicator.udp() {
+            let mut port = self.get_local_udp_port(udp.src());
 
             // Bind
             let is_create;
@@ -1560,27 +1531,27 @@ impl Redirector {
             } else {
                 let worker = self.datagrams.get(&port).unwrap();
                 is_create = worker.is_closed();
-                is_set = worker.get_src_port() != udp.get_src();
+                is_set = worker.src_port() != udp.src();
             }
             if is_create {
                 // Bind
                 let (worker, bind_port) =
-                    DatagramWorker::bind(self.get_tx(), udp.get_src(), self.remote).await?;
+                    DatagramWorker::bind(self.get_tx(), udp.src(), self.remote).await?;
                 self.datagrams.insert(bind_port, worker);
 
                 // Update map and LRU
-                self.datagram_map[udp.get_src() as usize] = bind_port;
-                self.udp_lru.put(bind_port, udp.get_src());
+                self.datagram_map[udp.src() as usize] = bind_port;
+                self.udp_lru.put(bind_port, udp.src());
 
                 port = bind_port;
 
-                trace!("bind UDP port {} = {}", udp.get_src(), port);
+                trace!("bind UDP port {} = {}", udp.src(), port);
             } else if is_set {
                 // Replace
                 self.datagrams
                     .get_mut(&port)
                     .unwrap()
-                    .set_src_port(udp.get_src());
+                    .set_src_port(udp.src());
             }
 
             // Send
@@ -1588,8 +1559,8 @@ impl Redirector {
                 .get_mut(&port)
                 .unwrap()
                 .send_to(
-                    &buffer[indicator.get_size()..],
-                    SocketAddrV4::new(udp.get_dst_ip_addr(), udp.get_dst()),
+                    &buffer[indicator.len()..],
+                    SocketAddrV4::new(udp.dst_ip_addr(), udp.dst()),
                 )
                 .await?;
         }
@@ -1598,54 +1569,54 @@ impl Redirector {
     }
 
     fn update_tcp_sequence(&mut self, indicator: &Indicator) {
-        if let Some(tcp) = indicator.get_tcp() {
-            let dst = SocketAddrV4::new(tcp.get_dst_ip_addr(), tcp.get_dst());
-            let key = (tcp.get_src(), dst);
+        if let Some(tcp) = indicator.tcp() {
+            let dst = SocketAddrV4::new(tcp.dst_ip_addr(), tcp.dst());
+            let key = (tcp.src(), dst);
 
             let record_sequence = *self.tcp_sequence_map.get(&key).unwrap_or(&0);
             let sub_sequence = tcp
-                .get_sequence()
+                .sequence()
                 .checked_sub(record_sequence)
-                .unwrap_or_else(|| tcp.get_sequence() + (u32::MAX - record_sequence));
+                .unwrap_or_else(|| tcp.sequence() + (u32::MAX - record_sequence));
 
             if sub_sequence == 0 {
                 // Duplicate
                 trace!(
                     "TCP retransmission of {} -> {} at {}",
-                    tcp.get_src(),
+                    tcp.src(),
                     dst,
-                    tcp.get_sequence()
+                    tcp.sequence()
                 );
             } else if sub_sequence <= MAX_U32_WINDOW_SIZE as u32 {
-                self.tcp_sequence_map.insert(key, tcp.get_sequence());
+                self.tcp_sequence_map.insert(key, tcp.sequence());
 
                 trace!(
                     "set TCP sequence of {} -> {} to {}",
-                    tcp.get_src(),
+                    tcp.src(),
                     dst,
-                    tcp.get_sequence()
+                    tcp.sequence()
                 );
             } else {
                 trace!(
                     "TCP out of order of {} -> {} at {}",
-                    tcp.get_src(),
+                    tcp.src(),
                     dst,
-                    tcp.get_sequence()
+                    tcp.sequence()
                 );
             }
         }
     }
 
     fn update_tcp_acknowledgement(&mut self, indicator: &Indicator) {
-        if let Some(tcp) = indicator.get_tcp() {
-            let dst = SocketAddrV4::new(tcp.get_dst_ip_addr(), tcp.get_dst());
-            let key = (tcp.get_src(), dst);
+        if let Some(tcp) = indicator.tcp() {
+            let dst = SocketAddrV4::new(tcp.dst_ip_addr(), tcp.dst());
+            let key = (tcp.src(), dst);
 
             let record_acknowledgement = *self.tcp_acknowledgement_map.get(&key).unwrap_or(&0);
             let sub_acknowledgement = tcp
-                .get_acknowledgement()
+                .acknowledgement()
                 .checked_sub(record_acknowledgement)
-                .unwrap_or_else(|| tcp.get_acknowledgement() + (u32::MAX - record_acknowledgement));
+                .unwrap_or_else(|| tcp.acknowledgement() + (u32::MAX - record_acknowledgement));
 
             if sub_acknowledgement == 0 {
                 // Duplicate
@@ -1653,42 +1624,42 @@ impl Redirector {
                 *entry = entry.checked_add(1).unwrap_or(usize::MAX);
                 trace!(
                     "duplicate TCP acknowledgement of {} -> {} at {}",
-                    tcp.get_src(),
+                    tcp.src(),
                     dst,
-                    tcp.get_acknowledgement()
+                    tcp.acknowledgement()
                 );
             } else if sub_acknowledgement <= MAX_U32_WINDOW_SIZE as u32 {
                 self.tcp_acknowledgement_map
-                    .insert(key, tcp.get_acknowledgement());
+                    .insert(key, tcp.acknowledgement());
 
                 self.tcp_duplicate_map.insert(key, 0);
                 trace!(
                     "set TCP acknowledgement of {} -> {} to {}",
-                    tcp.get_src(),
+                    tcp.src(),
                     dst,
-                    tcp.get_acknowledgement()
+                    tcp.acknowledgement()
                 );
             }
         }
     }
 
     fn perm_tcp_sack(&mut self, indicator: &Indicator) {
-        if let Some(tcp) = indicator.get_tcp() {
-            let dst = SocketAddrV4::new(tcp.get_dst_ip_addr(), tcp.get_dst());
-            let key = (tcp.get_src(), dst);
+        if let Some(tcp) = indicator.tcp() {
+            let dst = SocketAddrV4::new(tcp.dst_ip_addr(), tcp.dst());
+            let key = (tcp.src(), dst);
 
             let sack_perm = tcp.is_sack_perm();
             if sack_perm {
                 self.tcp_sack_perm_map.insert(key, true);
-                trace!("permit TCP sack of {} -> {}", tcp.get_src(), dst);
+                trace!("permit TCP sack of {} -> {}", tcp.src(), dst);
             }
         }
     }
 
     fn remove(&mut self, indicator: &Indicator) {
-        if let Some(tcp) = indicator.get_tcp() {
-            let dst = SocketAddrV4::new(tcp.get_dst_ip_addr(), tcp.get_dst());
-            let key = (tcp.get_src(), dst);
+        if let Some(tcp) = indicator.tcp() {
+            let dst = SocketAddrV4::new(tcp.dst_ip_addr(), tcp.dst());
+            let key = (tcp.src(), dst);
 
             self.streams.remove(&key);
             self.tcp_sequence_map.remove(&key);
@@ -1700,13 +1671,13 @@ impl Redirector {
                 if !cache.is_empty() {
                     trace!(
                         "cache {} -> {} was removed while the cache is not empty",
-                        tcp.get_src(),
+                        tcp.src(),
                         dst
                     );
                 }
             }
             self.tcp_cache_map.remove(&key);
-            trace!("remove {} -> {}", tcp.get_src(), dst);
+            trace!("remove {} -> {}", tcp.src(), dst);
         }
     }
 

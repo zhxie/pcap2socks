@@ -273,7 +273,7 @@ impl DatagramWorker {
     }
 
     /// Get the source port of the `DatagramWorker`.
-    pub fn get_src_port(&self) -> u16 {
+    pub fn src_port(&self) -> u16 {
         self.src_port.load(Ordering::Relaxed)
     }
 

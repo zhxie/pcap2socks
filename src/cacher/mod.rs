@@ -155,12 +155,12 @@ impl Cacher {
     }
 
     /// Get the sequence of the cache.
-    pub fn get_sequence(&self) -> u32 {
+    pub fn sequence(&self) -> u32 {
         self.sequence
     }
 
-    /// Get the size of the cache.
-    pub fn get_size(&self) -> usize {
+    /// Get the length of the cache.
+    pub fn len(&self) -> usize {
         self.size
     }
 
@@ -226,7 +226,7 @@ impl RandomCacher {
 
                 let mut new_buffer = vec![0u8; size];
 
-                let filled = self.get_filled();
+                let filled = self.filled();
                 for (sequence, recv_next) in filled {
                     // Place in the new buffer
                     let new_head = sequence
@@ -389,24 +389,24 @@ impl RandomCacher {
     }
 
     /// Get the sequence of the cache.
-    pub fn get_sequence(&self) -> u32 {
+    pub fn sequence(&self) -> u32 {
         self.sequence
     }
 
-    /// Get the size of the cache. Not all bytes in [sequence, sequence + size) are filled.
-    pub fn get_size(&self) -> usize {
+    /// Get the length of the cache. Not all bytes in [sequence, sequence + len) are filled.
+    pub fn len(&self) -> usize {
         self.size
     }
 
     /// Get the receive next of the cache.
-    pub fn get_recv_next(&self) -> u32 {
+    pub fn recv_next(&self) -> u32 {
         self.sequence
             .checked_add(self.size as u32)
             .unwrap_or_else(|| self.size as u32 - (u32::MAX - self.sequence))
     }
 
     /// Get the remaining size of the `RandomCacher`.
-    pub fn get_remaining_size(&self) -> u16 {
+    pub fn remaining_size(&self) -> u16 {
         if self.buffer.len() - self.size > u16::MAX as usize {
             u16::MAX
         } else {
@@ -415,7 +415,7 @@ impl RandomCacher {
     }
 
     /// Get the filled edges of the `RandomCacher`.
-    pub fn get_filled(&self) -> Vec<(u32, u32)> {
+    pub fn filled(&self) -> Vec<(u32, u32)> {
         let mut v = Vec::new();
         for (&sequence, &size) in &self.edges {
             let begin = sequence.checked_sub(u32::MAX as u64).unwrap_or(sequence) as u32;

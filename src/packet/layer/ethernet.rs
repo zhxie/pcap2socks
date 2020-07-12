@@ -1,4 +1,4 @@
-use super::{Layer, LayerType, LayerTypes};
+use super::{Layer, LayerKind, LayerKinds};
 use pnet::packet::ethernet::{self, EtherTypes, EthernetPacket, MutableEthernetPacket};
 use pnet::util::MacAddr;
 use std::clone::Clone;
@@ -13,10 +13,10 @@ pub struct Ethernet {
 
 impl Ethernet {
     /// Creates an `Ethernet`.
-    pub fn new(t: LayerType, src: MacAddr, dst: MacAddr) -> Option<Ethernet> {
+    pub fn new(t: LayerKind, src: MacAddr, dst: MacAddr) -> Option<Ethernet> {
         let ethertype = match t {
-            LayerTypes::Arp => EtherTypes::Arp,
-            LayerTypes::Ipv4 => EtherTypes::Ipv4,
+            LayerKinds::Arp => EtherTypes::Arp,
+            LayerKinds::Ipv4 => EtherTypes::Ipv4,
             _ => return None,
         };
         let ethernet = ethernet::Ethernet {
@@ -45,12 +45,12 @@ impl Ethernet {
     }
 
     /// Get the source of the layer.
-    pub fn get_src(&self) -> MacAddr {
+    pub fn src(&self) -> MacAddr {
         self.layer.source
     }
 
     /// Get the destination of the layer.
-    pub fn get_dst(&self) -> MacAddr {
+    pub fn dst(&self) -> MacAddr {
         self.layer.destination
     }
 }
@@ -60,7 +60,7 @@ impl Display for Ethernet {
         write!(
             f,
             "{}: {} -> {}",
-            LayerTypes::Ethernet,
+            LayerKinds::Ethernet,
             self.layer.source,
             self.layer.destination
         )
@@ -68,11 +68,11 @@ impl Display for Ethernet {
 }
 
 impl Layer for Ethernet {
-    fn get_type(&self) -> LayerType {
-        LayerTypes::Ethernet
+    fn kind(&self) -> LayerKind {
+        LayerKinds::Ethernet
     }
 
-    fn get_size(&self) -> usize {
+    fn len(&self) -> usize {
         EthernetPacket::packet_size(&self.layer)
     }
 
@@ -82,7 +82,7 @@ impl Layer for Ethernet {
 
         packet.populate(&self.layer);
 
-        Ok(self.get_size())
+        Ok(self.len())
     }
 
     fn serialize_with_payload(&self, buffer: &mut [u8], _: &[u8], n: usize) -> io::Result<usize> {

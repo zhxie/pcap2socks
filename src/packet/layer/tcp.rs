@@ -1,5 +1,5 @@
 use super::ipv4::Ipv4;
-use super::{Layer, LayerType, LayerTypes};
+use super::{Layer, LayerKind, LayerKinds};
 use pnet::packet::tcp::{
     self, MutableTcpOptionPacket, MutableTcpPacket, TcpFlags, TcpOption, TcpOptionNumber,
     TcpOptionNumbers, TcpOptionPacket, TcpPacket,
@@ -230,42 +230,42 @@ impl Tcp {
 
     /// Sets the source and destination IP address for the layer with the given `Ipv4`.
     pub fn set_ipv4_layer(&mut self, ipv4: &Ipv4) {
-        self.src = ipv4.get_src();
-        self.dst = ipv4.get_dst();
+        self.src = ipv4.src();
+        self.dst = ipv4.dst();
     }
 
     /// Get the source IP address of the layer.
-    pub fn get_src_ip_addr(&self) -> Ipv4Addr {
+    pub fn src_ip_addr(&self) -> Ipv4Addr {
         self.src
     }
 
     /// Get the destination IP address of the layer.
-    pub fn get_dst_ip_addr(&self) -> Ipv4Addr {
+    pub fn dst_ip_addr(&self) -> Ipv4Addr {
         self.dst
     }
 
     /// Get the source of the layer.
-    pub fn get_src(&self) -> u16 {
+    pub fn src(&self) -> u16 {
         self.layer.source
     }
 
     /// Get the destination of the layer.
-    pub fn get_dst(&self) -> u16 {
+    pub fn dst(&self) -> u16 {
         self.layer.destination
     }
 
     /// Get the sequence of the layer.
-    pub fn get_sequence(&self) -> u32 {
+    pub fn sequence(&self) -> u32 {
         self.layer.sequence
     }
 
     /// Get the acknowledgement of the layer.
-    pub fn get_acknowledgement(&self) -> u32 {
+    pub fn acknowledgement(&self) -> u32 {
         self.layer.acknowledgement
     }
 
     /// Get the string represents the flags of the layer.
-    pub fn get_flag_string(&self) -> String {
+    pub fn flag_string(&self) -> String {
         let mut flags = String::from("[");
         if self.is_syn() {
             flags = flags + "S";
@@ -285,12 +285,12 @@ impl Tcp {
     }
 
     /// Get the window size of the layer.
-    pub fn get_window(&self) -> u16 {
+    pub fn window(&self) -> u16 {
         self.layer.window
     }
 
     /// Get the MSS of the layer. This function allocates space for serializing options.
-    pub fn get_mss(&self) -> Option<u16> {
+    pub fn mss(&self) -> Option<u16> {
         let mut buffer = vec![0u8; 40];
         let mut packet = MutableTcpOptionPacket::new(buffer.as_mut_slice()).unwrap();
         for ref option in &self.layer.options {
@@ -309,7 +309,7 @@ impl Tcp {
     }
 
     /// Get the window scale of the layer. This function allocates space for serializing options.
-    pub fn get_wscale(&self) -> Option<u8> {
+    pub fn wscale(&self) -> Option<u8> {
         let mut buffer = vec![0u8; 40];
         let mut packet = MutableTcpOptionPacket::new(buffer.as_mut_slice()).unwrap();
         for ref option in &self.layer.options {
@@ -328,7 +328,7 @@ impl Tcp {
     }
 
     /// Get the selective acknowledgements of the layer. This function allocates space for serializing options.
-    pub fn get_sack(&self) -> Option<Vec<(u32, u32)>> {
+    pub fn sack(&self) -> Option<Vec<(u32, u32)>> {
         let mut buffer = vec![0u8; 40];
         let mut packet = MutableTcpOptionPacket::new(buffer.as_mut_slice()).unwrap();
         for ref option in &self.layer.options {
@@ -354,7 +354,7 @@ impl Tcp {
     }
 
     /// Get the timestamp of the layer. This function allocates space for serializing options.
-    pub fn get_ts(&self) -> Option<u32> {
+    pub fn ts(&self) -> Option<u32> {
         let mut buffer = vec![0u8; 40];
         let mut packet = MutableTcpOptionPacket::new(buffer.as_mut_slice()).unwrap();
         for ref option in &self.layer.options {
@@ -373,7 +373,7 @@ impl Tcp {
     }
 
     /// Get the timestamp echo reply of the layer. This function allocates space for serializing options.
-    pub fn get_ts_ecr(&self) -> Option<u32> {
+    pub fn ts_ecr(&self) -> Option<u32> {
         let mut buffer = vec![0u8; 40];
         let mut packet = MutableTcpOptionPacket::new(buffer.as_mut_slice()).unwrap();
         for ref option in &self.layer.options {
@@ -444,20 +444,20 @@ impl Display for Tcp {
         write!(
             f,
             "{}: {} -> {} {}",
-            LayerTypes::Tcp,
+            LayerKinds::Tcp,
             self.layer.source,
             self.layer.destination,
-            self.get_flag_string()
+            self.flag_string()
         )
     }
 }
 
 impl Layer for Tcp {
-    fn get_type(&self) -> LayerType {
-        LayerTypes::Tcp
+    fn kind(&self) -> LayerKind {
+        LayerKinds::Tcp
     }
 
-    fn get_size(&self) -> usize {
+    fn len(&self) -> usize {
         let mut tcp_size = TcpPacket::packet_size(&self.layer);
         let mut tcp_options_size = 0;
         for option in &self.layer.options {
@@ -475,7 +475,7 @@ impl Layer for Tcp {
         packet.populate(&self.layer);
 
         // Fix length
-        let header_length = self.get_size();
+        let header_length = self.len();
         if header_length / 4 > u8::MAX as usize {
             return Err(io::Error::new(io::ErrorKind::Other, "TCP too big"));
         }
@@ -484,8 +484,8 @@ impl Layer for Tcp {
         // Compute checksum
         let checksum = tcp::ipv4_checksum(
             &packet.to_immutable(),
-            &self.get_src_ip_addr(),
-            &self.get_dst_ip_addr(),
+            &self.src_ip_addr(),
+            &self.dst_ip_addr(),
         );
         packet.set_checksum(checksum);
 
@@ -507,7 +507,7 @@ impl Layer for Tcp {
         packet.set_payload(payload);
 
         // Fix length
-        let header_length = self.get_size();
+        let header_length = self.len();
         if header_length / 4 > u8::MAX as usize {
             return Err(io::Error::new(io::ErrorKind::Other, "TCP too big"));
         }
@@ -516,8 +516,8 @@ impl Layer for Tcp {
         // Compute checksum
         let checksum = tcp::ipv4_checksum(
             &packet.to_immutable(),
-            &self.get_src_ip_addr(),
-            &self.get_dst_ip_addr(),
+            &self.src_ip_addr(),
+            &self.dst_ip_addr(),
         );
         packet.set_checksum(checksum);
 

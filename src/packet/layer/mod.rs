@@ -10,21 +10,21 @@ pub mod ipv4;
 pub mod tcp;
 pub mod udp;
 
-/// Represents the type of the layer.
+/// Represents the kind of the layer.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct LayerType(u8);
+pub struct LayerKind(u8);
 
-impl Display for LayerType {
+impl Display for LayerKind {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         write!(
             f,
             "{}",
             match *self {
-                LayerTypes::Ethernet => "Ethernet",
-                LayerTypes::Arp => "ARP",
-                LayerTypes::Ipv4 => "IPv4",
-                LayerTypes::Tcp => "TCP",
-                LayerTypes::Udp => "UDP",
+                LayerKinds::Ethernet => "Ethernet",
+                LayerKinds::Arp => "ARP",
+                LayerKinds::Ipv4 => "IPv4",
+                LayerKinds::Tcp => "TCP",
+                LayerKinds::Udp => "UDP",
                 _ => "unknown",
             }
         )
@@ -33,28 +33,28 @@ impl Display for LayerType {
 
 #[allow(non_snake_case)]
 #[allow(non_upper_case_globals)]
-pub mod LayerTypes {
-    use super::LayerType;
+pub mod LayerKinds {
+    use super::LayerKind;
 
     // Ethernet
-    pub const Ethernet: LayerType = LayerType(0);
+    pub const Ethernet: LayerKind = LayerKind(0);
     // ARP
-    pub const Arp: LayerType = LayerType(1);
+    pub const Arp: LayerKind = LayerKind(1);
     // IPv4
-    pub const Ipv4: LayerType = LayerType(2);
+    pub const Ipv4: LayerKind = LayerKind(2);
     // TCP
-    pub const Tcp: LayerType = LayerType(3);
+    pub const Tcp: LayerKind = LayerKind(3);
     // UDP
-    pub const Udp: LayerType = LayerType(4);
+    pub const Udp: LayerKind = LayerKind(4);
 }
 
 /// Represents a layer.
 pub trait Layer: Display {
-    // Get the type of the `Layer`.
-    fn get_type(&self) -> LayerType;
+    // Get the kind of the `Layer`.
+    fn kind(&self) -> LayerKind;
 
-    // Get The size of the `Layer` when converted into a byte-array.
-    fn get_size(&self) -> usize;
+    // Get The length of the `Layer` when converted into a byte-array.
+    fn len(&self) -> usize;
 
     // Serialize the `Layer` into a byte-array.
     fn serialize(&self, buffer: &mut [u8], n: usize) -> io::Result<usize>;
@@ -90,23 +90,23 @@ impl Display for Layers {
 }
 
 impl Layer for Layers {
-    fn get_type(&self) -> LayerType {
+    fn kind(&self) -> LayerKind {
         match self {
-            Layers::Ethernet(ref layer) => layer.get_type(),
-            Layers::Arp(ref layer) => layer.get_type(),
-            Layers::Ipv4(ref layer) => layer.get_type(),
-            Layers::Tcp(ref layer) => layer.get_type(),
-            Layers::Udp(ref layer) => layer.get_type(),
+            Layers::Ethernet(ref layer) => layer.kind(),
+            Layers::Arp(ref layer) => layer.kind(),
+            Layers::Ipv4(ref layer) => layer.kind(),
+            Layers::Tcp(ref layer) => layer.kind(),
+            Layers::Udp(ref layer) => layer.kind(),
         }
     }
 
-    fn get_size(&self) -> usize {
+    fn len(&self) -> usize {
         match self {
-            Layers::Ethernet(ref layer) => layer.get_size(),
-            Layers::Arp(ref layer) => layer.get_size(),
-            Layers::Ipv4(ref layer) => layer.get_size(),
-            Layers::Tcp(ref layer) => layer.get_size(),
-            Layers::Udp(ref layer) => layer.get_size(),
+            Layers::Ethernet(ref layer) => layer.len(),
+            Layers::Arp(ref layer) => layer.len(),
+            Layers::Ipv4(ref layer) => layer.len(),
+            Layers::Tcp(ref layer) => layer.len(),
+            Layers::Udp(ref layer) => layer.len(),
         }
     }
 

@@ -1,4 +1,4 @@
-use super::{Layer, LayerType, LayerTypes};
+use super::{Layer, LayerKind, LayerKinds};
 use pnet::datalink::MacAddr;
 use pnet::packet::arp::{self, ArpHardwareTypes, ArpOperations, ArpPacket, MutableArpPacket};
 use pnet::packet::ethernet::EtherTypes;
@@ -96,22 +96,22 @@ impl Arp {
     }
 
     /// Get the source hardware address of the layer.
-    pub fn get_src_hardware_addr(&self) -> MacAddr {
+    pub fn src_hardware_addr(&self) -> MacAddr {
         self.layer.sender_hw_addr
     }
 
     /// Get the destination hardware address of the layer.
-    pub fn get_dst_hardware_addr(&self) -> MacAddr {
+    pub fn dst_hardware_addr(&self) -> MacAddr {
         self.layer.target_hw_addr
     }
 
     /// Get the source of the layer.
-    pub fn get_src(&self) -> Ipv4Addr {
+    pub fn src(&self) -> Ipv4Addr {
         self.layer.sender_proto_addr
     }
 
     /// Get the destination of the layer.
-    pub fn get_dst(&self) -> Ipv4Addr {
+    pub fn dst(&self) -> Ipv4Addr {
         self.layer.target_proto_addr
     }
 }
@@ -121,7 +121,7 @@ impl Display for Arp {
         write!(
             f,
             "{}: {} -> {}, Operation = {}",
-            self.get_type(),
+            self.kind(),
             self.layer.sender_proto_addr,
             self.layer.target_proto_addr,
             match self.layer.operation {
@@ -134,11 +134,11 @@ impl Display for Arp {
 }
 
 impl Layer for Arp {
-    fn get_type(&self) -> LayerType {
-        LayerTypes::Arp
+    fn kind(&self) -> LayerKind {
+        LayerKinds::Arp
     }
 
-    fn get_size(&self) -> usize {
+    fn len(&self) -> usize {
         ArpPacket::packet_size(&self.layer)
     }
 
@@ -148,7 +148,7 @@ impl Layer for Arp {
 
         packet.populate(&self.layer);
 
-        Ok(self.get_size())
+        Ok(self.len())
     }
 
     fn serialize_with_payload(&self, buffer: &mut [u8], _: &[u8], n: usize) -> io::Result<usize> {

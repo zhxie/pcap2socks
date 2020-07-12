@@ -1,4 +1,4 @@
-use super::{Layer, LayerType, LayerTypes};
+use super::{Layer, LayerKind, LayerKinds};
 use pnet::packet::ip::IpNextHeaderProtocols;
 use pnet::packet::ipv4::{self, Ipv4Flags, Ipv4OptionPacket, Ipv4Packet, MutableIpv4Packet};
 use std::clone::Clone;
@@ -14,10 +14,10 @@ pub struct Ipv4 {
 
 impl Ipv4 {
     /// Creates an `Ipv4`.
-    pub fn new(identification: u16, t: LayerType, src: Ipv4Addr, dst: Ipv4Addr) -> Option<Ipv4> {
+    pub fn new(identification: u16, t: LayerKind, src: Ipv4Addr, dst: Ipv4Addr) -> Option<Ipv4> {
         let next_level_protocol = match t {
-            LayerTypes::Tcp => IpNextHeaderProtocols::Tcp,
-            LayerTypes::Udp => IpNextHeaderProtocols::Udp,
+            LayerKinds::Tcp => IpNextHeaderProtocols::Tcp,
+            LayerKinds::Udp => IpNextHeaderProtocols::Udp,
             _ => return None,
         };
         let d_ipv4 = ipv4::Ipv4 {
@@ -43,7 +43,7 @@ impl Ipv4 {
     /// Creates an `Ipv4` represents an IPv4 fragment.
     pub fn new_more_fragment(
         identification: u16,
-        t: LayerType,
+        t: LayerKind,
         fragment_offset: u16,
         src: Ipv4Addr,
         dst: Ipv4Addr,
@@ -61,7 +61,7 @@ impl Ipv4 {
     /// Creates an `Ipv4` represents an IPv4 last fragment.
     pub fn new_last_fragment(
         identification: u16,
-        t: LayerType,
+        t: LayerKind,
         fragment_offset: u16,
         src: Ipv4Addr,
         dst: Ipv4Addr,
@@ -111,14 +111,14 @@ impl Ipv4 {
                 dscp: ipv4.layer.dscp,
                 ecn: ipv4.layer.ecn,
                 total_length: ipv4.layer.total_length,
-                identification: ipv4.get_identification(),
+                identification: ipv4.identification(),
                 flags: 0,
                 fragment_offset: 0,
                 ttl: ipv4.layer.ttl,
                 next_level_protocol: ipv4.layer.next_level_protocol,
                 checksum: 0,
-                source: ipv4.get_src(),
-                destination: ipv4.get_dst(),
+                source: ipv4.src(),
+                destination: ipv4.dst(),
                 options: ipv4.layer.options.clone(),
                 payload: vec![],
             },
@@ -126,12 +126,12 @@ impl Ipv4 {
     }
 
     /// Get the total length of the layer.
-    pub fn get_total_length(&self) -> u16 {
+    pub fn total_length(&self) -> u16 {
         self.layer.total_length
     }
 
     /// Get the identification of the layer.
-    pub fn get_identification(&self) -> u16 {
+    pub fn identification(&self) -> u16 {
         self.layer.identification
     }
 
@@ -141,22 +141,22 @@ impl Ipv4 {
     }
 
     /// Get the fragment offset of the layer.
-    pub fn get_fragment_offset(&self) -> u16 {
+    pub fn fragment_offset(&self) -> u16 {
         self.layer.fragment_offset
     }
 
     /// Returns if the `Ipv4` is a IPv4 fragment.
     pub fn is_fragment(&self) -> bool {
-        self.is_more_fragment() || self.get_fragment_offset() > 0
+        self.is_more_fragment() || self.fragment_offset() > 0
     }
 
     /// Get the source of the layer.
-    pub fn get_src(&self) -> Ipv4Addr {
+    pub fn src(&self) -> Ipv4Addr {
         self.layer.source
     }
 
     /// Get the destination of the layer.
-    pub fn get_dst(&self) -> Ipv4Addr {
+    pub fn dst(&self) -> Ipv4Addr {
         self.layer.destination
     }
 }
@@ -165,13 +165,13 @@ impl Display for Ipv4 {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         let mut fragment = String::new();
         if self.is_fragment() {
-            fragment = format!(", Fragment = {}", self.get_fragment_offset() * 8);
+            fragment = format!(", Fragment = {}", self.fragment_offset() * 8);
         }
 
         write!(
             f,
             "{}: {} -> {}, Length = {}{}",
-            LayerTypes::Ipv4,
+            LayerKinds::Ipv4,
             self.layer.source,
             self.layer.destination,
             self.layer.total_length,
@@ -181,11 +181,11 @@ impl Display for Ipv4 {
 }
 
 impl Layer for Ipv4 {
-    fn get_type(&self) -> LayerType {
-        LayerTypes::Ipv4
+    fn kind(&self) -> LayerKind {
+        LayerKinds::Ipv4
     }
 
-    fn get_size(&self) -> usize {
+    fn len(&self) -> usize {
         let mut ipv4_size = Ipv4Packet::packet_size(&self.layer);
         let mut ipv4_options_size = 0;
         for option in &self.layer.options {
@@ -203,7 +203,7 @@ impl Layer for Ipv4 {
         packet.populate(&self.layer);
 
         // Fix length
-        let header_length = self.get_size();
+        let header_length = self.len();
         if header_length / 4 > u8::MAX as usize {
             return Err(io::Error::new(io::ErrorKind::Other, "IPv4 too big"));
         }
