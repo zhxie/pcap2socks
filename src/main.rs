@@ -1,17 +1,17 @@
-use clap::{crate_description, crate_version, Clap};
 use env_logger::fmt::{Color, Formatter, Target};
 use log::{error, info, Level, LevelFilter, Log, Metadata, Record};
 use std::clone::Clone;
 use std::io::Write;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::{Arc, Mutex};
+use structopt::StructOpt;
 
 use pcap2socks::{self as lib, Forwarder, Redirector};
 
 #[tokio::main]
 async fn main() {
     // Parse arguments
-    let flags = Flags::parse();
+    let flags = Flags::from_args();
 
     // Log
     set_logger(flags.verbose);
@@ -30,17 +30,46 @@ async fn main() {
     info!("Listen on {}", inter);
     info!("Break packets with MTU {}", flags.mtu);
 
+    // Route
+    let src = match flags.preset.as_str() {
+        "" => flags.src.unwrap(),
+        "t" | "tencent" => "10.6.0.1".parse().unwrap(),
+        "n" | "netease" | "u" | "uu" => {
+            let mut ip_octets = inter.ip_addrs[0].octets();
+            ip_octets[0] = 172;
+            ip_octets[1] = 24;
+            ip_octets[2] = ip_octets[2].checked_add(1).unwrap_or(0);
+
+            Ipv4Addr::from(ip_octets)
+        }
+        _ => {
+            error!("Preset {} is not available", flags.preset);
+            return;
+        }
+    };
+    let publish = match flags.preset.as_str() {
+        "" => flags.publish,
+        "t" | "tencent" => Some("10.6.0.2".parse().unwrap()),
+        "n" | "netease" | "u" | "uu" => {
+            let mut ip_octets = inter.ip_addrs[0].octets();
+            ip_octets[0] = 172;
+            ip_octets[1] = 24;
+
+            Some(Ipv4Addr::from(ip_octets))
+        }
+        _ => {
+            error!("Preset {} is not available", flags.preset);
+            return;
+        }
+    };
+
     // Publish
-    if let Some(publish) = flags.publish {
+    if let Some(publish) = publish {
         info!("Publish for {}", publish);
     }
 
     // Instructions
-    show_info(
-        flags.src,
-        flags.publish.unwrap_or(inter.ip_addrs[0]),
-        flags.mtu,
-    );
+    show_info(src, publish.unwrap_or(inter.ip_addrs[0]), flags.mtu);
 
     // Proxy
     let (tx, mut rx) = match inter.open() {
@@ -50,20 +79,9 @@ async fn main() {
             return;
         }
     };
-    let forwarder = Forwarder::new(
-        tx,
-        flags.mtu,
-        inter.hardware_addr,
-        flags.src,
-        inter.ip_addrs[0],
-    );
-    let mut redirector = Redirector::new(
-        Arc::new(Mutex::new(forwarder)),
-        flags.src,
-        flags.publish,
-        flags.dst,
-    );
-    info!("Proxy {} to {}", flags.src, flags.dst);
+    let forwarder = Forwarder::new(tx, flags.mtu, inter.hardware_addr, src, inter.ip_addrs[0]);
+    let mut redirector = Redirector::new(Arc::new(Mutex::new(forwarder)), src, publish, flags.dst);
+    info!("Proxy {} to {}", src, flags.dst);
     if let Err(ref e) = redirector.open(&mut rx).await {
         error!("{}", e);
     }
@@ -88,33 +106,44 @@ fn show_info(ip_addr: Ipv4Addr, gateway: Ipv4Addr, mtu: u16) {
     info!("    └─{:─<10}─{:─>15}─┘", "", "");
 }
 
-#[derive(Clap, Clone, Debug, Eq, Hash, PartialEq)]
-#[clap(
-    version = crate_version!(),
-    about = crate_description!()
-)]
+#[derive(StructOpt, Clone, Debug, Eq, Hash, PartialEq)]
+#[structopt(about)]
 struct Flags {
-    #[clap(
+    #[structopt(
         long,
         short,
         about = "Prints verbose information (-vv for vverbose)",
         parse(from_occurrences)
     )]
     pub verbose: usize,
-    #[clap(
+    #[structopt(
         long = "interface",
         short,
         about = "Interface for listening",
         value_name = "INTERFACE"
     )]
     pub inter: Option<String>,
-    #[clap(long, about = "MTU", value_name = "VALUE", default_value = "1400")]
+    #[structopt(long, about = "MTU", value_name = "VALUE", default_value = "1400")]
     pub mtu: u16,
-    #[clap(long, short, about = "ARP publishing address", value_name = "ADDRESS")]
+    #[structopt(
+        long,
+        short = "P",
+        about = "Preset",
+        value_name = "PRESET",
+        default_value = ""
+    )]
+    pub preset: String,
+    #[structopt(long, short, about = "ARP publishing address", value_name = "ADDRESS")]
     pub publish: Option<Ipv4Addr>,
-    #[clap(long = "source", short, about = "Source", value_name = "ADDRESS")]
-    pub src: Ipv4Addr,
-    #[clap(
+    #[structopt(
+        long = "source",
+        short,
+        about = "Source",
+        value_name = "ADDRESS",
+        required_if("preset", "")
+    )]
+    pub src: Option<Ipv4Addr>,
+    #[structopt(
         long = "destination",
         short,
         about = "Destination",
