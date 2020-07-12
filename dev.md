@@ -52,6 +52,8 @@ This is the development documentation of pcap2socks.
 
 `TIMESTAMP_RATE`: Represents the frequency of the update of the timestamp. The [RFC 7323](https://tools.ietf.org/html/rfc7323) describes the timestamp clock may not match the system clock and must not be "too fast". And a reasonable value is 1 ms to 1 sec per tick. 1 represents 1 ms and 1000 represents 1 sec per tick. Default as `1` (ms).
 
+`PREFER_SEND_MSS`: Represents if the received send MSS should be preferred instead of manually set MTU in TCP. Default as `true`.
+
 `DUPLICATES_BEFORE_FAST_RETRANSMISSION`: Represents the TCP ACK duplicates before trigger a fast retransmission, also recognized as fast retransmission. Default as `3`.
 
 `RETRANSMISSION_COOL_DOWN`: Represents the cool down time between 2 retransmissions. Default as `200` ms.

@@ -82,6 +82,9 @@ const ENABLE_TIMESTAMP: bool = false;
 /// A `TIMESTAMP_RATE` 1 represents 1 ms and 1000 represents 1 sec per tick.
 const TIMESTAMP_RATE: u128 = 1;
 
+/// Represents if the received send MSS should be preferred instead of manually set MTU in TCP.
+const PREFER_SEND_MSS: bool = true;
+
 /// Represents the minimum packet size.
 /// Because all traffic is in Ethernet, and the 802.3 specifies the minimum is 64 Bytes.
 /// Exclude the 4 bytes used in FCS, the minimum packet size in pcap2socks is 60 Bytes.
@@ -98,6 +101,7 @@ pub struct Forwarder {
     ipv4_identification_map: HashMap<Ipv4Addr, u16>,
     tcp_fin_set: HashSet<(u16, SocketAddrV4)>,
     tcp_send_window_map: HashMap<(u16, SocketAddrV4), usize>,
+    tcp_send_mss_map: HashMap<(u16, SocketAddrV4), u16>,
     tcp_sequence_map: HashMap<(u16, SocketAddrV4), u32>,
     tcp_acknowledgement_map: HashMap<(u16, SocketAddrV4), u32>,
     tcp_window_map: HashMap<(u16, SocketAddrV4), u16>,
@@ -127,6 +131,7 @@ impl Forwarder {
             ipv4_identification_map: HashMap::new(),
             tcp_fin_set: HashSet::new(),
             tcp_send_window_map: HashMap::new(),
+            tcp_send_mss_map: HashMap::new(),
             tcp_sequence_map: HashMap::new(),
             tcp_acknowledgement_map: HashMap::new(),
             tcp_window_map: HashMap::new(),
@@ -165,6 +170,12 @@ impl Forwarder {
             dst,
             window,
         );
+    }
+
+    /// Sets the send MSS of a TCP connection.
+    pub fn set_tcp_send_mss(&mut self, dst: SocketAddrV4, src_port: u16, mss: u16) {
+        self.tcp_send_mss_map.insert((src_port, dst), mss);
+        trace!("set TCP send MSS of {} -> {} to {}", src_port, dst, mss);
     }
 
     /// Sets the sequence of a TCP connection. In fact, this function should never be used.
@@ -286,6 +297,8 @@ impl Forwarder {
         let key = (src_port, dst);
 
         self.tcp_fin_set.remove(&key);
+        self.tcp_send_window_map.remove(&key);
+        self.tcp_send_mss_map.remove(&key);
         self.tcp_sequence_map.remove(&key);
         self.tcp_acknowledgement_map.remove(&key);
         self.tcp_window_map.remove(&key);
@@ -536,7 +549,13 @@ impl Forwarder {
 
         // Segmentation
         let header_size = ipv4.len() + tcp.len();
-        let max_payload_size = self.mtu as usize - header_size;
+        let max_payload_size = match PREFER_SEND_MSS {
+            true => match self.tcp_send_mss_map.get(&key) {
+                Some(&mss) => mss as usize,
+                None => self.mtu as usize - header_size,
+            },
+            false => self.mtu as usize - header_size,
+        };
         let mut i = 0;
         while max_payload_size * i < payload.len() {
             let length = min(max_payload_size, payload.len() - i * max_payload_size);
@@ -1436,6 +1455,11 @@ impl Redirector {
                         );
 
                         // Options
+                        if PREFER_SEND_MSS {
+                            if let Some(mss) = tcp.mss() {
+                                tx_locked.set_tcp_send_mss(dst, tcp.src(), mss);
+                            }
+                        }
                         let wscale = match ENABLE_WSCALE {
                             true => tcp.wscale(),
                             false => None,
@@ -1443,7 +1467,7 @@ impl Redirector {
                         if let Some(wscale) = wscale {
                             tx_locked.set_tcp_wscale(dst, tcp.src(), wscale);
                         }
-                        let sack_perm = tcp.is_sack_perm() && ENABLE_SACK;
+                        let sack_perm = ENABLE_SACK && tcp.is_sack_perm();
                         if ENABLE_TIMESTAMP {
                             if let Some(ts) = tcp.ts() {
                                 tx_locked.set_tcp_ts(dst, tcp.src(), ts);
@@ -1462,7 +1486,7 @@ impl Redirector {
                         if let Some(wscale) = recv_wscale {
                             self.tcp_wscale_map.insert(key, wscale);
                         }
-                        if sack_perm && ENABLE_SACK {
+                        if ENABLE_SACK && sack_perm {
                             self.perm_tcp_sack(indicator);
                         }
 
