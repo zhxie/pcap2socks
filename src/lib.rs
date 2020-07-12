@@ -3,7 +3,7 @@
 use log::{debug, info, trace, warn};
 use lru::LruCache;
 use std::cmp::{max, min};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -104,7 +104,7 @@ pub struct Forwarder {
     tcp_sacks_map: HashMap<(u16, SocketAddrV4), Vec<(u32, u32)>>,
     tcp_ts_map: HashMap<(u16, SocketAddrV4), u32>,
     tcp_cache_map: HashMap<(u16, SocketAddrV4), Cacher>,
-    tcp_queue_map: HashMap<(u16, SocketAddrV4), Cacher>,
+    tcp_queue_map: HashMap<(u16, SocketAddrV4), VecDeque<u8>>,
 }
 
 impl Forwarder {
@@ -342,8 +342,8 @@ impl Forwarder {
         self.send(&indicator)
     }
 
-    /// Appends TCP ACK payload to cache.
-    pub fn append_to_cache(
+    /// Appends TCP ACK payload to queue.
+    pub fn append_to_queue(
         &mut self,
         dst: SocketAddrV4,
         src_port: u16,
@@ -351,15 +351,12 @@ impl Forwarder {
     ) -> io::Result<()> {
         let key = (src_port, dst);
 
-        // TCP sequence
-        let sequence = *self.tcp_sequence_map.get(&key).unwrap_or(&0);
-
-        // Append to cache
-        let cache = self
+        // Append to queue
+        let queue = self
             .tcp_queue_map
             .entry(key)
-            .or_insert_with(|| Cacher::new_unbounded(sequence));
-        cache.append(payload)?;
+            .or_insert_with(|| VecDeque::new());
+        queue.extend(payload);
 
         self.send_tcp_ack(dst, src_port)
     }
@@ -459,9 +456,11 @@ impl Forwarder {
         let key = (src_port, dst);
 
         if let Some(queue) = self.tcp_queue_map.get_mut(&key) {
-            let sequence = queue.sequence();
             let window = *self.tcp_send_window_map.get(&key).unwrap_or(&0);
             if window > 0 {
+                // TCP sequence
+                let sequence = *self.tcp_sequence_map.get(&key).unwrap_or(&0);
+
                 let cache = self
                     .tcp_cache_map
                     .entry(key)
@@ -472,12 +471,7 @@ impl Forwarder {
 
                 let size = min(remain_size as usize, queue.len());
                 if size > 0 {
-                    let payload = queue.get(sequence, size).unwrap();
-
-                    let recv_next = sequence
-                        .checked_add(size as u32)
-                        .unwrap_or_else(|| size as u32 - (u32::MAX - sequence));
-                    queue.invalidate_to(recv_next);
+                    let payload: Vec<u8> = queue.drain(..size).collect();
 
                     // Append to cache
                     let cache = self
@@ -931,7 +925,7 @@ impl Forwarder {
 
 impl ForwardStream for Forwarder {
     fn forward(&mut self, dst: SocketAddrV4, src_port: u16, payload: &[u8]) -> io::Result<()> {
-        self.append_to_cache(dst, src_port, payload)
+        self.append_to_queue(dst, src_port, payload)
     }
 
     fn close(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()> {
