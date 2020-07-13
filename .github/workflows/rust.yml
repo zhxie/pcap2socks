@@ -22,11 +22,11 @@ jobs:
     steps:
     - uses: actions/checkout@v2
     - name: Build
-      run: cargo build --verbose
+      run: cargo build --release --verbose
     - name: Run tests
-      run: cargo test --verbose
+      run: cargo test --release --verbose
     - name: Upload a build artifact
       uses: actions/upload-artifact@v2
       with:
         name: pcap2socks-latest-${{ runner.os }}-amd64
-        path: ./target/debug/pcap2socks
+        path: ./target/release/pcap2socks
