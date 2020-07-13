@@ -1,3 +1,5 @@
+//! Support for serializing and deserializing the Ethernet layer.
+
 use super::{Layer, LayerKind, LayerKinds};
 use pnet::packet::ethernet::{self, EtherTypes, EthernetPacket, MutableEthernetPacket};
 use pnet::util::MacAddr;

@@ -9,7 +9,7 @@ use std::net::Ipv4Addr;
 /// Represents the hardware address MAC in an Ethernet network.
 pub type HardwareAddr = pnet::datalink::MacAddr;
 
-/// Represents an unspecified hardware address `00:00:00:00:00:00` in an Ethernet network.
+/// Represents the unspecified hardware address `00:00:00:00:00:00` in an Ethernet network.
 pub const HARDWARE_ADDR_UNSPECIFIED: HardwareAddr = pnet::datalink::MacAddr(0, 0, 0, 0, 0, 0);
 
 /// Represents the send half of a pcap device.
@@ -44,7 +44,7 @@ impl Interface {
         }
     }
 
-    // Opens the network interface for sending and receiving data.
+    /// Opens the network interface for sending and receiving data.
     pub fn open(&self) -> io::Result<(Sender, Receiver)> {
         let inters = datalink::interfaces();
         let inter = inters

@@ -1,3 +1,5 @@
+//! Support for serializing and deserializing the IPv4 layer.
+
 use super::{Layer, LayerKind, LayerKinds};
 use pnet::packet::ip::IpNextHeaderProtocols;
 use pnet::packet::ipv4::{self, Ipv4Flags, Ipv4OptionPacket, Ipv4Packet, MutableIpv4Packet};

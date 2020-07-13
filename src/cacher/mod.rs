@@ -98,7 +98,7 @@ impl Cacher {
         Ok(())
     }
 
-    // Invalidates cache to the certain sequence.
+    /// Invalidates cache to the certain sequence.
     pub fn invalidate_to(&mut self, sequence: u32) {
         let size = sequence
             .checked_sub(self.sequence)

@@ -50,7 +50,7 @@ fn auto_interfaces() -> Vec<Interface> {
     inters
 }
 
-/// Gets an available network interface match the name.
+/// Gets an available network interface.
 pub fn interface(name: Option<String>) -> Option<Interface> {
     let inters = match name {
         Some(ref name) => {

@@ -1,3 +1,5 @@
+//! Support for serializing and deserializing layers.
+
 use std::clone::Clone;
 use std::cmp::{Eq, PartialEq};
 use std::fmt::{self, Display, Formatter};
@@ -33,18 +35,19 @@ impl Display for LayerKind {
 
 #[allow(non_snake_case)]
 #[allow(non_upper_case_globals)]
+/// Represents all the layer kinds.
 pub mod LayerKinds {
     use super::LayerKind;
 
-    // Ethernet
+    /// Represents the layer kind of Ethernet.
     pub const Ethernet: LayerKind = LayerKind(0);
-    // ARP
+    /// Represents the layer kind of ARP.
     pub const Arp: LayerKind = LayerKind(1);
-    // IPv4
+    /// Represents the layer kind of IPv4.
     pub const Ipv4: LayerKind = LayerKind(2);
-    // TCP
+    /// Represents the layer kind of TCP.
     pub const Tcp: LayerKind = LayerKind(3);
-    // UDP
+    /// Represents the layer kind of UDP.
     pub const Udp: LayerKind = LayerKind(4);
 }
 
@@ -69,11 +72,17 @@ pub trait Layer: Display {
 }
 
 #[derive(Clone, Debug)]
+/// Enumeration of layers.
 pub enum Layers {
+    /// Represents the Ethernet layer.
     Ethernet(ethernet::Ethernet),
+    /// Represents the ARP layer.
     Arp(arp::Arp),
+    /// Represents the IPv4 layer.
     Ipv4(ipv4::Ipv4),
+    /// Represents the TCP layer.
     Tcp(tcp::Tcp),
+    /// Represents the UDP layer.
     Udp(udp::Udp),
 }
 

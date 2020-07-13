@@ -1,3 +1,5 @@
+//! Support for serializing and deserializing the TCP layer.
+
 use super::ipv4::Ipv4;
 use super::{Layer, LayerKind, LayerKinds};
 use pnet::packet::tcp::{

@@ -1,3 +1,5 @@
+//! Support for serializing and deserializing the ARP layer.
+
 use super::{Layer, LayerKind, LayerKinds};
 use pnet::datalink::MacAddr;
 use pnet::packet::arp::{self, ArpHardwareTypes, ArpOperations, ArpPacket, MutableArpPacket};
