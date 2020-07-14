@@ -10,13 +10,13 @@ use std::thread;
 use std::time::{self, Duration, Instant, SystemTime};
 use tokio::io;
 
-pub mod cacher;
+pub mod cache;
 pub mod packet;
 pub mod pcap;
 pub mod socks;
 
 use self::socks::{DatagramWorker, ForwardDatagram, ForwardStream, StreamWorker};
-use cacher::{Cacher, RandomCacher};
+use cache::{Queue, Window};
 use packet::layer::arp::Arp;
 use packet::layer::ethernet::Ethernet;
 use packet::layer::ipv4::Ipv4;
@@ -108,7 +108,7 @@ pub struct Forwarder {
     tcp_wscale_map: HashMap<(u16, SocketAddrV4), u8>,
     tcp_sacks_map: HashMap<(u16, SocketAddrV4), Vec<(u32, u32)>>,
     tcp_ts_map: HashMap<(u16, SocketAddrV4), u32>,
-    tcp_cache_map: HashMap<(u16, SocketAddrV4), Cacher>,
+    tcp_cache_map: HashMap<(u16, SocketAddrV4), Queue>,
     tcp_queue_map: HashMap<(u16, SocketAddrV4), VecDeque<u8>>,
 }
 
@@ -485,7 +485,7 @@ impl Forwarder {
                 let wscale = *self.tcp_wscale_map.get(&key).unwrap_or(&0);
 
                 let cache = self.tcp_cache_map.entry(key).or_insert_with(|| {
-                    Cacher::with_capacity((u16::MAX as usize) << wscale as usize, sequence)
+                    Queue::with_capacity((u16::MAX as usize) << wscale as usize, sequence)
                 });
                 let sent_size = cache.len();
                 let remain_size = window.checked_sub(sent_size).unwrap_or(0);
@@ -497,7 +497,7 @@ impl Forwarder {
 
                     // Append to cache
                     let cache = self.tcp_cache_map.entry(key).or_insert_with(|| {
-                        Cacher::with_capacity((u16::MAX as usize) << wscale as usize, sequence)
+                        Queue::with_capacity((u16::MAX as usize) << wscale as usize, sequence)
                     });
                     cache.append(&payload)?;
 
@@ -1051,7 +1051,7 @@ pub struct Redirector {
     tcp_last_retransmission_map: HashMap<(u16, SocketAddrV4), Instant>,
     tcp_wscale_map: HashMap<(u16, SocketAddrV4), u8>,
     tcp_sack_perm_map: HashMap<(u16, SocketAddrV4), bool>,
-    tcp_cache_map: HashMap<(u16, SocketAddrV4), RandomCacher>,
+    tcp_cache_map: HashMap<(u16, SocketAddrV4), Window>,
     datagrams: HashMap<u16, DatagramWorker>,
     /// Represents the map mapping a source port to a local port.
     datagram_map: Vec<u16>,
@@ -1267,10 +1267,7 @@ impl Redirector {
                 }
 
                 let cache = self.tcp_cache_map.entry(key).or_insert_with(|| {
-                    RandomCacher::with_capacity(
-                        (u16::MAX as usize) << wscale as usize,
-                        tcp.sequence(),
-                    )
+                    Window::with_capacity((u16::MAX as usize) << wscale as usize, tcp.sequence())
                 });
                 let stream = self.streams.get_mut(&key).unwrap();
                 if buffer.len() > indicator.len() {

@@ -13,9 +13,10 @@ const EXPANSION_FACTOR: f64 = 1.5;
 /// Represents the max distance of u32 values between packets in an u32 window.
 const MAX_U32_WINDOW_SIZE: usize = 4 * 1024 * 1024;
 
-/// Represents a linear cache.
+/// Represents a queue cache. The `Queue` can hold continuos bytes constantly unless they are
+/// invalidated. The `Queue` can be used as a send window of a TCP connection.
 #[derive(Debug)]
-pub struct Cacher {
+pub struct Queue {
     buffer: Vec<u8>,
     unbounded: bool,
     sequence: u32,
@@ -23,15 +24,15 @@ pub struct Cacher {
     size: usize,
 }
 
-impl Cacher {
-    /// Creates a new `Cacher`.
-    pub fn new(sequence: u32) -> Cacher {
-        Cacher::with_capacity(INITIAL_SIZE, sequence)
+impl Queue {
+    /// Creates a new `Queue`.
+    pub fn new(sequence: u32) -> Queue {
+        Queue::with_capacity(INITIAL_SIZE, sequence)
     }
 
-    /// Creates a new `Cacher` with the specified capacity.
-    pub fn with_capacity(capacity: usize, sequence: u32) -> Cacher {
-        Cacher {
+    /// Creates a new `Queue` with the specified capacity.
+    pub fn with_capacity(capacity: usize, sequence: u32) -> Queue {
+        Queue {
             buffer: vec![0; capacity],
             unbounded: false,
             sequence,
@@ -40,15 +41,15 @@ impl Cacher {
         }
     }
 
-    /// Creates a new `Cacher` which can increase its size dynamically.
-    pub fn new_unbounded(sequence: u32) -> Cacher {
-        let mut cacher = Cacher::new(sequence);
-        cacher.unbounded = true;
+    /// Creates a new `Queue` which can increase its size dynamically.
+    pub fn new_unbounded(sequence: u32) -> Queue {
+        let mut queue = Queue::new(sequence);
+        queue.unbounded = true;
 
-        cacher
+        queue
     }
 
-    /// Appends some bytes to the end of the cache.
+    /// Appends some bytes to the end of the queue.
     pub fn append(&mut self, buffer: &[u8]) -> io::Result<()> {
         if buffer.len() > self.buffer.len() - self.size {
             if self.is_unbounded() {
@@ -75,7 +76,7 @@ impl Cacher {
                 self.buffer = new_buffer;
                 self.head = 0;
             } else {
-                return Err(io::Error::new(io::ErrorKind::Other, "cache is full"));
+                return Err(io::Error::new(io::ErrorKind::Other, "queue is full"));
             }
         }
 
@@ -98,7 +99,7 @@ impl Cacher {
         Ok(())
     }
 
-    /// Invalidates cache to the certain sequence.
+    /// Invalidates queue to the certain sequence.
     pub fn invalidate_to(&mut self, sequence: u32) {
         let size = sequence
             .checked_sub(self.sequence)
@@ -115,7 +116,7 @@ impl Cacher {
         }
     }
 
-    /// Get the buffer from the certain sequence of the cache in the given size.
+    /// Get the buffer from the certain sequence of the queue in the given size.
     pub fn get(&self, sequence: u32, size: usize) -> io::Result<Vec<u8>> {
         if size == 0 {
             return Ok(Vec::new());
@@ -127,7 +128,7 @@ impl Cacher {
         if distance > self.size {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "cache at the certain sequence does not exist",
+                "queue at the certain sequence does not exist",
             ));
         }
         if self.size - distance < size {
@@ -154,17 +155,17 @@ impl Cacher {
         Ok(vector)
     }
 
-    /// Get all the buffer of the cache.
+    /// Get all the buffer of the queue.
     pub fn get_all(&self) -> io::Result<Vec<u8>> {
         self.get(self.sequence, self.size)
     }
 
-    /// Get the sequence of the cache.
+    /// Get the sequence of the queue.
     pub fn sequence(&self) -> u32 {
         self.sequence
     }
 
-    /// Get the length of the cache.
+    /// Get the length of the queue.
     pub fn len(&self) -> usize {
         self.size
     }
@@ -173,15 +174,16 @@ impl Cacher {
         self.unbounded
     }
 
-    /// Returns if the cache is empty.
+    /// Returns if the queue is empty.
     pub fn is_empty(&self) -> bool {
         self.size == 0
     }
 }
 
-/// Represents a random cache.
+/// Represents a window cache. The `Window` can hold discontinuous bytes and pop out them when
+/// they are completed. The `Window` can be used as a receive window of a TCP connection.
 #[derive(Debug)]
-pub struct RandomCacher {
+pub struct Window {
     buffer: Vec<u8>,
     unbounded: bool,
     sequence: u32,
@@ -192,15 +194,15 @@ pub struct RandomCacher {
     edges: BTreeMap<u64, usize>,
 }
 
-impl RandomCacher {
-    /// Creates a new `RandomCacher`.
-    pub fn new(sequence: u32) -> RandomCacher {
-        RandomCacher::with_capacity(INITIAL_SIZE, sequence)
+impl Window {
+    /// Creates a new `Window`.
+    pub fn new(sequence: u32) -> Window {
+        Window::with_capacity(INITIAL_SIZE, sequence)
     }
 
-    /// Creates a new `RandomCacher` with the specified capacity.
-    pub fn with_capacity(capacity: usize, sequence: u32) -> RandomCacher {
-        RandomCacher {
+    /// Creates a new `Window` with the specified capacity.
+    pub fn with_capacity(capacity: usize, sequence: u32) -> Window {
+        Window {
             buffer: vec![0u8; capacity],
             unbounded: false,
             sequence,
@@ -210,15 +212,15 @@ impl RandomCacher {
         }
     }
 
-    /// Creates a new `RandomCacher` which can increase its size dynamically.
-    pub fn new_unbounded(sequence: u32) -> RandomCacher {
-        let mut cacher = RandomCacher::new(sequence);
-        cacher.unbounded = true;
+    /// Creates a new `Window` which can increase its size dynamically.
+    pub fn new_unbounded(sequence: u32) -> Window {
+        let mut window = Window::new(sequence);
+        window.unbounded = true;
 
-        cacher
+        window
     }
 
-    /// Appends some bytes to the cache and returns continuous bytes from the beginning.
+    /// Appends some bytes to the window and returns continuous bytes from the beginning.
     pub fn append(&mut self, sequence: u32, buffer: &[u8]) -> io::Result<Option<Vec<u8>>> {
         let sub_sequence = sequence
             .checked_sub(self.sequence)
@@ -273,7 +275,7 @@ impl RandomCacher {
                 self.buffer = new_buffer;
                 self.head = 0;
             } else {
-                return Err(io::Error::new(io::ErrorKind::Other, "cache is full"));
+                return Err(io::Error::new(io::ErrorKind::Other, "window is full"));
             }
         }
 
@@ -398,29 +400,29 @@ impl RandomCacher {
         Ok(None)
     }
 
-    /// Get the sequence of the cache.
+    /// Get the sequence of the window.
     pub fn sequence(&self) -> u32 {
         self.sequence
     }
 
-    /// Get the length of the cache. Not all bytes in [sequence, sequence + len) are filled.
+    /// Get the length of the window. Not all bytes in [sequence, sequence + len) are filled.
     pub fn len(&self) -> usize {
         self.size
     }
 
-    /// Get the receive next of the cache.
+    /// Get the receive next of the window.
     pub fn recv_next(&self) -> u32 {
         self.sequence
             .checked_add(self.size as u32)
             .unwrap_or_else(|| self.size as u32 - (u32::MAX - self.sequence))
     }
 
-    /// Get the remaining size of the `RandomCacher`.
+    /// Get the remaining size of the `Window`.
     pub fn remaining_size(&self) -> usize {
         self.buffer.len() - self.size
     }
 
-    /// Get the filled edges of the `RandomCacher`.
+    /// Get the filled edges of the `Window`.
     pub fn filled(&self) -> Vec<(u32, u32)> {
         let mut v = Vec::new();
         for (&sequence, &size) in &self.edges {
@@ -438,7 +440,7 @@ impl RandomCacher {
         self.unbounded
     }
 
-    /// Returns if the cache is empty.
+    /// Returns if the window is empty.
     pub fn is_empty(&self) -> bool {
         self.size == 0
     }
