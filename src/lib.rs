@@ -72,7 +72,7 @@ pub fn interface(name: Option<String>) -> Option<Interface> {
 const TIMEDOUT_WAIT: u64 = 20;
 
 /// Represents the max distance of `u32` values between packets in an `u32` window.
-const MAX_U32_WINDOW_SIZE: usize = 256 * 1024;
+const MAX_U32_WINDOW_SIZE: usize = 16 * 1024 * 1024;
 
 /// Represents if the TCP timestamp option is enabled.
 const ENABLE_TIMESTAMP: bool = false;
@@ -84,6 +84,9 @@ const TIMESTAMP_RATE: u128 = 1;
 
 /// Represents if the received send MSS should be preferred instead of manually set MTU in TCP.
 const PREFER_SEND_MSS: bool = true;
+
+/// Represents the timeout of a sending in a TCP connection.
+const RESEND_TIMEOUT: u64 = 3000;
 
 /// Represents the minimum packet size.
 /// Because all traffic is in Ethernet, and the 802.3 specifies the minimum is 64 Bytes.
@@ -392,12 +395,29 @@ impl Forwarder {
         let sequence;
         match self.tcp_cache_map.get(&key) {
             Some(cache) => {
-                match cache.get_all() {
-                    Ok(buffer) => {
-                        payload = buffer;
-                    }
-                    Err(e) => return Err(e),
-                }
+                payload = cache.get_all();
+                sequence = cache.sequence();
+            }
+            None => return Ok(()),
+        };
+
+        if payload.len() > 0 {
+            return self.send_tcp_ack_raw(dst, src_port, sequence, payload.as_slice());
+        }
+
+        Ok(())
+    }
+
+    /// Resends timed out TCP ACK packets from the cache.
+    pub fn resend_tcp_ack_timedout(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()> {
+        let key = (src_port, dst);
+
+        // Resend
+        let payload;
+        let sequence;
+        match self.tcp_cache_map.get(&key) {
+            Some(cache) => {
+                payload = cache.get_timed_out(Duration::from_millis(RESEND_TIMEOUT));
                 sequence = cache.sequence();
             }
             None => return Ok(()),
@@ -953,6 +973,10 @@ impl Forwarder {
 impl ForwardStream for Forwarder {
     fn forward(&mut self, dst: SocketAddrV4, src_port: u16, payload: &[u8]) -> io::Result<()> {
         self.append_to_queue(dst, src_port, payload)
+    }
+
+    fn tick(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()> {
+        self.resend_tcp_ack_timedout(dst, src_port)
     }
 
     fn close(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()> {

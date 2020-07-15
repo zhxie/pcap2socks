@@ -1,9 +1,10 @@
 //! Support for caching and keeping send & receive window.
 
 use std::cmp::{max, min};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::io;
 use std::ops::Bound::Included;
+use std::time::{Duration, Instant};
 
 /// Represents the initial size of cache.
 const INITIAL_SIZE: usize = u16::MAX as usize;
@@ -11,7 +12,7 @@ const INITIAL_SIZE: usize = u16::MAX as usize;
 const EXPANSION_FACTOR: f64 = 1.5;
 
 /// Represents the max distance of u32 values between packets in an u32 window.
-const MAX_U32_WINDOW_SIZE: usize = 4 * 1024 * 1024;
+const MAX_U32_WINDOW_SIZE: usize = 16 * 1024 * 1024;
 
 /// Represents a queue cache. The `Queue` can hold continuos bytes constantly unless they are
 /// invalidated. The `Queue` can be used as a send window of a TCP connection.
@@ -22,6 +23,7 @@ pub struct Queue {
     sequence: u32,
     head: usize,
     size: usize,
+    clocks: VecDeque<(u32, Instant)>,
 }
 
 impl Queue {
@@ -38,6 +40,7 @@ impl Queue {
             sequence,
             head: 0,
             size: 0,
+            clocks: VecDeque::with_capacity(capacity),
         }
     }
 
@@ -80,6 +83,13 @@ impl Queue {
             }
         }
 
+        // Sequence and clock
+        let sequence = self
+            .sequence
+            .checked_add(self.size as u32)
+            .unwrap_or_else(|| self.size as u32 - (u32::MAX - self.sequence));
+        self.clocks.push_back((sequence, Instant::now()));
+
         // From the tail to the end of the buffer
         let mut length_a = 0;
         if self.head + self.size < self.buffer.len() {
@@ -112,6 +122,33 @@ impl Queue {
                 self.head = 0;
             } else {
                 self.head = (self.head + (size % self.buffer.len())) % self.buffer.len();
+            }
+
+            // Pop clocks
+            while !self.clocks.is_empty() {
+                let dist = sequence
+                    .checked_sub(self.clocks[0].0)
+                    .unwrap_or_else(|| sequence + (u32::MAX - self.clocks[0].0))
+                    as usize;
+                let recv_next = match self.clocks.len() {
+                    1 => self.recv_next(),
+                    _ => self.clocks[1].0,
+                };
+                let dist_next = sequence
+                    .checked_sub(recv_next)
+                    .unwrap_or_else(|| sequence + (u32::MAX - recv_next))
+                    as usize;
+                if dist <= MAX_U32_WINDOW_SIZE as usize && dist_next <= MAX_U32_WINDOW_SIZE as usize
+                {
+                    self.clocks.pop_front();
+                } else if dist <= MAX_U32_WINDOW_SIZE {
+                    let instant = self.clocks[0].1;
+                    self.clocks.pop_front();
+                    self.clocks.push_front((sequence, instant));
+                    break;
+                } else {
+                    break;
+                }
             }
         }
     }
@@ -156,8 +193,31 @@ impl Queue {
     }
 
     /// Get all the buffer of the queue.
-    pub fn get_all(&self) -> io::Result<Vec<u8>> {
-        self.get(self.sequence, self.size)
+    pub fn get_all(&self) -> Vec<u8> {
+        self.get(self.sequence, self.size).unwrap()
+    }
+
+    /// Get the buffer which is timed out.
+    pub fn get_timed_out(&self, timedout: Duration) -> Vec<u8> {
+        let mut recv_next = None;
+        for clock in &self.clocks {
+            if clock.1.elapsed() <= timedout {
+                recv_next = Some(clock.0);
+                break;
+            }
+        }
+
+        match recv_next {
+            Some(recv_next) => {
+                let size = recv_next
+                    .checked_sub(self.sequence)
+                    .unwrap_or_else(|| recv_next + (u32::MAX - self.sequence))
+                    as usize;
+
+                self.get(self.sequence, size).unwrap()
+            }
+            None => self.get_all(),
+        }
     }
 
     /// Get the sequence of the queue.
@@ -168,6 +228,13 @@ impl Queue {
     /// Get the length of the queue.
     pub fn len(&self) -> usize {
         self.size
+    }
+
+    /// Get the receive next of the queue.
+    pub fn recv_next(&self) -> u32 {
+        self.sequence
+            .checked_add(self.size as u32)
+            .unwrap_or_else(|| self.size as u32 - (u32::MAX - self.sequence))
     }
 
     fn is_unbounded(&self) -> bool {

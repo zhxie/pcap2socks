@@ -15,19 +15,26 @@ use self::socks::SocksSendHalf;
 
 /// Trait for forwarding stream.
 pub trait ForwardStream: Send {
-    /// Forward stream.
+    /// Forwards stream.
     fn forward(&mut self, dst: SocketAddrV4, src_port: u16, payload: &[u8]) -> io::Result<()>;
 
-    /// Close a stream connection.
+    /// Triggers a timed event. Used in resending timed out data.
+    fn tick(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()>;
+
+    /// Closes a stream connection.
     fn close(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()>;
 }
 
 /// Represents the wait time after a `TimedOut` `IoError`.
 const TIMEDOUT_WAIT: u64 = 20;
+
 /// Represents the wait time after receiving 0 byte from the stream.
 const RECV_ZERO_WAIT: u64 = 100;
 /// Represents the maximum count of receiving 0 byte from the stream before closing it.
 const MAX_RECV_ZERO: usize = 3;
+
+/// Represents the interval of a tick.
+const TICK_INTERVAL: u64 = 1000;
 
 /// Represents a worker of a SOCKS5 TCP stream.
 pub struct StreamWorker {
@@ -45,6 +52,8 @@ impl StreamWorker {
         dst: SocketAddrV4,
         remote: SocketAddrV4,
     ) -> io::Result<StreamWorker> {
+        let tx_cloned = Arc::clone(&tx);
+
         let stream = socks::connect(remote, dst).await?;
         let stream = stream.into_inner();
         let (mut stream_rx, stream_tx) = stream.into_split();
@@ -53,6 +62,9 @@ impl StreamWorker {
         let is_write_closed_cloned = Arc::clone(&is_write_closed);
         let is_read_closed = Arc::new(AtomicBool::new(false));
         let is_read_closed_cloned = Arc::clone(&is_read_closed);
+        let is_read_closed_cloned2 = Arc::clone(&is_read_closed);
+
+        // Forward
         tokio::spawn(async move {
             let mut buffer = vec![0u8; u16::MAX as usize];
             let mut recv_zero = 0;
@@ -104,6 +116,26 @@ impl StreamWorker {
                         break;
                     }
                 }
+            }
+        });
+
+        // Triggers sending timed out data
+        tokio::spawn(async move {
+            loop {
+                if is_read_closed_cloned2.load(Ordering::Relaxed) {
+                    break;
+                }
+                // Tick
+                trace!("tick on {} -> {}", dst, 0);
+
+                if let Err(ref e) = tx_cloned.lock().unwrap().tick(dst, src_port) {
+                    warn!("handle {}: {}", "TCP", e);
+                }
+                if is_read_closed_cloned2.load(Ordering::Relaxed) {
+                    break;
+                }
+
+                time::delay_for(Duration::from_millis(TICK_INTERVAL)).await;
             }
         });
 
