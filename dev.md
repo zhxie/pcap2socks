@@ -32,7 +32,7 @@ This is the development documentation of pcap2socks.
 
 `MAX_RECV_ZERO`: Represents the maximum count of receiving 0 byte from the stream before closing it. After an amount of receiving zeroes, the stream is likely to be closed. The stream will be recognized as closed and trigger a FIN. Default as `3`.
 
-`TICK_INTERVAL`: Represents the interval of a tick. The timed event will force resending timed out data in a TCP connection. Default as `1000` ms.
+`TICK_INTERVAL`: Represents the interval of a tick. The timed event will force retransmitting timed out data in a TCP connection. Default as `1000` ms.
 
 ### Cache
 
@@ -54,7 +54,7 @@ This is the development documentation of pcap2socks.
 
 `PREFER_SEND_MSS`: Represents if the received send MSS should be preferred instead of manually set MTU in TCP. Default as `true`.
 
-`RESEND_TIMEOUT`: Represents the timeout of a sending in a TCP connection, which is also known as retransmission timeout (RTO). In fact, this value should be adjusted based on RTT. Default as `3000` ms.
+`RTO`: Represents the timeout for a retransmission in a TCP connection. In fact, this value should be adjusted based on RTT. Default as `3000` ms.
 
 `DUPLICATES_BEFORE_FAST_RETRANSMISSION`: Represents the TCP ACK duplicates before trigger a fast retransmission, also recognized as fast retransmission. Default as `3`.
 

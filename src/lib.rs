@@ -3,7 +3,7 @@
 use log::{debug, info, trace, warn};
 use lru::LruCache;
 use std::cmp::{max, min};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -85,8 +85,8 @@ const TIMESTAMP_RATE: u128 = 1;
 /// Represents if the received send MSS should be preferred instead of manually set MTU in TCP.
 const PREFER_SEND_MSS: bool = true;
 
-/// Represents the timeout of a sending in a TCP connection.
-const RESEND_TIMEOUT: u64 = 3000;
+/// Represents the timeout for a retransmission in a TCP connection.
+const RTO: u64 = 3000;
 
 /// Represents the minimum packet size.
 /// Because all traffic is in Ethernet, and the 802.3 specifies the minimum is 64 Bytes.
@@ -102,7 +102,7 @@ pub struct Forwarder {
     src_ip_addr: Ipv4Addr,
     local_ip_addr: Ipv4Addr,
     ipv4_identification_map: HashMap<Ipv4Addr, u16>,
-    tcp_fin_set: HashSet<(u16, SocketAddrV4)>,
+    tcp_fin_map: HashMap<(u16, SocketAddrV4), Instant>,
     tcp_send_window_map: HashMap<(u16, SocketAddrV4), usize>,
     tcp_send_mss_map: HashMap<(u16, SocketAddrV4), u16>,
     tcp_sequence_map: HashMap<(u16, SocketAddrV4), u32>,
@@ -132,7 +132,7 @@ impl Forwarder {
             src_ip_addr,
             local_ip_addr,
             ipv4_identification_map: HashMap::new(),
-            tcp_fin_set: HashSet::new(),
+            tcp_fin_map: HashMap::new(),
             tcp_send_window_map: HashMap::new(),
             tcp_send_mss_map: HashMap::new(),
             tcp_sequence_map: HashMap::new(),
@@ -299,7 +299,7 @@ impl Forwarder {
     pub fn remove(&mut self, dst: SocketAddrV4, src_port: u16) {
         let key = (src_port, dst);
 
-        self.tcp_fin_set.remove(&key);
+        self.tcp_fin_map.remove(&key);
         self.tcp_send_window_map.remove(&key);
         self.tcp_send_mss_map.remove(&key);
         self.tcp_sequence_map.remove(&key);
@@ -382,15 +382,21 @@ impl Forwarder {
             .entry(key)
             .or_insert_with(|| VecDeque::new());
         queue.extend(payload);
+        trace!(
+            "append {} Bytes to TCP queue {} -> {}",
+            payload.len(),
+            dst,
+            src_port
+        );
 
         self.send_tcp_ack(dst, src_port)
     }
 
-    /// Resends TCP ACK packets from the cache.
-    pub fn resend_tcp_ack(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()> {
+    /// Retransmits TCP ACK packets from the cache. This method is used for fast retransmission.
+    pub fn retransmit_tcp_ack(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()> {
         let key = (src_port, dst);
 
-        // Resend
+        // Retransmit
         let payload;
         let sequence;
         match self.tcp_cache_map.get(&key) {
@@ -402,36 +408,22 @@ impl Forwarder {
         };
 
         if payload.len() > 0 {
-            return self.send_tcp_ack_raw(dst, src_port, sequence, payload.as_slice());
+            trace!(
+                "retransmit {} Bytes {} -> {} from {}",
+                payload.len(),
+                dst,
+                src_port,
+                sequence
+            );
+            self.send_tcp_ack_raw(dst, src_port, sequence, payload.as_slice())?;
         }
 
         Ok(())
     }
 
-    /// Resends timed out TCP ACK packets from the cache.
-    pub fn resend_tcp_ack_timedout(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()> {
-        let key = (src_port, dst);
-
-        // Resend
-        let payload;
-        let sequence;
-        match self.tcp_cache_map.get(&key) {
-            Some(cache) => {
-                payload = cache.get_timed_out(Duration::from_millis(RESEND_TIMEOUT));
-                sequence = cache.sequence();
-            }
-            None => return Ok(()),
-        };
-
-        if payload.len() > 0 {
-            return self.send_tcp_ack_raw(dst, src_port, sequence, payload.as_slice());
-        }
-
-        Ok(())
-    }
-
-    /// Resents TCP ACK packets from the cache excluding the certain edges.
-    pub fn resend_tcp_ack_without(
+    /// Retransmits TCP ACK packets from the cache excluding the certain edges. This method is used
+    /// for fast retransmission.
+    pub fn retransmit_tcp_ack_without(
         &mut self,
         dst: SocketAddrV4,
         src_port: u16,
@@ -474,7 +466,7 @@ impl Forwarder {
             sequence = last_recv_next;
         }
 
-        // Resend
+        // Retransmit
         for range in ranges {
             let size = range
                 .1
@@ -487,7 +479,62 @@ impl Forwarder {
         }
         let payload = self.tcp_cache_map.get(&key).unwrap().get(sequence, size)?;
         if payload.len() > 0 {
+            trace!(
+                "retransmit {} Bytes {} -> {} from {}",
+                payload.len(),
+                dst,
+                src_port,
+                sequence
+            );
             self.send_tcp_ack_raw(dst, src_port, sequence, payload.as_slice())?;
+        }
+
+        Ok(())
+    }
+
+    /// Retransmits timed out TCP ACK packets from the cache. This method is used for transmitting
+    /// timed out data.
+    pub fn retransmit_tcp_ack_timedout(
+        &mut self,
+        dst: SocketAddrV4,
+        src_port: u16,
+    ) -> io::Result<()> {
+        let key = (src_port, dst);
+
+        // Retransmit
+        let mut payload = Vec::new();
+        let mut sequence = 0;
+        if let Some(cache) = self.tcp_cache_map.get(&key) {
+            payload = cache.get_timed_out(Duration::from_millis(RTO));
+            sequence = cache.sequence();
+        };
+
+        if payload.len() > 0 {
+            trace!(
+                "retransmit {} Bytes {} -> {} from {} due to timeout",
+                payload.len(),
+                dst,
+                src_port,
+                sequence
+            );
+            self.send_tcp_ack_raw(dst, src_port, sequence, payload.as_slice())?;
+        } else {
+            // FIN
+            if self.tcp_fin_map.contains_key(&key) {
+                let is_queue_empty = match self.tcp_queue_map.get(&key) {
+                    Some(cache) => cache.is_empty(),
+                    None => true,
+                };
+                let is_cache_empty = match self.tcp_cache_map.get(&key) {
+                    Some(cache) => cache.is_empty(),
+                    None => true,
+                };
+                if is_queue_empty && is_cache_empty {
+                    trace!("retransmit TCP FIN {} -> {} due to timeout", dst, src_port,);
+                    // Send
+                    self.send_tcp_fin(dst, src_port)?;
+                }
+            }
         }
 
         Ok(())
@@ -528,7 +575,7 @@ impl Forwarder {
         }
 
         // FIN
-        if self.tcp_fin_set.contains(&key) {
+        if self.tcp_fin_map.contains_key(&key) {
             let is_queue_empty = match self.tcp_queue_map.get(&key) {
                 Some(cache) => cache.is_empty(),
                 None => true,
@@ -976,13 +1023,13 @@ impl ForwardStream for Forwarder {
     }
 
     fn tick(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()> {
-        self.resend_tcp_ack_timedout(dst, src_port)
+        self.retransmit_tcp_ack_timedout(dst, src_port)
     }
 
     fn close(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()> {
         let key = (src_port, dst);
 
-        self.tcp_fin_set.insert(key);
+        self.tcp_fin_map.insert(key, Instant::now());
 
         self.send_tcp_ack(dst, src_port)
     }
@@ -1398,7 +1445,7 @@ impl Redirector {
                                     if let Some(sacks) = tcp.sack() {
                                         if sacks.len() > 0 {
                                             // Selective retransmission
-                                            self.tx.lock().unwrap().resend_tcp_ack_without(
+                                            self.tx.lock().unwrap().retransmit_tcp_ack_without(
                                                 dst,
                                                 tcp.src(),
                                                 sacks,
@@ -1410,7 +1457,7 @@ impl Redirector {
 
                                 if !is_sr {
                                     // Back N
-                                    self.tx.lock().unwrap().resend_tcp_ack(dst, tcp.src())?;
+                                    self.tx.lock().unwrap().retransmit_tcp_ack(dst, tcp.src())?;
                                 }
 
                                 self.tcp_duplicate_map.insert(key, 0);

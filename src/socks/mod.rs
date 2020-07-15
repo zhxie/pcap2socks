@@ -18,7 +18,7 @@ pub trait ForwardStream: Send {
     /// Forwards stream.
     fn forward(&mut self, dst: SocketAddrV4, src_port: u16, payload: &[u8]) -> io::Result<()>;
 
-    /// Triggers a timed event. Used in resending timed out data.
+    /// Triggers a timed event. Used in retransmitting timed out data.
     fn tick(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()>;
 
     /// Closes a stream connection.
