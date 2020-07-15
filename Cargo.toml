@@ -1,6 +1,6 @@
 [package]
 name = "pcap2socks"
-version = "0.3.0"
+version = "0.4.0-alpha"
 authors = ["Xie Zhihao <xzh1206@gmail.com>"]
 edition = "2018"
 description = "Redirect traffic to SOCKS proxy with pcap."
