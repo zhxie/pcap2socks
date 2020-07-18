@@ -78,6 +78,12 @@ pcap2socks has some defects in the view of engineering.
 
 - Because pcap2socks does not implement the TCP congestion control and the RTO calculation, the traffic transmission performance may be lost. However, since pcap2socks is mainly used in LANs, the actual impact may be minimal.
 
-- The structure of the `Redirector`, the `SocksStream` & `SocksDatagram` and the `Forwarder` looks like a chaos. Caches and states should be located in the `SocksStream` & `SocksDatagram` instead of the `Redirector` and the `Forwarder`.
+- pcap2socks ignores checksums, lengths and some other fields in headers to support non-standard systems and LRO (large receive offload), but will also bring security issues.
 
-- pcap2socks cannot close gracefully, all the data in the receive and send cache will be dropped. The connections will be closed (or shutdown, depending on the kernel or the system) immediately.
+- pcap2socks works like a router but will redirect all traffic including local traffic, so local connections through pcap2socks and broadcasts will not work properly.
+
+- pcap2socks cannot handle TCP SYN flooding attack with SYN cookie since the connection between pcap2socks and destination must be established before pcap2socks replying a ACK/SYN to the source.
+
+* The structure of the `Redirector`, the `SocksStream` & `SocksDatagram` and the `Forwarder` looks like a chaos. Caches and states should be located in the `SocksStream` & `SocksDatagram` instead of the `Redirector` and the `Forwarder`.
+
+* pcap2socks cannot close gracefully, all the data in the receive and send cache will be dropped. The connections will be closed (or shutdown, depending on the kernel or the system) immediately.
