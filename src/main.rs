@@ -20,7 +20,7 @@ async fn main() {
     let inter = match lib::interface(flags.inter) {
         Some(inter) => inter,
         None => {
-            error!("Cannot determine interface. Available interfaces are listed below, use -i <INTERFACE> to designate:");
+            error!("Cannot determine the interface. Available interfaces are listed below, use -i <INTERFACE> to designate:");
             for inter in lib::interfaces().iter() {
                 info!("    {}", inter);
             }
@@ -43,7 +43,7 @@ async fn main() {
                 Ipv4Addr::from(ip_octets)
             }
             _ => {
-                error!("Preset {} is not available", preset);
+                error!("The preset {} is not available", preset);
                 return;
             }
         },
@@ -60,12 +60,26 @@ async fn main() {
                 Some(Ipv4Addr::from(ip_octets))
             }
             _ => {
-                error!("Preset {} is not available", preset);
+                error!("The preset {} is not available", preset);
                 return;
             }
         },
         None => flags.publish,
     };
+    match publish {
+        Some(publish) => {
+            if src == publish {
+                error!("The source cannot be the same with the publish");
+                return;
+            }
+        }
+        None => {
+            if src == inter.ip_addrs[0] {
+                error!("The source cannot be the same with the local address");
+                return;
+            }
+        }
+    }
 
     // Publish
     if let Some(publish) = publish {
