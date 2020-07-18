@@ -1,5 +1,5 @@
 use env_logger::fmt::{Color, Formatter, Target};
-use log::{error, info, Level, LevelFilter, Log, Metadata, Record};
+use log::{error, info, warn, Level, LevelFilter, Log, Metadata, Record};
 use std::clone::Clone;
 use std::io::Write;
 use std::net::{Ipv4Addr, SocketAddrV4};
@@ -108,12 +108,26 @@ async fn main() {
 fn show_info(ip_addr: Ipv4Addr, gateway: Ipv4Addr, mtu: u16) {
     let ip_addr_octets = ip_addr.octets();
     let gateway_octets = gateway.octets();
-    let mask = Ipv4Addr::new(
+    let mut mask_value = u32::from_be_bytes([
         !(ip_addr_octets[0] ^ gateway_octets[0]),
         !(ip_addr_octets[1] ^ gateway_octets[1]),
         !(ip_addr_octets[2] ^ gateway_octets[2]),
-        0,
-    );
+        !(ip_addr_octets[3] ^ gateway_octets[3]),
+    ]);
+
+    let mut prefix: u8 = 0;
+    for p in 0u8..32 {
+        if mask_value % 2 == 0 {
+            prefix = p + 1;
+        }
+        mask_value >>= 1;
+    }
+    let mask_value = match prefix {
+        32 => 0,
+        _ => u32::MAX << prefix,
+    };
+    let mask = Ipv4Addr::from(mask_value);
+
     info!("Please set the network of your device which is going to be proxied with the following parameters:");
     info!("    ┌─{:─<10}─{:─>15}─┐", "", "");
     info!("    │ {:<10} {:>15} │", "IP Address", ip_addr);
@@ -122,6 +136,9 @@ fn show_info(ip_addr: Ipv4Addr, gateway: Ipv4Addr, mtu: u16) {
     info!("    │─{:─<10}─{:─>15}─│", "", "");
     info!("    │ {:<10} {:>15} │", "MTU", mtu);
     info!("    └─{:─<10}─{:─>15}─┘", "", "");
+    if mask == Ipv4Addr::UNSPECIFIED {
+        warn!("The mask is all zeros, which may cause potential problems");
+    }
 }
 
 #[derive(StructOpt, Clone, Debug, Eq, Hash, PartialEq)]
