@@ -1508,22 +1508,12 @@ impl Redirector {
                 // Clean up
                 self.remove(indicator);
 
-                // Latency test
-                let timer = Instant::now();
-
                 // Connect
                 let stream =
                     StreamWorker::connect(self.get_tx(), tcp.src(), dst, self.remote).await;
 
                 let stream = match stream {
                     Ok(stream) => {
-                        // Latency test result (not accurate)
-                        debug!(
-                            "Latency to {}: {} ms (RTT)",
-                            dst,
-                            timer.elapsed().as_millis()
-                        );
-
                         let mut tx_locked = self.tx.lock().unwrap();
                         // Clean up
                         tx_locked.remove(dst, tcp.src());
