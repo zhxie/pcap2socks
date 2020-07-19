@@ -82,8 +82,6 @@ pcap2socks has some defects in the view of engineering.
 
 - pcap2socks works like a router but will redirect all traffic including local traffic, so local connections through pcap2socks and broadcasts will not work properly.
 
-- pcap2socks cannot handle TCP SYN flooding attack with SYN cookie since the connection between pcap2socks and destination must be established before pcap2socks replying a ACK/SYN to the source.
+- The structure of the `Redirector`, the `SocksStream` & `SocksDatagram` and the `Forwarder` looks like a chaos. Caches and states should be located in the `SocksStream` & `SocksDatagram` instead of the `Redirector` and the `Forwarder`.
 
-* The structure of the `Redirector`, the `SocksStream` & `SocksDatagram` and the `Forwarder` looks like a chaos. Caches and states should be located in the `SocksStream` & `SocksDatagram` instead of the `Redirector` and the `Forwarder`.
-
-* pcap2socks cannot close gracefully, all the data in the receive and send cache will be dropped. The connections will be closed (or shutdown, depending on the kernel or the system) immediately.
+- pcap2socks cannot close gracefully, all the data in the receive and send cache will be dropped. The connections will be closed (or shutdown, depending on the kernel or the system) immediately.

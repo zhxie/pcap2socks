@@ -2,6 +2,7 @@
 
 use log::{debug, info, trace, warn};
 use lru::LruCache;
+use rand::{self, Rng};
 use std::cmp::{max, min};
 use std::collections::{HashMap, VecDeque};
 use std::net::{Ipv4Addr, SocketAddrV4};
@@ -182,7 +183,6 @@ impl Forwarder {
     }
 
     /// Sets the sequence of a TCP connection. In fact, this function should never be used.
-    #[deprecated(note = "this function should never be used")]
     pub fn set_tcp_sequence(&mut self, dst: SocketAddrV4, src_port: u16, acknowledgement: u32) {
         self.tcp_sequence_map
             .insert((src_port, dst), acknowledgement);
@@ -1116,7 +1116,7 @@ pub struct Redirector {
     local_ip_addr: Option<Ipv4Addr>,
     remote: SocketAddrV4,
     streams: HashMap<(u16, SocketAddrV4), StreamWorker>,
-    tcp_sequence_map: HashMap<(u16, SocketAddrV4), u32>,
+    tcp_recv_next_map: HashMap<(u16, SocketAddrV4), u32>,
     tcp_acknowledgement_map: HashMap<(u16, SocketAddrV4), u32>,
     tcp_duplicate_map: HashMap<(u16, SocketAddrV4), usize>,
     tcp_last_retransmission_map: HashMap<(u16, SocketAddrV4), Instant>,
@@ -1146,7 +1146,7 @@ impl Redirector {
             local_ip_addr,
             remote,
             streams: HashMap::new(),
-            tcp_sequence_map: HashMap::new(),
+            tcp_recv_next_map: HashMap::new(),
             tcp_acknowledgement_map: HashMap::new(),
             tcp_duplicate_map: HashMap::new(),
             tcp_last_retransmission_map: HashMap::new(),
@@ -1305,7 +1305,7 @@ impl Redirector {
                 return self.handle_tcp_syn(indicator).await;
             } else if tcp.is_fin() {
                 // Pure TCP FIN
-                return self.handle_tcp_fin(indicator);
+                return self.handle_tcp_fin(indicator, buffer);
             }
         }
 
@@ -1324,7 +1324,14 @@ impl Redirector {
 
             if is_exist {
                 // ACK
-                self.update_tcp_sequence(indicator);
+                if tcp.sequence() != *self.tcp_recv_next_map.get(&key).unwrap_or(&0) {
+                    trace!(
+                        "TCP out of order of {} -> {} at {}",
+                        tcp.src(),
+                        dst,
+                        tcp.sequence()
+                    );
+                }
                 self.update_tcp_acknowledgement(indicator);
                 let wscale = *self.tcp_wscale_map.get(&key).unwrap_or(&0);
                 {
@@ -1384,6 +1391,13 @@ impl Redirector {
                                         tcp.src(),
                                         payload.len() as u32,
                                     );
+                                    let recv_next_entry =
+                                        self.tcp_recv_next_map.entry(key).or_insert(0);
+                                    *recv_next_entry = recv_next_entry
+                                        .checked_add(payload.len() as u32)
+                                        .unwrap_or_else(|| {
+                                            payload.len() as u32 - (u32::MAX - *recv_next_entry)
+                                        });
 
                                     // Send ACK0
                                     // If there is a heavy traffic, the ACK reported may be inaccurate, which would results in retransmission
@@ -1469,7 +1483,7 @@ impl Redirector {
 
                 // FIN
                 if tcp.is_fin() && cache.is_empty() {
-                    return self.handle_tcp_fin(indicator);
+                    return self.handle_tcp_fin(indicator, buffer);
                 }
 
                 // Trigger sending remaining data
@@ -1494,8 +1508,6 @@ impl Redirector {
                 // Clean up
                 self.remove(indicator);
 
-                self.tcp_sequence_map.insert(key, tcp.sequence());
-
                 // Latency test
                 let timer = Instant::now();
 
@@ -1516,11 +1528,20 @@ impl Redirector {
                         // Clean up
                         tx_locked.remove(dst, tcp.src());
 
+                        // Initialize values
+                        let mut rng = rand::thread_rng();
+                        let sequence: u32 = rng.gen();
+                        tx_locked.set_tcp_sequence(dst, tcp.src(), sequence);
                         tx_locked.set_tcp_acknowledgement(
                             dst,
                             tcp.src(),
                             tcp.sequence().checked_add(1).unwrap_or(0),
                         );
+
+                        self.tcp_recv_next_map
+                            .insert(key, tcp.sequence().checked_add(1).unwrap_or(u32::MAX));
+                        self.tcp_acknowledgement_map
+                            .insert(key, sequence.checked_sub(1).unwrap_or(u32::MAX));
 
                         // Options
                         if PREFER_SEND_MSS {
@@ -1604,7 +1625,7 @@ impl Redirector {
         }
     }
 
-    fn handle_tcp_fin(&mut self, indicator: &Indicator) -> io::Result<()> {
+    fn handle_tcp_fin(&mut self, indicator: &Indicator, buffer: &[u8]) -> io::Result<()> {
         if let Some(ref tcp) = indicator.tcp() {
             let dst = SocketAddrV4::new(tcp.dst_ip_addr(), tcp.dst());
             let key = (tcp.src(), dst);
@@ -1615,34 +1636,54 @@ impl Redirector {
             };
 
             if is_exist {
-                let is_cache_empty = match self.tcp_cache_map.get(&key) {
-                    Some(cache) => cache.is_empty(),
-                    None => true,
-                };
-                if is_cache_empty {
-                    let mut tx_locked = self.tx.lock().unwrap();
-                    tx_locked.set_tcp_acknowledgement(
-                        dst,
-                        tcp.src(),
-                        tcp.sequence().checked_add(1).unwrap_or(0),
-                    );
-                    if let Some(ts) = tcp.ts() {
-                        tx_locked.set_tcp_ts(dst, tcp.src(), ts);
-                    }
-                    // Send ACK0
-                    tx_locked.send_tcp_ack_0(dst, tcp.src())?;
-                    if is_readable {
-                        // Close by local
-                        let stream = self.streams.get_mut(&key).unwrap();
-                        stream.close();
+                let payload_size = buffer.len() - indicator.len();
+                let recv_next = tcp
+                    .sequence()
+                    .checked_add(payload_size as u32)
+                    .unwrap_or_else(|| payload_size as u32 - (u32::MAX - tcp.sequence()));
+                if recv_next == *self.tcp_recv_next_map.get(&key).unwrap_or(&0) {
+                    let is_cache_empty = match self.tcp_cache_map.get(&key) {
+                        Some(cache) => cache.is_empty(),
+                        None => true,
+                    };
+                    if is_cache_empty {
+                        let mut tx_locked = self.tx.lock().unwrap();
+                        tx_locked.set_tcp_acknowledgement(
+                            dst,
+                            tcp.src(),
+                            recv_next.checked_add(1).unwrap_or(0),
+                        );
+                        if let Some(ts) = tcp.ts() {
+                            tx_locked.set_tcp_ts(dst, tcp.src(), ts);
+                        }
+
+                        let recv_next_entry = self.tcp_recv_next_map.entry(key).or_insert(0);
+                        *recv_next_entry = recv_next_entry.checked_add(1).unwrap_or(u32::MAX);
+
+                        // Send ACK0
+                        tx_locked.send_tcp_ack_0(dst, tcp.src())?;
+                        if is_readable {
+                            // Close by local
+                            let stream = self.streams.get_mut(&key).unwrap();
+                            stream.close();
+                        } else {
+                            // Close by remote
+                            // Clean up
+                            tx_locked.remove(dst, tcp.src());
+                            drop(tx_locked);
+                            self.remove(indicator);
+                        }
                     } else {
-                        // Close by remote
-                        // Clean up
-                        tx_locked.remove(dst, tcp.src());
-                        drop(tx_locked);
-                        self.remove(indicator);
+                        // Send ACK0
+                        self.tx.lock().unwrap().send_tcp_ack_0(dst, tcp.src())?;
                     }
                 } else {
+                    trace!(
+                        "TCP out of order of {} -> {} at {}",
+                        tcp.src(),
+                        dst,
+                        tcp.sequence()
+                    );
                     // Send ACK0
                     self.tx.lock().unwrap().send_tcp_ack_0(dst, tcp.src())?;
                 }
@@ -1705,45 +1746,6 @@ impl Redirector {
         Ok(())
     }
 
-    fn update_tcp_sequence(&mut self, indicator: &Indicator) {
-        if let Some(tcp) = indicator.tcp() {
-            let dst = SocketAddrV4::new(tcp.dst_ip_addr(), tcp.dst());
-            let key = (tcp.src(), dst);
-
-            let record_sequence = *self.tcp_sequence_map.get(&key).unwrap_or(&0);
-            let sub_sequence = tcp
-                .sequence()
-                .checked_sub(record_sequence)
-                .unwrap_or_else(|| tcp.sequence() + (u32::MAX - record_sequence));
-
-            if sub_sequence == 0 {
-                // Duplicate
-                trace!(
-                    "TCP retransmission of {} -> {} at {}",
-                    tcp.src(),
-                    dst,
-                    tcp.sequence()
-                );
-            } else if sub_sequence <= MAX_U32_WINDOW_SIZE as u32 {
-                self.tcp_sequence_map.insert(key, tcp.sequence());
-
-                trace!(
-                    "set TCP sequence of {} -> {} to {}",
-                    tcp.src(),
-                    dst,
-                    tcp.sequence()
-                );
-            } else {
-                trace!(
-                    "TCP out of order of {} -> {} at {}",
-                    tcp.src(),
-                    dst,
-                    tcp.sequence()
-                );
-            }
-        }
-    }
-
     fn update_tcp_acknowledgement(&mut self, indicator: &Indicator) {
         if let Some(tcp) = indicator.tcp() {
             let dst = SocketAddrV4::new(tcp.dst_ip_addr(), tcp.dst());
@@ -1799,7 +1801,7 @@ impl Redirector {
             let key = (tcp.src(), dst);
 
             self.streams.remove(&key);
-            self.tcp_sequence_map.remove(&key);
+            self.tcp_recv_next_map.remove(&key);
             self.tcp_acknowledgement_map.remove(&key);
             self.tcp_duplicate_map.remove(&key);
             self.tcp_last_retransmission_map.remove(&key);
