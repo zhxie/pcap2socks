@@ -170,6 +170,21 @@ impl Indicator {
         size
     }
 
+    /// Get the content length of the `Indicator` when converted into a byte-array.
+    pub fn content_len(&self) -> usize {
+        match self.link() {
+            Layers::Ethernet(ethernet) => match self.network() {
+                Some(network) => match network {
+                    Layers::Arp(arp) => ethernet.len() + arp.len(),
+                    Layers::Ipv4(ipv4) => ethernet.len() + ipv4.total_length() as usize,
+                    _ => unreachable!(),
+                },
+                None => ethernet.len(),
+            },
+            _ => unreachable!(),
+        }
+    }
+
     /// Serialize the `Indicator` into a byte-array.
     pub fn serialize(&self, buffer: &mut [u8]) -> io::Result<usize> {
         let mut begin = 0;

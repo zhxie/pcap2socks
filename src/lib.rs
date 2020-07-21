@@ -297,7 +297,7 @@ impl Forwarder {
     }
 
     /// Removes all information related to a TCP connection.
-    pub fn remove(&mut self, dst: SocketAddrV4, src_port: u16) {
+    pub fn remove_tcp(&mut self, dst: SocketAddrV4, src_port: u16) {
         let key = (src_port, dst);
 
         self.tcp_fin_map.remove(&key);
@@ -1118,7 +1118,6 @@ pub struct Redirector {
     remote: SocketAddrV4,
     streams: HashMap<(u16, SocketAddrV4), StreamWorker>,
     tcp_recv_next_map: HashMap<(u16, SocketAddrV4), u32>,
-    tcp_acknowledgement_map: HashMap<(u16, SocketAddrV4), u32>,
     tcp_duplicate_map: HashMap<(u16, SocketAddrV4), usize>,
     tcp_last_retransmission_map: HashMap<(u16, SocketAddrV4), Instant>,
     tcp_wscale_map: HashMap<(u16, SocketAddrV4), u8>,
@@ -1148,7 +1147,6 @@ impl Redirector {
             remote,
             streams: HashMap::new(),
             tcp_recv_next_map: HashMap::new(),
-            tcp_acknowledgement_map: HashMap::new(),
             tcp_duplicate_map: HashMap::new(),
             tcp_last_retransmission_map: HashMap::new(),
             tcp_wscale_map: HashMap::new(),
@@ -1333,7 +1331,6 @@ impl Redirector {
                         tcp.sequence()
                     );
                 }
-                self.update_tcp_acknowledgement(indicator);
                 let wscale = *self.tcp_wscale_map.get(&key).unwrap_or(&0);
                 {
                     let mut tx_locked = self.tx.lock().unwrap();
@@ -1406,14 +1403,14 @@ impl Redirector {
                                 }
                                 Err(e) => {
                                     // Clean up
-                                    self.remove(indicator);
+                                    self.remove_tcp(tcp);
 
                                     // Send ACK/RST
                                     let mut tx_locked = self.tx.lock().unwrap();
                                     tx_locked.send_tcp_ack_rst(dst, tcp.src())?;
 
                                     // Clean up
-                                    tx_locked.remove(dst, tcp.src());
+                                    tx_locked.remove_tcp(dst, tcp.src());
 
                                     return Err(e);
                                 }
@@ -1438,8 +1435,8 @@ impl Redirector {
                     if !is_writable && self.tx.lock().unwrap().get_cache_size(dst, tcp.src()) == 0 {
                         // LAST_ACK
                         // Clean up
-                        self.remove(indicator);
-                        self.tx.lock().unwrap().remove(dst, tcp.src());
+                        self.remove_tcp(tcp);
+                        self.tx.lock().unwrap().remove_tcp(dst, tcp.src());
 
                         return Ok(());
                     } else if *self.tcp_duplicate_map.get(&key).unwrap_or(&0)
@@ -1507,7 +1504,7 @@ impl Redirector {
             // Connect if not connected, drop if established
             if !is_exist {
                 // Clean up
-                self.remove(indicator);
+                self.remove_tcp(tcp);
 
                 // Connect
                 let stream =
@@ -1517,7 +1514,7 @@ impl Redirector {
                     Ok(stream) => {
                         let mut tx_locked = self.tx.lock().unwrap();
                         // Clean up
-                        tx_locked.remove(dst, tcp.src());
+                        tx_locked.remove_tcp(dst, tcp.src());
 
                         // Initialize values
                         let mut rng = rand::thread_rng();
@@ -1531,8 +1528,6 @@ impl Redirector {
 
                         self.tcp_recv_next_map
                             .insert(key, tcp.sequence().checked_add(1).unwrap_or(u32::MAX));
-                        self.tcp_acknowledgement_map
-                            .insert(key, sequence.checked_sub(1).unwrap_or(u32::MAX));
 
                         // Options
                         if PREFER_SEND_MSS {
@@ -1567,14 +1562,14 @@ impl Redirector {
                             self.tcp_wscale_map.insert(key, wscale);
                         }
                         if ENABLE_SACK && sack_perm {
-                            self.perm_tcp_sack(indicator);
+                            self.perm_tcp_sack(tcp);
                         }
 
                         stream
                     }
                     Err(e) => {
                         // Clean up
-                        self.remove(indicator);
+                        self.remove_tcp(tcp);
 
                         let mut tx_locked = self.tx.lock().unwrap();
                         tx_locked.set_tcp_acknowledgement(
@@ -1589,7 +1584,7 @@ impl Redirector {
                         tx_locked.send_tcp_ack_rst(dst, tcp.src())?;
 
                         // Clean up
-                        tx_locked.remove(dst, tcp.src());
+                        tx_locked.remove_tcp(dst, tcp.src());
 
                         return Err(e);
                     }
@@ -1610,8 +1605,8 @@ impl Redirector {
 
             if is_exist {
                 // Clean up
-                self.remove(indicator);
-                self.tx.lock().unwrap().remove(dst, tcp.src());
+                self.remove_tcp(tcp);
+                self.tx.lock().unwrap().remove_tcp(dst, tcp.src());
             }
         }
     }
@@ -1660,9 +1655,9 @@ impl Redirector {
                         } else {
                             // Close by remote
                             // Clean up
-                            tx_locked.remove(dst, tcp.src());
+                            tx_locked.remove_tcp(dst, tcp.src());
                             drop(tx_locked);
-                            self.remove(indicator);
+                            self.remove_tcp(tcp);
                         }
                     } else {
                         // Send ACK0
@@ -1737,79 +1732,38 @@ impl Redirector {
         Ok(())
     }
 
-    fn update_tcp_acknowledgement(&mut self, indicator: &Indicator) {
-        if let Some(tcp) = indicator.tcp() {
-            let dst = SocketAddrV4::new(tcp.dst_ip_addr(), tcp.dst());
-            let key = (tcp.src(), dst);
+    fn perm_tcp_sack(&mut self, tcp: &Tcp) {
+        let dst = SocketAddrV4::new(tcp.dst_ip_addr(), tcp.dst());
+        let key = (tcp.src(), dst);
 
-            let record_acknowledgement = *self.tcp_acknowledgement_map.get(&key).unwrap_or(&0);
-            let sub_acknowledgement = tcp
-                .acknowledgement()
-                .checked_sub(record_acknowledgement)
-                .unwrap_or_else(|| tcp.acknowledgement() + (u32::MAX - record_acknowledgement));
-
-            if sub_acknowledgement == 0 {
-                // Duplicate
-                let entry = self.tcp_duplicate_map.entry(key).or_insert(0);
-                *entry = entry.checked_add(1).unwrap_or(usize::MAX);
-                trace!(
-                    "duplicate TCP acknowledgement of {} -> {} at {}",
-                    tcp.src(),
-                    dst,
-                    tcp.acknowledgement()
-                );
-            } else if sub_acknowledgement <= MAX_U32_WINDOW_SIZE as u32 {
-                self.tcp_acknowledgement_map
-                    .insert(key, tcp.acknowledgement());
-
-                self.tcp_duplicate_map.insert(key, 0);
-                trace!(
-                    "set TCP acknowledgement of {} -> {} to {}",
-                    tcp.src(),
-                    dst,
-                    tcp.acknowledgement()
-                );
-            }
+        let sack_perm = tcp.is_sack_perm();
+        if sack_perm {
+            self.tcp_sack_perm_map.insert(key, true);
+            trace!("permit TCP sack of {} -> {}", tcp.src(), dst);
         }
     }
 
-    fn perm_tcp_sack(&mut self, indicator: &Indicator) {
-        if let Some(tcp) = indicator.tcp() {
-            let dst = SocketAddrV4::new(tcp.dst_ip_addr(), tcp.dst());
-            let key = (tcp.src(), dst);
+    fn remove_tcp(&mut self, tcp: &Tcp) {
+        let dst = SocketAddrV4::new(tcp.dst_ip_addr(), tcp.dst());
+        let key = (tcp.src(), dst);
 
-            let sack_perm = tcp.is_sack_perm();
-            if sack_perm {
-                self.tcp_sack_perm_map.insert(key, true);
-                trace!("permit TCP sack of {} -> {}", tcp.src(), dst);
+        self.streams.remove(&key);
+        self.tcp_recv_next_map.remove(&key);
+        self.tcp_duplicate_map.remove(&key);
+        self.tcp_last_retransmission_map.remove(&key);
+        self.tcp_wscale_map.remove(&key);
+        self.tcp_sack_perm_map.remove(&key);
+        if let Some(cache) = self.tcp_cache_map.get(&key) {
+            if !cache.is_empty() {
+                trace!(
+                    "cache {} -> {} was removed while the cache is not empty",
+                    tcp.src(),
+                    dst
+                );
             }
         }
-    }
-
-    fn remove(&mut self, indicator: &Indicator) {
-        if let Some(tcp) = indicator.tcp() {
-            let dst = SocketAddrV4::new(tcp.dst_ip_addr(), tcp.dst());
-            let key = (tcp.src(), dst);
-
-            self.streams.remove(&key);
-            self.tcp_recv_next_map.remove(&key);
-            self.tcp_acknowledgement_map.remove(&key);
-            self.tcp_duplicate_map.remove(&key);
-            self.tcp_last_retransmission_map.remove(&key);
-            self.tcp_wscale_map.remove(&key);
-            self.tcp_sack_perm_map.remove(&key);
-            if let Some(cache) = self.tcp_cache_map.get(&key) {
-                if !cache.is_empty() {
-                    trace!(
-                        "cache {} -> {} was removed while the cache is not empty",
-                        tcp.src(),
-                        dst
-                    );
-                }
-            }
-            self.tcp_cache_map.remove(&key);
-            trace!("remove {} -> {}", tcp.src(), dst);
-        }
+        self.tcp_cache_map.remove(&key);
+        trace!("remove {} -> {}", tcp.src(), dst);
     }
 
     fn get_tx(&self) -> Arc<Mutex<Forwarder>> {

@@ -7,7 +7,7 @@ description = "Redirect traffic to SOCKS proxy with pcap."
 readme = "README.md"
 repository = "https://github.com/zhxie/pcap2socks"
 license = "MIT"
-keywords = ["proxy", "pcap"]
+keywords = ["proxy", "pcap", "socks"]
 categories = ["command-line-utilities", "network-programming"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
