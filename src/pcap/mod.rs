@@ -32,7 +32,7 @@ pub struct Interface {
 }
 
 impl Interface {
-    /// Construct a new empty `Interface`.
+    /// Constructs a new empty `Interface`.
     pub fn new() -> Interface {
         Interface {
             name: String::new(),
@@ -141,4 +141,34 @@ pub fn interfaces() -> Vec<Interface> {
         .collect();
 
     ifs
+}
+
+/// Represents a virtual send half which will discard all incoming traffic.
+#[derive(Debug)]
+pub struct BlackHole {}
+
+impl BlackHole {
+    /// Constructs a new `BlackHole`.
+    pub fn new() -> BlackHole {
+        BlackHole {}
+    }
+}
+
+impl DataLinkSender for BlackHole {
+    fn build_and_send(
+        &mut self,
+        _: usize,
+        _: usize,
+        _: &mut dyn FnMut(&mut [u8]),
+    ) -> Option<io::Result<()>> {
+        Some(Ok(()))
+    }
+
+    fn send_to(
+        &mut self,
+        _: &[u8],
+        _: Option<datalink::NetworkInterface>,
+    ) -> Option<io::Result<()>> {
+        Some(Ok(()))
+    }
 }

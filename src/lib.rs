@@ -36,7 +36,8 @@ pub fn interfaces() -> Vec<Interface> {
         .collect()
 }
 
-/// Gets a list of available network interfaces which is possibly can be used for the current machine.
+/// Gets a list of available network interfaces which is possibly can be used for the current
+/// machine.
 fn auto_interfaces() -> Vec<Interface> {
     // With specified IP address
     let mut inters: Vec<Interface> = interfaces()

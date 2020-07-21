@@ -328,7 +328,8 @@ impl Tcp {
         None
     }
 
-    /// Get the selective acknowledgements of the layer. This function allocates space for serializing options.
+    /// Get the selective acknowledgements of the layer. This function allocates space for
+    /// serializing options.
     pub fn sack(&self) -> Option<Vec<(u32, u32)>> {
         let mut buffer = vec![0u8; 40];
         let mut packet = MutableTcpOptionPacket::new(buffer.as_mut_slice()).unwrap();
@@ -373,7 +374,8 @@ impl Tcp {
         None
     }
 
-    /// Get the timestamp echo reply of the layer. This function allocates space for serializing options.
+    /// Get the timestamp echo reply of the layer. This function allocates space for serializing
+    /// options.
     pub fn ts_ecr(&self) -> Option<u32> {
         let mut buffer = vec![0u8; 40];
         let mut packet = MutableTcpOptionPacket::new(buffer.as_mut_slice()).unwrap();
@@ -427,7 +429,8 @@ impl Tcp {
         self.layer.window == 0
     }
 
-    /// Returns if the `Tcp` indicates selective acknowledgements permitted. This function allocates space for serializing options.
+    /// Returns if the `Tcp` indicates selective acknowledgements permitted. This function
+    /// allocates space for serializing options.
     pub fn is_sack_perm(&self) -> bool {
         for ref option in &self.layer.options {
             match get_number_from_option(option) {
