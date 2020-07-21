@@ -42,8 +42,8 @@ impl SocksSendHalf {
     }
 
     /// Sends data on the socket to the given address.
-    pub async fn send_to(&mut self, buffer: &[u8], dst: SocketAddrV4) -> io::Result<usize> {
-        let mut buf = vec![0u8; HEADER_SIZE + buffer.len()];
+    pub async fn send_to(&mut self, payload: &[u8], dst: SocketAddrV4) -> io::Result<usize> {
+        let mut buf = vec![0u8; HEADER_SIZE + payload.len()];
         // RSV
         // FRAG
         // ATYP
@@ -54,7 +54,7 @@ impl SocksSendHalf {
         buf[8] = (dst.port() / 256) as u8;
         buf[9] = (dst.port() % 256) as u8;
         // Data
-        &buf[10..].copy_from_slice(buffer);
+        &buf[10..].copy_from_slice(payload);
 
         self.send_half.send(buf.as_slice()).await
     }

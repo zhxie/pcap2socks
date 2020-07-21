@@ -150,18 +150,18 @@ impl StreamWorker {
     }
 
     /// Sends data on the SOCKS5 in TCP to the destination.
-    pub async fn send(&mut self, buffer: &[u8]) -> io::Result<()> {
+    pub async fn send(&mut self, payload: &[u8]) -> io::Result<()> {
         debug!(
             "send to SOCKS {}: {} -> {} ({} Bytes)",
             "TCP",
             "0",
             self.dst,
-            buffer.len()
+            payload.len()
         );
 
         // Send
         match &mut self.stream_tx {
-            Some(tx) => tx.write_all(buffer).await,
+            Some(tx) => tx.write_all(payload).await,
             None => return Err(io::Error::from(io::ErrorKind::NotConnected)),
         }
     }
@@ -285,17 +285,17 @@ impl DatagramWorker {
     }
 
     /// Sends data on the SOCKS5 in UDP to the destination.
-    pub async fn send_to(&mut self, buffer: &[u8], dst: SocketAddrV4) -> io::Result<usize> {
+    pub async fn send_to(&mut self, payload: &[u8], dst: SocketAddrV4) -> io::Result<usize> {
         debug!(
             "send to SOCKS {}: {} -> {} ({} Bytes)",
             "UDP",
             self.local_port,
             dst,
-            buffer.len()
+            payload.len()
         );
 
         // Send
-        self.socks_tx.send_to(buffer, dst).await
+        self.socks_tx.send_to(payload, dst).await
     }
 
     /// Sets the source port of the `DatagramWorker`.

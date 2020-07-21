@@ -426,7 +426,7 @@ impl Fragmentation {
         self.length += payload.len();
     }
 
-    /// Concatenates fragmentations and returns an indicator of the buffer and the buffer itself.
+    /// Concatenates fragmentations and returns an indicator of the frame and the frame itself.
     pub fn concatenate(&self) -> (Indicator, &[u8]) {
         let new_indicator = Indicator::new(
             Layers::Ethernet(self.ethernet.clone()),
@@ -465,7 +465,7 @@ impl Defraggler {
     }
 
     /// Adds a fragmentation and returns the fragmentation if it is completed.
-    pub fn add(&mut self, indicator: &Indicator, buffer: &[u8]) -> Option<Fragmentation> {
+    pub fn add(&mut self, indicator: &Indicator, frame: &[u8]) -> Option<Fragmentation> {
         let ipv4 = match indicator.ipv4() {
             Some(ipv4) => ipv4,
             None => return None,
@@ -496,7 +496,7 @@ impl Defraggler {
 
         // Add fragmentation
         let header_size = indicator.ethernet().unwrap().len() + ipv4.len();
-        frag.add(indicator, &buffer[header_size..]);
+        frag.add(indicator, &frame[header_size..]);
         if frag.is_completed() {
             self.frags.remove(&key)
         } else {

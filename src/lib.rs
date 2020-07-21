@@ -1231,16 +1231,16 @@ impl Redirector {
         Ok(())
     }
 
-    async fn handle_ipv4(&mut self, indicator: &Indicator, buffer: &[u8]) -> io::Result<()> {
-        if let Some(ref ipv4) = indicator.ipv4() {
-            let buffer_without_padding =
-                &buffer[..indicator.ethernet().unwrap().len() + ipv4.total_length() as usize];
+    async fn handle_ipv4(&mut self, indicator: &Indicator, frame: &[u8]) -> io::Result<()> {
+        if let Some(ipv4) = indicator.ipv4() {
+            let frame_without_padding =
+                &frame[..indicator.ethernet().unwrap().len() + ipv4.total_length() as usize];
             if ipv4.src() == self.src_ip_addr {
                 debug!(
                     "receive from pcap: {} ({} + {} Bytes)",
                     indicator.brief(),
                     indicator.len(),
-                    buffer_without_padding.len() - indicator.len()
+                    frame_without_padding.len() - indicator.len()
                 );
                 // Set forwarder's hardware address
                 if !self.is_tx_src_hardware_addr_set {
@@ -1257,19 +1257,19 @@ impl Redirector {
 
                 if ipv4.is_fragment() {
                     // Fragmentation
-                    let frag = match self.defrag.add(indicator, buffer_without_padding) {
+                    let frag = match self.defrag.add(indicator, frame_without_padding) {
                         Some(frag) => frag,
                         None => return Ok(()),
                     };
-                    let (indicator, buffer_without_padding) = frag.concatenate();
+                    let (indicator, frame_without_padding) = frag.concatenate();
 
                     if let Some(t) = indicator.transport_kind() {
                         match t {
                             LayerKinds::Tcp => {
-                                self.handle_tcp(&indicator, buffer_without_padding).await?
+                                self.handle_tcp(&indicator, frame_without_padding).await?
                             }
                             LayerKinds::Udp => {
-                                self.handle_udp(&indicator, buffer_without_padding).await?
+                                self.handle_udp(&indicator, frame_without_padding).await?
                             }
                             _ => unreachable!(),
                         }
@@ -1278,10 +1278,10 @@ impl Redirector {
                     if let Some(t) = indicator.transport_kind() {
                         match t {
                             LayerKinds::Tcp => {
-                                self.handle_tcp(indicator, buffer_without_padding).await?
+                                self.handle_tcp(indicator, frame_without_padding).await?
                             }
                             LayerKinds::Udp => {
-                                self.handle_udp(indicator, buffer_without_padding).await?
+                                self.handle_udp(indicator, frame_without_padding).await?
                             }
                             _ => unreachable!(),
                         }
@@ -1293,31 +1293,31 @@ impl Redirector {
         Ok(())
     }
 
-    async fn handle_tcp(&mut self, indicator: &Indicator, buffer: &[u8]) -> io::Result<()> {
+    async fn handle_tcp(&mut self, indicator: &Indicator, frame: &[u8]) -> io::Result<()> {
         if let Some(ref tcp) = indicator.tcp() {
             if tcp.is_rst() {
                 self.handle_tcp_rst(indicator);
             } else if tcp.is_ack() {
-                return self.handle_tcp_ack(indicator, buffer).await;
+                self.handle_tcp_ack(indicator, frame).await?;
             } else if tcp.is_syn() {
                 // Pure TCP SYN
-                return self.handle_tcp_syn(indicator).await;
+                self.handle_tcp_syn(indicator).await?;
             } else if tcp.is_fin() {
                 // Pure TCP FIN
-                return self.handle_tcp_fin(indicator, buffer);
+                self.handle_tcp_fin(indicator, frame)?;
             }
         }
 
         Ok(())
     }
 
-    async fn handle_tcp_ack(&mut self, indicator: &Indicator, buffer: &[u8]) -> io::Result<()> {
+    async fn handle_tcp_ack(&mut self, indicator: &Indicator, frame: &[u8]) -> io::Result<()> {
         if let Some(tcp) = indicator.tcp() {
             let dst = SocketAddrV4::new(tcp.dst_ip_addr(), tcp.dst());
             let key = (tcp.src(), dst);
             let is_exist = self.streams.get(&key).is_some();
             let is_writable = match self.streams.get(&key) {
-                Some(ref stream) => !stream.is_write_closed(),
+                Some(stream) => !stream.is_write_closed(),
                 None => false,
             };
 
@@ -1346,11 +1346,11 @@ impl Redirector {
                     Window::with_capacity((u16::MAX as usize) << wscale as usize, tcp.sequence())
                 });
                 let stream = self.streams.get_mut(&key).unwrap();
-                if buffer.len() > indicator.len() {
+                if frame.len() > indicator.len() {
                     // ACK
                     // Append to cache
                     let prev_recv_next = cache.recv_next();
-                    let payload = cache.append(tcp.sequence(), &buffer[indicator.len()..])?;
+                    let payload = cache.append(tcp.sequence(), &frame[indicator.len()..])?;
                     if cache.recv_next() != prev_recv_next {
                         if let Some(ts) = tcp.ts() {
                             // Update timestamp only when received new data
@@ -1481,7 +1481,7 @@ impl Redirector {
 
                 // FIN
                 if tcp.is_fin() && cache.is_empty() {
-                    return self.handle_tcp_fin(indicator, buffer);
+                    return self.handle_tcp_fin(indicator, frame);
                 }
 
                 // Trigger sending remaining data
@@ -1598,7 +1598,7 @@ impl Redirector {
     }
 
     fn handle_tcp_rst(&mut self, indicator: &Indicator) {
-        if let Some(ref tcp) = indicator.tcp() {
+        if let Some(tcp) = indicator.tcp() {
             let dst = SocketAddrV4::new(tcp.dst_ip_addr(), tcp.dst());
             let key = (tcp.src(), dst);
             let is_exist = self.streams.get(&key).is_some();
@@ -1611,18 +1611,18 @@ impl Redirector {
         }
     }
 
-    fn handle_tcp_fin(&mut self, indicator: &Indicator, buffer: &[u8]) -> io::Result<()> {
-        if let Some(ref tcp) = indicator.tcp() {
+    fn handle_tcp_fin(&mut self, indicator: &Indicator, frame: &[u8]) -> io::Result<()> {
+        if let Some(tcp) = indicator.tcp() {
             let dst = SocketAddrV4::new(tcp.dst_ip_addr(), tcp.dst());
             let key = (tcp.src(), dst);
             let is_exist = self.streams.get(&key).is_some();
             let is_readable = match self.streams.get(&key) {
-                Some(ref stream) => !stream.is_read_closed(),
+                Some(stream) => !stream.is_read_closed(),
                 None => false,
             };
 
             if is_exist {
-                let payload_size = buffer.len() - indicator.len();
+                let payload_size = frame.len() - indicator.len();
                 let recv_next = tcp
                     .sequence()
                     .checked_add(payload_size as u32)
@@ -1682,8 +1682,8 @@ impl Redirector {
         Ok(())
     }
 
-    async fn handle_udp(&mut self, indicator: &Indicator, buffer: &[u8]) -> io::Result<()> {
-        if let Some(ref udp) = indicator.udp() {
+    async fn handle_udp(&mut self, indicator: &Indicator, frame: &[u8]) -> io::Result<()> {
+        if let Some(udp) = indicator.udp() {
             let mut port = self.get_local_udp_port(udp.src());
 
             // Bind
@@ -1723,7 +1723,7 @@ impl Redirector {
                 .get_mut(&port)
                 .unwrap()
                 .send_to(
-                    &buffer[indicator.len()..],
+                    &frame[indicator.len()..],
                     SocketAddrV4::new(udp.dst_ip_addr(), udp.dst()),
                 )
                 .await?;

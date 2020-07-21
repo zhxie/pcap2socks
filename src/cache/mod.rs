@@ -53,13 +53,13 @@ impl Queue {
     }
 
     /// Appends some bytes to the end of the queue.
-    pub fn append(&mut self, buffer: &[u8]) -> io::Result<()> {
-        if buffer.len() > self.buffer.len() - self.size {
+    pub fn append(&mut self, payload: &[u8]) -> io::Result<()> {
+        if payload.len() > self.buffer.len() - self.size {
             if self.is_unbounded() {
                 // Extend the buffer
                 let size = max(
                     (self.buffer.len() as f64 * EXPANSION_FACTOR) as usize,
-                    self.buffer.len() + buffer.len(),
+                    self.buffer.len() + payload.len(),
                 );
 
                 let mut new_buffer = vec![0u8; size];
@@ -93,18 +93,18 @@ impl Queue {
         // From the tail to the end of the buffer
         let mut length_a = 0;
         if self.head + self.size < self.buffer.len() {
-            length_a = min(buffer.len(), self.buffer.len() - (self.head + self.size));
+            length_a = min(payload.len(), self.buffer.len() - (self.head + self.size));
             self.buffer[self.head + self.size..self.head + self.size + length_a]
-                .copy_from_slice(&buffer[..length_a]);
+                .copy_from_slice(&payload[..length_a]);
         }
 
         // From the begin of the buffer to the head
-        let length_b = buffer.len() - length_a;
+        let length_b = payload.len() - length_a;
         if length_b > 0 {
-            self.buffer[..length_b].copy_from_slice(&buffer[length_a..]);
+            self.buffer[..length_b].copy_from_slice(&payload[length_a..]);
         }
 
-        self.size += buffer.len();
+        self.size += payload.len();
 
         Ok(())
     }
@@ -153,7 +153,7 @@ impl Queue {
         }
     }
 
-    /// Get the buffer from the certain sequence of the queue in the given size.
+    /// Get the payload from the certain sequence of the queue in the given size.
     pub fn get(&self, sequence: u32, size: usize) -> io::Result<Vec<u8>> {
         if size == 0 {
             return Ok(Vec::new());
@@ -175,29 +175,29 @@ impl Queue {
             ));
         }
 
-        let mut vector = vec![0u8; size];
+        let mut payload = vec![0u8; size];
 
         // From the head to the end of the buffer
         let head = self.head + distance;
         let head = head.checked_sub(self.buffer.len()).unwrap_or(head);
         let length_a = min(size, self.buffer.len() - head);
-        vector[..length_a].copy_from_slice(&self.buffer[head..head + length_a]);
+        payload[..length_a].copy_from_slice(&self.buffer[head..head + length_a]);
 
         // From the begin of the buffer to the tail
         let length_b = size - length_a;
         if length_b > 0 {
-            vector[length_a..].copy_from_slice(&self.buffer[..length_b]);
+            payload[length_a..].copy_from_slice(&self.buffer[..length_b]);
         }
 
-        Ok(vector)
+        Ok(payload)
     }
 
-    /// Get all the buffer of the queue.
+    /// Get all the payload of the queue.
     pub fn get_all(&self) -> Vec<u8> {
         self.get(self.sequence, self.size).unwrap()
     }
 
-    /// Get the buffer which is timed out.
+    /// Get the payload which is timed out.
     pub fn get_timed_out(&self, timedout: Duration) -> Vec<u8> {
         let mut recv_next = None;
         for clock in &self.clocks {
@@ -288,7 +288,7 @@ impl Window {
     }
 
     /// Appends some bytes to the window and returns continuous bytes from the beginning.
-    pub fn append(&mut self, sequence: u32, buffer: &[u8]) -> io::Result<Option<Vec<u8>>> {
+    pub fn append(&mut self, sequence: u32, payload: &[u8]) -> io::Result<Option<Vec<u8>>> {
         let sub_sequence = sequence
             .checked_sub(self.sequence)
             .unwrap_or_else(|| sequence + (u32::MAX - self.sequence))
@@ -297,7 +297,7 @@ impl Window {
             return Ok(None);
         }
 
-        let size = sub_sequence + buffer.len();
+        let size = sub_sequence + payload.len();
         if size > self.buffer.len() {
             if self.is_unbounded() {
                 // Extend the buffer
@@ -350,21 +350,21 @@ impl Window {
         // To the end of the buffer
         let mut length_a = 0;
         if self.buffer.len() - self.head > sub_sequence {
-            length_a = min(self.buffer.len() - self.head - sub_sequence, buffer.len());
+            length_a = min(self.buffer.len() - self.head - sub_sequence, payload.len());
             self.buffer[self.head + sub_sequence..self.head + sub_sequence + length_a]
-                .copy_from_slice(&buffer[..length_a]);
+                .copy_from_slice(&payload[..length_a]);
         }
 
         // From the begin of the buffer
-        let length_b = buffer.len() - length_a;
+        let length_b = payload.len() - length_a;
         if length_b > 0 {
-            self.buffer[..length_b].copy_from_slice(&buffer[length_a..]);
+            self.buffer[..length_b].copy_from_slice(&payload[length_a..]);
         }
 
         // Update size
         let recv_next = sequence
-            .checked_add(buffer.len() as u32)
-            .unwrap_or_else(|| buffer.len() as u32 - (u32::MAX - sequence));
+            .checked_add(payload.len() as u32)
+            .unwrap_or_else(|| payload.len() as u32 - (u32::MAX - sequence));
         let record_recv_next = self
             .sequence
             .checked_add(self.size as u32)
@@ -384,12 +384,12 @@ impl Window {
             }
 
             // Select ranges which can be merged in a loop
-            let mut end = sequence + buffer.len() as u64;
+            let mut end = sequence + payload.len() as u64;
             loop {
                 let mut pop_keys = Vec::new();
                 for (&key, &value) in self.edges.range((
                     Included(&sequence),
-                    Included(&(sequence + buffer.len() as u64)),
+                    Included(&(sequence + payload.len() as u64)),
                 )) {
                     pop_keys.push(key);
                     end = max(end, key + value as u64);
@@ -442,16 +442,17 @@ impl Window {
                 }
             }
 
-            let mut vector = vec![0u8; size];
+            // Continuos payload
+            let mut cont_payload = vec![0u8; size];
 
             // From the head to the end of the buffer
             let length_a = min(size, self.buffer.len() - self.head);
-            vector[..length_a].copy_from_slice(&self.buffer[self.head..self.head + length_a]);
+            cont_payload[..length_a].copy_from_slice(&self.buffer[self.head..self.head + length_a]);
 
             // From the begin of the buffer to the tail
             let length_b = size - length_a;
             if length_b > 0 {
-                vector[length_a..].copy_from_slice(&self.buffer[..length_b]);
+                cont_payload[length_a..].copy_from_slice(&self.buffer[..length_b]);
             }
 
             self.sequence = self
@@ -459,9 +460,9 @@ impl Window {
                 .checked_add(size as u32)
                 .unwrap_or_else(|| size as u32 - (u32::MAX - self.sequence));
             self.head = (self.head + (size % self.buffer.len())) % self.buffer.len();
-            self.size -= vector.len();
+            self.size -= cont_payload.len();
 
-            return Ok(Some(vector));
+            return Ok(Some(cont_payload));
         }
 
         Ok(None)
