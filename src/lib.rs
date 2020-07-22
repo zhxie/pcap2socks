@@ -1233,14 +1233,13 @@ impl Redirector {
 
     async fn handle_ipv4(&mut self, indicator: &Indicator, frame: &[u8]) -> io::Result<()> {
         if let Some(ipv4) = indicator.ipv4() {
-            let frame_without_padding =
-                &frame[..indicator.ethernet().unwrap().len() + ipv4.total_length() as usize];
+            let frame_without_padding = &frame[..indicator.content_len()];
             if ipv4.src() == self.src_ip_addr {
                 debug!(
                     "receive from pcap: {} ({} + {} Bytes)",
                     indicator.brief(),
                     indicator.len(),
-                    frame_without_padding.len() - indicator.len()
+                    indicator.content_len() - indicator.len()
                 );
                 // Set forwarder's hardware address
                 if !self.is_tx_src_hardware_addr_set {
@@ -1263,25 +1262,29 @@ impl Redirector {
                     };
                     let (indicator, frame_without_padding) = frag.concatenate();
 
-                    if let Some(t) = indicator.transport_kind() {
-                        match t {
-                            LayerKinds::Tcp => {
-                                self.handle_tcp(&indicator, frame_without_padding).await?
+                    if let Some(transport) = indicator.transport() {
+                        match transport {
+                            Layers::Tcp(tcp) => {
+                                self.handle_tcp(&tcp, &frame_without_padding[indicator.len()..])
+                                    .await?
                             }
-                            LayerKinds::Udp => {
-                                self.handle_udp(&indicator, frame_without_padding).await?
+                            Layers::Udp(udp) => {
+                                self.handle_udp(&udp, &frame_without_padding[indicator.len()..])
+                                    .await?
                             }
                             _ => unreachable!(),
                         }
                     }
                 } else {
-                    if let Some(t) = indicator.transport_kind() {
-                        match t {
-                            LayerKinds::Tcp => {
-                                self.handle_tcp(indicator, frame_without_padding).await?
+                    if let Some(transport) = indicator.transport() {
+                        match transport {
+                            Layers::Tcp(tcp) => {
+                                self.handle_tcp(tcp, &frame_without_padding[indicator.len()..])
+                                    .await?
                             }
-                            LayerKinds::Udp => {
-                                self.handle_udp(indicator, frame_without_padding).await?
+                            Layers::Udp(udp) => {
+                                self.handle_udp(udp, &frame_without_padding[indicator.len()..])
+                                    .await?
                             }
                             _ => unreachable!(),
                         }
@@ -1293,441 +1296,426 @@ impl Redirector {
         Ok(())
     }
 
-    async fn handle_tcp(&mut self, indicator: &Indicator, frame: &[u8]) -> io::Result<()> {
-        if let Some(ref tcp) = indicator.tcp() {
-            if tcp.is_rst() {
-                self.handle_tcp_rst(indicator);
-            } else if tcp.is_ack() {
-                self.handle_tcp_ack(indicator, frame).await?;
-            } else if tcp.is_syn() {
-                // Pure TCP SYN
-                self.handle_tcp_syn(indicator).await?;
-            } else if tcp.is_fin() {
-                // Pure TCP FIN
-                self.handle_tcp_fin(indicator, frame)?;
-            }
+    async fn handle_tcp(&mut self, tcp: &Tcp, frame: &[u8]) -> io::Result<()> {
+        if tcp.is_rst() {
+            self.handle_tcp_rst(tcp);
+        } else if tcp.is_ack() {
+            self.handle_tcp_ack(tcp, frame).await?;
+        } else if tcp.is_syn() {
+            // Pure TCP SYN
+            self.handle_tcp_syn(tcp).await?;
+        } else if tcp.is_fin() {
+            // Pure TCP FIN
+            self.handle_tcp_fin(tcp, frame)?;
+        } else {
+            unreachable!();
         }
 
         Ok(())
     }
 
-    async fn handle_tcp_ack(&mut self, indicator: &Indicator, frame: &[u8]) -> io::Result<()> {
-        if let Some(tcp) = indicator.tcp() {
-            let dst = SocketAddrV4::new(tcp.dst_ip_addr(), tcp.dst());
-            let key = (tcp.src(), dst);
-            let is_exist = self.streams.get(&key).is_some();
-            let is_writable = match self.streams.get(&key) {
-                Some(stream) => !stream.is_write_closed(),
-                None => false,
-            };
+    async fn handle_tcp_ack(&mut self, tcp: &Tcp, payload: &[u8]) -> io::Result<()> {
+        let dst = SocketAddrV4::new(tcp.dst_ip_addr(), tcp.dst());
+        let key = (tcp.src(), dst);
+        let is_exist = self.streams.get(&key).is_some();
+        let is_writable = match self.streams.get(&key) {
+            Some(stream) => !stream.is_write_closed(),
+            None => false,
+        };
 
-            if is_exist {
+        if is_exist {
+            // ACK
+            if tcp.sequence() != *self.tcp_recv_next_map.get(&key).unwrap_or(&0) {
+                trace!(
+                    "TCP out of order of {} -> {} at {}",
+                    tcp.src(),
+                    dst,
+                    tcp.sequence()
+                );
+            }
+            let wscale = *self.tcp_wscale_map.get(&key).unwrap_or(&0);
+            {
+                let mut tx_locked = self.tx.lock().unwrap();
+                tx_locked.invalidate_cache_to(dst, tcp.src(), tcp.acknowledgement());
+                tx_locked.set_tcp_send_window(
+                    dst,
+                    tcp.src(),
+                    (tcp.window() as usize) << wscale as usize,
+                );
+            }
+
+            let cache = self.tcp_cache_map.entry(key).or_insert_with(|| {
+                Window::with_capacity((u16::MAX as usize) << wscale as usize, tcp.sequence())
+            });
+            let stream = self.streams.get_mut(&key).unwrap();
+            if payload.len() > 0 {
                 // ACK
-                if tcp.sequence() != *self.tcp_recv_next_map.get(&key).unwrap_or(&0) {
-                    trace!(
-                        "TCP out of order of {} -> {} at {}",
-                        tcp.src(),
-                        dst,
-                        tcp.sequence()
-                    );
+                // Append to cache
+                let prev_recv_next = cache.recv_next();
+                let cont_payload = cache.append(tcp.sequence(), payload)?;
+                if cache.recv_next() != prev_recv_next {
+                    if let Some(ts) = tcp.ts() {
+                        // Update timestamp only when received new data
+                        self.tx.lock().unwrap().set_tcp_ts(dst, tcp.src(), ts);
+                    }
                 }
+
+                // Window scale
                 let wscale = *self.tcp_wscale_map.get(&key).unwrap_or(&0);
-                {
-                    let mut tx_locked = self.tx.lock().unwrap();
-                    tx_locked.invalidate_cache_to(dst, tcp.src(), tcp.acknowledgement());
-                    tx_locked.set_tcp_send_window(
-                        dst,
-                        tcp.src(),
-                        (tcp.window() as usize) << wscale as usize,
-                    );
+
+                // SACK
+                if *self.tcp_sack_perm_map.get(&key).unwrap_or(&false) {
+                    let sacks = cache.filled();
+                    self.tx
+                        .lock()
+                        .unwrap()
+                        .set_tcp_sacks(dst, tcp.src(), &sacks);
                 }
 
-                let cache = self.tcp_cache_map.entry(key).or_insert_with(|| {
-                    Window::with_capacity((u16::MAX as usize) << wscale as usize, tcp.sequence())
-                });
-                let stream = self.streams.get_mut(&key).unwrap();
-                if frame.len() > indicator.len() {
-                    // ACK
-                    // Append to cache
-                    let prev_recv_next = cache.recv_next();
-                    let payload = cache.append(tcp.sequence(), &frame[indicator.len()..])?;
-                    if cache.recv_next() != prev_recv_next {
-                        if let Some(ts) = tcp.ts() {
-                            // Update timestamp only when received new data
-                            self.tx.lock().unwrap().set_tcp_ts(dst, tcp.src(), ts);
-                        }
-                    }
+                match cont_payload {
+                    Some(payload) => {
+                        // Send
+                        match stream.send(payload.as_slice()).await {
+                            Ok(_) => {
+                                // Update window size
+                                let mut tx_locked = self.tx.lock().unwrap();
+                                tx_locked.set_tcp_window(
+                                    dst,
+                                    tcp.src(),
+                                    (cache.remaining_size() << wscale as usize) as u16,
+                                );
 
-                    // Window scale
-                    let wscale = *self.tcp_wscale_map.get(&key).unwrap_or(&0);
+                                // Update TCP acknowledgement
+                                tx_locked.add_tcp_acknowledgement(
+                                    dst,
+                                    tcp.src(),
+                                    payload.len() as u32,
+                                );
+                                let recv_next_entry =
+                                    self.tcp_recv_next_map.entry(key).or_insert(0);
+                                *recv_next_entry = recv_next_entry
+                                    .checked_add(payload.len() as u32)
+                                    .unwrap_or_else(|| {
+                                        payload.len() as u32 - (u32::MAX - *recv_next_entry)
+                                    });
 
-                    // SACK
-                    if *self.tcp_sack_perm_map.get(&key).unwrap_or(&false) {
-                        let sacks = cache.filled();
-                        self.tx
-                            .lock()
-                            .unwrap()
-                            .set_tcp_sacks(dst, tcp.src(), &sacks);
-                    }
-
-                    match payload {
-                        Some(payload) => {
-                            // Send
-                            match stream.send(payload.as_slice()).await {
-                                Ok(_) => {
-                                    // Update window size
-                                    let mut tx_locked = self.tx.lock().unwrap();
-                                    tx_locked.set_tcp_window(
-                                        dst,
-                                        tcp.src(),
-                                        (cache.remaining_size() << wscale as usize) as u16,
-                                    );
-
-                                    // Update TCP acknowledgement
-                                    tx_locked.add_tcp_acknowledgement(
-                                        dst,
-                                        tcp.src(),
-                                        payload.len() as u32,
-                                    );
-                                    let recv_next_entry =
-                                        self.tcp_recv_next_map.entry(key).or_insert(0);
-                                    *recv_next_entry = recv_next_entry
-                                        .checked_add(payload.len() as u32)
-                                        .unwrap_or_else(|| {
-                                            payload.len() as u32 - (u32::MAX - *recv_next_entry)
-                                        });
-
-                                    // Send ACK0
-                                    // If there is a heavy traffic, the ACK reported may be inaccurate, which would results in retransmission
-                                    tx_locked.send_tcp_ack_0(dst, tcp.src())?;
-                                }
-                                Err(e) => {
-                                    // Clean up
-                                    self.remove_tcp(tcp);
-
-                                    // Send ACK/RST
-                                    let mut tx_locked = self.tx.lock().unwrap();
-                                    tx_locked.send_tcp_ack_rst(dst, tcp.src())?;
-
-                                    // Clean up
-                                    tx_locked.remove_tcp(dst, tcp.src());
-
-                                    return Err(e);
-                                }
+                                // Send ACK0
+                                // If there is a heavy traffic, the ACK reported may be inaccurate, which would results in retransmission
+                                tx_locked.send_tcp_ack_0(dst, tcp.src())?;
                             }
-                        }
-                        None => {
-                            // Retransmission or unordered
-                            // Update window size
-                            let mut tx_locked = self.tx.lock().unwrap();
-                            tx_locked.set_tcp_window(
-                                dst,
-                                tcp.src(),
-                                (cache.remaining_size() << wscale as usize) as u16,
-                            );
+                            Err(e) => {
+                                // Clean up
+                                self.remove_tcp(tcp);
 
-                            // Send ACK0
-                            tx_locked.send_tcp_ack_0(dst, tcp.src())?;
-                        }
-                    }
-                } else {
-                    // ACK0
-                    if !is_writable && self.tx.lock().unwrap().get_cache_size(dst, tcp.src()) == 0 {
-                        // LAST_ACK
-                        // Clean up
-                        self.remove_tcp(tcp);
-                        self.tx.lock().unwrap().remove_tcp(dst, tcp.src());
+                                // Send ACK/RST
+                                let mut tx_locked = self.tx.lock().unwrap();
+                                tx_locked.send_tcp_ack_rst(dst, tcp.src())?;
 
-                        return Ok(());
-                    } else if *self.tcp_duplicate_map.get(&key).unwrap_or(&0)
-                        >= DUPLICATES_BEFORE_FAST_RETRANSMISSION
-                    {
-                        // Duplicate ACK
-                        if !tcp.is_zero_window() {
-                            let is_cooled_down = match self.tcp_last_retransmission_map.get(&key) {
-                                Some(ref instant) => {
-                                    instant.elapsed().as_millis() < RETRANSMISSION_COOL_DOWN
-                                }
-                                None => false,
-                            };
-                            if !is_cooled_down {
-                                // Fast retransmit
-                                let mut is_sr = false;
-                                if *self.tcp_sack_perm_map.get(&key).unwrap_or(&false) {
-                                    if let Some(sacks) = tcp.sack() {
-                                        if sacks.len() > 0 {
-                                            // Selective retransmission
-                                            self.tx.lock().unwrap().retransmit_tcp_ack_without(
-                                                dst,
-                                                tcp.src(),
-                                                sacks,
-                                            )?;
-                                            is_sr = true;
-                                        }
-                                    }
-                                }
+                                // Clean up
+                                tx_locked.remove_tcp(dst, tcp.src());
 
-                                if !is_sr {
-                                    // Back N
-                                    self.tx.lock().unwrap().retransmit_tcp_ack(dst, tcp.src())?;
-                                }
-
-                                self.tcp_duplicate_map.insert(key, 0);
-                                self.tcp_last_retransmission_map.insert(key, Instant::now());
+                                return Err(e);
                             }
                         }
                     }
-                }
-
-                // FIN
-                if tcp.is_fin() && cache.is_empty() {
-                    return self.handle_tcp_fin(indicator, frame);
-                }
-
-                // Trigger sending remaining data
-                self.tx.lock().unwrap().send_tcp_ack(dst, tcp.src())?;
-            } else {
-                // Send RST
-                self.tx.lock().unwrap().send_tcp_rst(dst, tcp.src(), None)?;
-            }
-        }
-
-        Ok(())
-    }
-
-    async fn handle_tcp_syn(&mut self, indicator: &Indicator) -> io::Result<()> {
-        if let Some(tcp) = indicator.tcp() {
-            let dst = SocketAddrV4::new(tcp.dst_ip_addr(), tcp.dst());
-            let key = (tcp.src(), dst);
-            let is_exist = self.streams.get(&key).is_some();
-
-            // Connect if not connected, drop if established
-            if !is_exist {
-                // Clean up
-                self.remove_tcp(tcp);
-
-                // Connect
-                let stream =
-                    StreamWorker::connect(self.get_tx(), tcp.src(), dst, self.remote).await;
-
-                let stream = match stream {
-                    Ok(stream) => {
+                    None => {
+                        // Retransmission or unordered
+                        // Update window size
                         let mut tx_locked = self.tx.lock().unwrap();
-                        // Clean up
-                        tx_locked.remove_tcp(dst, tcp.src());
-
-                        // Initialize values
-                        let mut rng = rand::thread_rng();
-                        let sequence: u32 = rng.gen();
-                        tx_locked.set_tcp_sequence(dst, tcp.src(), sequence);
-                        tx_locked.set_tcp_acknowledgement(
+                        tx_locked.set_tcp_window(
                             dst,
                             tcp.src(),
-                            tcp.sequence().checked_add(1).unwrap_or(0),
+                            (cache.remaining_size() << wscale as usize) as u16,
                         );
-
-                        self.tcp_recv_next_map
-                            .insert(key, tcp.sequence().checked_add(1).unwrap_or(u32::MAX));
-
-                        // Options
-                        if PREFER_SEND_MSS {
-                            if let Some(mss) = tcp.mss() {
-                                tx_locked.set_tcp_send_mss(dst, tcp.src(), mss);
-                            }
-                        }
-                        let wscale = match ENABLE_WSCALE {
-                            true => tcp.wscale(),
-                            false => None,
-                        };
-                        if let Some(wscale) = wscale {
-                            tx_locked.set_tcp_wscale(dst, tcp.src(), wscale);
-                        }
-                        let sack_perm = ENABLE_SACK && tcp.is_sack_perm();
-                        if ENABLE_TIMESTAMP {
-                            if let Some(ts) = tcp.ts() {
-                                tx_locked.set_tcp_ts(dst, tcp.src(), ts);
-                            }
-                        }
-
-                        // Send ACK/SYN
-                        let recv_wscale = match wscale {
-                            Some(wscale) => Some(min(wscale, MAX_RECV_WSCALE)),
-                            None => None,
-                        };
-                        tx_locked.send_tcp_ack_syn(dst, tcp.src(), None, recv_wscale, sack_perm)?;
-
-                        // Options
-                        drop(tx_locked);
-                        if let Some(wscale) = recv_wscale {
-                            self.tcp_wscale_map.insert(key, wscale);
-                        }
-                        if ENABLE_SACK && sack_perm {
-                            self.perm_tcp_sack(tcp);
-                        }
-
-                        stream
-                    }
-                    Err(e) => {
-                        // Clean up
-                        self.remove_tcp(tcp);
-
-                        let mut tx_locked = self.tx.lock().unwrap();
-                        tx_locked.set_tcp_acknowledgement(
-                            dst,
-                            tcp.src(),
-                            tcp.sequence().checked_add(1).unwrap_or(0),
-                        );
-                        if let Some(ts) = tcp.ts() {
-                            tx_locked.set_tcp_ts(dst, tcp.src(), ts);
-                        }
-                        // Send ACK/RST
-                        tx_locked.send_tcp_ack_rst(dst, tcp.src())?;
-
-                        // Clean up
-                        tx_locked.remove_tcp(dst, tcp.src());
-
-                        return Err(e);
-                    }
-                };
-
-                self.streams.insert(key, stream);
-            }
-        }
-
-        Ok(())
-    }
-
-    fn handle_tcp_rst(&mut self, indicator: &Indicator) {
-        if let Some(tcp) = indicator.tcp() {
-            let dst = SocketAddrV4::new(tcp.dst_ip_addr(), tcp.dst());
-            let key = (tcp.src(), dst);
-            let is_exist = self.streams.get(&key).is_some();
-
-            if is_exist {
-                // Clean up
-                self.remove_tcp(tcp);
-                self.tx.lock().unwrap().remove_tcp(dst, tcp.src());
-            }
-        }
-    }
-
-    fn handle_tcp_fin(&mut self, indicator: &Indicator, frame: &[u8]) -> io::Result<()> {
-        if let Some(tcp) = indicator.tcp() {
-            let dst = SocketAddrV4::new(tcp.dst_ip_addr(), tcp.dst());
-            let key = (tcp.src(), dst);
-            let is_exist = self.streams.get(&key).is_some();
-            let is_readable = match self.streams.get(&key) {
-                Some(stream) => !stream.is_read_closed(),
-                None => false,
-            };
-
-            if is_exist {
-                let payload_size = frame.len() - indicator.len();
-                let recv_next = tcp
-                    .sequence()
-                    .checked_add(payload_size as u32)
-                    .unwrap_or_else(|| payload_size as u32 - (u32::MAX - tcp.sequence()));
-                if recv_next == *self.tcp_recv_next_map.get(&key).unwrap_or(&0) {
-                    let is_cache_empty = match self.tcp_cache_map.get(&key) {
-                        Some(cache) => cache.is_empty(),
-                        None => true,
-                    };
-                    if is_cache_empty {
-                        let mut tx_locked = self.tx.lock().unwrap();
-                        tx_locked.set_tcp_acknowledgement(
-                            dst,
-                            tcp.src(),
-                            recv_next.checked_add(1).unwrap_or(0),
-                        );
-                        if let Some(ts) = tcp.ts() {
-                            tx_locked.set_tcp_ts(dst, tcp.src(), ts);
-                        }
-
-                        let recv_next_entry = self.tcp_recv_next_map.entry(key).or_insert(0);
-                        *recv_next_entry = recv_next_entry.checked_add(1).unwrap_or(u32::MAX);
 
                         // Send ACK0
                         tx_locked.send_tcp_ack_0(dst, tcp.src())?;
-                        if is_readable {
-                            // Close by local
-                            let stream = self.streams.get_mut(&key).unwrap();
-                            stream.close();
-                        } else {
-                            // Close by remote
-                            // Clean up
-                            tx_locked.remove_tcp(dst, tcp.src());
-                            drop(tx_locked);
-                            self.remove_tcp(tcp);
+                    }
+                }
+            } else {
+                // ACK0
+                if !is_writable && self.tx.lock().unwrap().get_cache_size(dst, tcp.src()) == 0 {
+                    // LAST_ACK
+                    // Clean up
+                    self.remove_tcp(tcp);
+                    self.tx.lock().unwrap().remove_tcp(dst, tcp.src());
+
+                    return Ok(());
+                } else if *self.tcp_duplicate_map.get(&key).unwrap_or(&0)
+                    >= DUPLICATES_BEFORE_FAST_RETRANSMISSION
+                {
+                    // Duplicate ACK
+                    if !tcp.is_zero_window() {
+                        let is_cooled_down = match self.tcp_last_retransmission_map.get(&key) {
+                            Some(ref instant) => {
+                                instant.elapsed().as_millis() < RETRANSMISSION_COOL_DOWN
+                            }
+                            None => false,
+                        };
+                        if !is_cooled_down {
+                            // Fast retransmit
+                            let mut is_sr = false;
+                            if *self.tcp_sack_perm_map.get(&key).unwrap_or(&false) {
+                                if let Some(sacks) = tcp.sack() {
+                                    if sacks.len() > 0 {
+                                        // Selective retransmission
+                                        self.tx.lock().unwrap().retransmit_tcp_ack_without(
+                                            dst,
+                                            tcp.src(),
+                                            sacks,
+                                        )?;
+                                        is_sr = true;
+                                    }
+                                }
+                            }
+
+                            if !is_sr {
+                                // Back N
+                                self.tx.lock().unwrap().retransmit_tcp_ack(dst, tcp.src())?;
+                            }
+
+                            self.tcp_duplicate_map.insert(key, 0);
+                            self.tcp_last_retransmission_map.insert(key, Instant::now());
                         }
+                    }
+                }
+            }
+
+            // FIN
+            if tcp.is_fin() && cache.is_empty() {
+                return self.handle_tcp_fin(tcp, payload);
+            }
+
+            // Trigger sending remaining data
+            self.tx.lock().unwrap().send_tcp_ack(dst, tcp.src())?;
+        } else {
+            // Send RST
+            self.tx.lock().unwrap().send_tcp_rst(dst, tcp.src(), None)?;
+        }
+
+        Ok(())
+    }
+
+    async fn handle_tcp_syn(&mut self, tcp: &Tcp) -> io::Result<()> {
+        let dst = SocketAddrV4::new(tcp.dst_ip_addr(), tcp.dst());
+        let key = (tcp.src(), dst);
+        let is_exist = self.streams.get(&key).is_some();
+
+        // Connect if not connected, drop if established
+        if !is_exist {
+            // Clean up
+            self.remove_tcp(tcp);
+
+            // Connect
+            let stream = StreamWorker::connect(self.get_tx(), tcp.src(), dst, self.remote).await;
+
+            let stream = match stream {
+                Ok(stream) => {
+                    let mut tx_locked = self.tx.lock().unwrap();
+                    // Clean up
+                    tx_locked.remove_tcp(dst, tcp.src());
+
+                    // Initialize values
+                    let mut rng = rand::thread_rng();
+                    let sequence: u32 = rng.gen();
+                    tx_locked.set_tcp_sequence(dst, tcp.src(), sequence);
+                    tx_locked.set_tcp_acknowledgement(
+                        dst,
+                        tcp.src(),
+                        tcp.sequence().checked_add(1).unwrap_or(0),
+                    );
+
+                    self.tcp_recv_next_map
+                        .insert(key, tcp.sequence().checked_add(1).unwrap_or(u32::MAX));
+
+                    // Options
+                    if PREFER_SEND_MSS {
+                        if let Some(mss) = tcp.mss() {
+                            tx_locked.set_tcp_send_mss(dst, tcp.src(), mss);
+                        }
+                    }
+                    let wscale = match ENABLE_WSCALE {
+                        true => tcp.wscale(),
+                        false => None,
+                    };
+                    if let Some(wscale) = wscale {
+                        tx_locked.set_tcp_wscale(dst, tcp.src(), wscale);
+                    }
+                    let sack_perm = ENABLE_SACK && tcp.is_sack_perm();
+                    if ENABLE_TIMESTAMP {
+                        if let Some(ts) = tcp.ts() {
+                            tx_locked.set_tcp_ts(dst, tcp.src(), ts);
+                        }
+                    }
+
+                    // Send ACK/SYN
+                    let recv_wscale = match wscale {
+                        Some(wscale) => Some(min(wscale, MAX_RECV_WSCALE)),
+                        None => None,
+                    };
+                    tx_locked.send_tcp_ack_syn(dst, tcp.src(), None, recv_wscale, sack_perm)?;
+
+                    // Options
+                    drop(tx_locked);
+                    if let Some(wscale) = recv_wscale {
+                        self.tcp_wscale_map.insert(key, wscale);
+                    }
+                    if ENABLE_SACK && sack_perm {
+                        self.perm_tcp_sack(tcp);
+                    }
+
+                    stream
+                }
+                Err(e) => {
+                    // Clean up
+                    self.remove_tcp(tcp);
+
+                    let mut tx_locked = self.tx.lock().unwrap();
+                    tx_locked.set_tcp_acknowledgement(
+                        dst,
+                        tcp.src(),
+                        tcp.sequence().checked_add(1).unwrap_or(0),
+                    );
+                    if let Some(ts) = tcp.ts() {
+                        tx_locked.set_tcp_ts(dst, tcp.src(), ts);
+                    }
+                    // Send ACK/RST
+                    tx_locked.send_tcp_ack_rst(dst, tcp.src())?;
+
+                    // Clean up
+                    tx_locked.remove_tcp(dst, tcp.src());
+
+                    return Err(e);
+                }
+            };
+
+            self.streams.insert(key, stream);
+        }
+
+        Ok(())
+    }
+
+    fn handle_tcp_rst(&mut self, tcp: &Tcp) {
+        let dst = SocketAddrV4::new(tcp.dst_ip_addr(), tcp.dst());
+        let key = (tcp.src(), dst);
+        let is_exist = self.streams.get(&key).is_some();
+
+        if is_exist {
+            // Clean up
+            self.remove_tcp(tcp);
+            self.tx.lock().unwrap().remove_tcp(dst, tcp.src());
+        }
+    }
+
+    fn handle_tcp_fin(&mut self, tcp: &Tcp, payload: &[u8]) -> io::Result<()> {
+        let dst = SocketAddrV4::new(tcp.dst_ip_addr(), tcp.dst());
+        let key = (tcp.src(), dst);
+        let is_exist = self.streams.get(&key).is_some();
+        let is_readable = match self.streams.get(&key) {
+            Some(stream) => !stream.is_read_closed(),
+            None => false,
+        };
+
+        if is_exist {
+            let recv_next = tcp
+                .sequence()
+                .checked_add(payload.len() as u32)
+                .unwrap_or_else(|| payload.len() as u32 - (u32::MAX - tcp.sequence()));
+            if recv_next == *self.tcp_recv_next_map.get(&key).unwrap_or(&0) {
+                let is_cache_empty = match self.tcp_cache_map.get(&key) {
+                    Some(cache) => cache.is_empty(),
+                    None => true,
+                };
+                if is_cache_empty {
+                    let mut tx_locked = self.tx.lock().unwrap();
+                    tx_locked.set_tcp_acknowledgement(
+                        dst,
+                        tcp.src(),
+                        recv_next.checked_add(1).unwrap_or(0),
+                    );
+                    if let Some(ts) = tcp.ts() {
+                        tx_locked.set_tcp_ts(dst, tcp.src(), ts);
+                    }
+
+                    let recv_next_entry = self.tcp_recv_next_map.entry(key).or_insert(0);
+                    *recv_next_entry = recv_next_entry.checked_add(1).unwrap_or(u32::MAX);
+
+                    // Send ACK0
+                    tx_locked.send_tcp_ack_0(dst, tcp.src())?;
+                    if is_readable {
+                        // Close by local
+                        let stream = self.streams.get_mut(&key).unwrap();
+                        stream.close();
                     } else {
-                        // Send ACK0
-                        self.tx.lock().unwrap().send_tcp_ack_0(dst, tcp.src())?;
+                        // Close by remote
+                        // Clean up
+                        tx_locked.remove_tcp(dst, tcp.src());
+                        drop(tx_locked);
+                        self.remove_tcp(tcp);
                     }
                 } else {
-                    trace!(
-                        "TCP out of order of {} -> {} at {}",
-                        tcp.src(),
-                        dst,
-                        tcp.sequence()
-                    );
                     // Send ACK0
                     self.tx.lock().unwrap().send_tcp_ack_0(dst, tcp.src())?;
                 }
             } else {
-                // Send RST
-                self.tx.lock().unwrap().send_tcp_rst(dst, tcp.src(), None)?;
+                trace!(
+                    "TCP out of order of {} -> {} at {}",
+                    tcp.src(),
+                    dst,
+                    tcp.sequence()
+                );
+                // Send ACK0
+                self.tx.lock().unwrap().send_tcp_ack_0(dst, tcp.src())?;
             }
+        } else {
+            // Send RST
+            self.tx.lock().unwrap().send_tcp_rst(dst, tcp.src(), None)?;
         }
 
         Ok(())
     }
 
-    async fn handle_udp(&mut self, indicator: &Indicator, frame: &[u8]) -> io::Result<()> {
-        if let Some(udp) = indicator.udp() {
-            let mut port = self.get_local_udp_port(udp.src());
+    async fn handle_udp(&mut self, udp: &Udp, payload: &[u8]) -> io::Result<()> {
+        let mut port = self.get_local_udp_port(udp.src());
 
+        // Bind
+        let is_create;
+        let is_set;
+        if port == 0 {
+            is_create = true;
+            is_set = false;
+        } else {
+            let worker = self.datagrams.get(&port).unwrap();
+            is_create = worker.is_closed();
+            is_set = worker.src_port() != udp.src();
+        }
+        if is_create {
             // Bind
-            let is_create;
-            let is_set;
-            if port == 0 {
-                is_create = true;
-                is_set = false;
-            } else {
-                let worker = self.datagrams.get(&port).unwrap();
-                is_create = worker.is_closed();
-                is_set = worker.src_port() != udp.src();
-            }
-            if is_create {
-                // Bind
-                let (worker, bind_port) =
-                    DatagramWorker::bind(self.get_tx(), udp.src(), self.remote).await?;
-                self.datagrams.insert(bind_port, worker);
+            let (worker, bind_port) =
+                DatagramWorker::bind(self.get_tx(), udp.src(), self.remote).await?;
+            self.datagrams.insert(bind_port, worker);
 
-                // Update map and LRU
-                self.datagram_map[udp.src() as usize] = bind_port;
-                self.udp_lru.put(bind_port, udp.src());
+            // Update map and LRU
+            self.datagram_map[udp.src() as usize] = bind_port;
+            self.udp_lru.put(bind_port, udp.src());
 
-                port = bind_port;
+            port = bind_port;
 
-                trace!("bind UDP port {} = {}", udp.src(), port);
-            } else if is_set {
-                // Replace
-                self.datagrams
-                    .get_mut(&port)
-                    .unwrap()
-                    .set_src_port(udp.src());
-            }
-
-            // Send
+            trace!("bind UDP port {} = {}", udp.src(), port);
+        } else if is_set {
+            // Replace
             self.datagrams
                 .get_mut(&port)
                 .unwrap()
-                .send_to(
-                    &frame[indicator.len()..],
-                    SocketAddrV4::new(udp.dst_ip_addr(), udp.dst()),
-                )
-                .await?;
+                .set_src_port(udp.src());
         }
+
+        // Send
+        self.datagrams
+            .get_mut(&port)
+            .unwrap()
+            .send_to(payload, SocketAddrV4::new(udp.dst_ip_addr(), udp.dst()))
+            .await?;
 
         Ok(())
     }

@@ -384,7 +384,6 @@ impl Fragmentation {
             ethernet: ethernet.clone(),
             ipv4: new_ipv4.clone(),
             transport: None,
-            // TODO: u16 is not safe
             buffer: vec![0; u16::MAX as usize],
             last_seen: Instant::now(),
             length: 0,
