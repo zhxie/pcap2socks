@@ -16,6 +16,8 @@ This is the development documentation of pcap2socks.
 
 - pcap2socks does not calculate for window scale ([RFC 7323](https://tools.ietf.org/html/rfc7323)) option and will open a same-size receive window as the source by default.
 
+- pcap2socks does not realize timestamp ([RFC 7323](https://www.iana.org/go/rfc7323)) option. Since only the source and destination know the full information of the traffic, pcap2socks may not trace any packet and report its timestamp correctly.
+
 - pcap2socks sends all TCP data in `TCP_NODELAY` since pcap2socks owns no timers.
 
 ## Hard-Coded Options
@@ -51,10 +53,6 @@ This is the development documentation of pcap2socks.
 `TIMEOUT_WAIT`: Same as above. Default as `20` ms.
 
 `MAX_U32_WINDOW_SIZE`: Same as above. Default as `16777216` Bytes, or 16 MB.
-
-`ENABLE_TIMESTAMP`: Represents if the TCP timestamp ([RFC 7323](https://tools.ietf.org/html/rfc7323)) option is enabled. The timestamp is useful in "long, fat network" but will also bring performance overhead. Default as `false`.
-
-`TIMESTAMP_RATE`: Represents the frequency of the update of the timestamp. The [RFC 7323](https://tools.ietf.org/html/rfc7323) describes the timestamp clock may not match the system clock and must not be "too fast", and a reasonable value is 1 ms to 1 sec per tick. 1 represents 1 ms and 1000 represents 1 sec per tick. Default as `1` (ms).
 
 `PREFER_SEND_MSS`: Represents if the received send MSS should be preferred instead of manually set MTU in TCP. Default as `true`.
 

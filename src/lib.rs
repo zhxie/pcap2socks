@@ -8,7 +8,7 @@ use std::collections::{HashMap, VecDeque};
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{self, Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 use tokio::io;
 
 pub mod cache;
@@ -76,14 +76,6 @@ const TIMEDOUT_WAIT: u64 = 20;
 /// Represents the max distance of `u32` values between packets in an `u32` window.
 const MAX_U32_WINDOW_SIZE: usize = 16 * 1024 * 1024;
 
-/// Represents if the TCP timestamp option is enabled.
-const ENABLE_TIMESTAMP: bool = false;
-/// Represents the frequency of the update of the timestamp. The
-/// [RFC 7323](https://tools.ietf.org/html/rfc7323) describes the timestamp clock
-/// must not be "too fast". And a reasonable value is 1 ms to 1 sec per tick.
-/// A `TIMESTAMP_RATE` 1 represents 1 ms and 1000 represents 1 sec per tick.
-const TIMESTAMP_RATE: u128 = 1;
-
 /// Represents if the received send MSS should be preferred instead of manually set MTU in TCP.
 const PREFER_SEND_MSS: bool = true;
 
@@ -112,7 +104,6 @@ pub struct Forwarder {
     tcp_window_map: HashMap<(u16, SocketAddrV4), u16>,
     tcp_wscale_map: HashMap<(u16, SocketAddrV4), u8>,
     tcp_sacks_map: HashMap<(u16, SocketAddrV4), Vec<(u32, u32)>>,
-    tcp_ts_map: HashMap<(u16, SocketAddrV4), u32>,
     tcp_cache_map: HashMap<(u16, SocketAddrV4), Queue>,
     tcp_queue_map: HashMap<(u16, SocketAddrV4), VecDeque<u8>>,
 }
@@ -142,7 +133,6 @@ impl Forwarder {
             tcp_window_map: HashMap::new(),
             tcp_wscale_map: HashMap::new(),
             tcp_sacks_map: HashMap::new(),
-            tcp_ts_map: HashMap::new(),
             tcp_cache_map: HashMap::new(),
             tcp_queue_map: HashMap::new(),
         }
@@ -253,36 +243,6 @@ impl Forwarder {
         }
     }
 
-    /// Sets the timestamp of a TCP connection, this will enable the timestamp in TCP traffic.
-    pub fn set_tcp_ts(&mut self, dst: SocketAddrV4, src_port: u16, ts: u32) {
-        self.tcp_ts_map.insert((src_port, dst), ts);
-        trace!("set TCP timestamp of {} -> {} to {}", dst, src_port, ts);
-    }
-
-    fn generate_ts(&self, dst: SocketAddrV4, src_port: u16) -> Option<(u32, u32)> {
-        let key = (src_port, dst);
-
-        if ENABLE_TIMESTAMP {
-            match self.tcp_ts_map.get(&key) {
-                Some(&ts) => {
-                    let now = SystemTime::now().duration_since(time::UNIX_EPOCH);
-
-                    match now {
-                        Ok(now) => {
-                            let now = now.as_millis() / TIMESTAMP_RATE;
-
-                            Some((now as u32, ts))
-                        }
-                        Err(_) => None,
-                    }
-                }
-                None => None,
-            }
-        } else {
-            None
-        }
-    }
-
     /// Invalidates TCP cache to the given sequence.
     pub fn invalidate_cache_to(&mut self, dst: SocketAddrV4, src_port: u16, sequence: u32) {
         if let Some(cache) = self.tcp_cache_map.get_mut(&(src_port, dst)) {
@@ -308,7 +268,6 @@ impl Forwarder {
         self.tcp_window_map.remove(&key);
         self.tcp_wscale_map.remove(&key);
         self.tcp_sacks_map.remove(&key);
-        self.tcp_ts_map.remove(&key);
         self.tcp_cache_map.remove(&key);
         if let Some(cache) = self.tcp_cache_map.get(&key) {
             if !cache.is_empty() {
@@ -604,15 +563,7 @@ impl Forwarder {
         let key = (src_port, dst);
 
         // Pseudo headers
-        let tcp = Tcp::new_ack(
-            0,
-            0,
-            0,
-            0,
-            0,
-            self.generate_ts(dst, src_port),
-            self.tcp_sacks_map.get(&key),
-        );
+        let tcp = Tcp::new_ack(0, 0, 0, 0, 0, self.tcp_sacks_map.get(&key), None);
         let ipv4 = Ipv4::new(0, tcp.kind(), Ipv4Addr::UNSPECIFIED, Ipv4Addr::UNSPECIFIED).unwrap();
 
         // Segmentation
@@ -639,8 +590,8 @@ impl Forwarder {
                 sequence,
                 *self.tcp_acknowledgement_map.get(&key).unwrap_or(&0),
                 *self.tcp_window_map.get(&key).unwrap_or(&65535),
-                self.generate_ts(dst, src_port),
                 self.tcp_sacks_map.get(&key),
+                None,
             );
 
             // Send
@@ -675,8 +626,8 @@ impl Forwarder {
             *self.tcp_sequence_map.get(&key).unwrap_or(&0),
             *self.tcp_acknowledgement_map.get(&key).unwrap_or(&0),
             *self.tcp_window_map.get(&key).unwrap_or(&65535),
-            self.generate_ts(dst, src_port),
             self.tcp_sacks_map.get(&key),
+            None,
         );
 
         // Send
@@ -704,7 +655,7 @@ impl Forwarder {
             mss,
             wscale,
             sack_perm,
-            self.generate_ts(dst, src_port),
+            None,
         );
 
         // Send
@@ -728,7 +679,7 @@ impl Forwarder {
             *self.tcp_sequence_map.get(&key).unwrap_or(&0),
             *self.tcp_acknowledgement_map.get(&key).unwrap_or(&0),
             *self.tcp_window_map.get(&key).unwrap_or(&65535),
-            self.generate_ts(dst, src_port),
+            None,
         );
 
         // Send
@@ -746,7 +697,7 @@ impl Forwarder {
             *self.tcp_sequence_map.get(&key).unwrap_or(&0),
             *self.tcp_acknowledgement_map.get(&key).unwrap_or(&0),
             *self.tcp_window_map.get(&key).unwrap_or(&65535),
-            self.generate_ts(dst, src_port),
+            None,
         );
 
         // Send
@@ -790,7 +741,7 @@ impl Forwarder {
             *self.tcp_sequence_map.get(&key).unwrap_or(&0),
             *self.tcp_acknowledgement_map.get(&key).unwrap_or(&0),
             *self.tcp_window_map.get(&key).unwrap_or(&65535),
-            self.generate_ts(dst, src_port),
+            None,
         );
 
         // Send
@@ -1351,14 +1302,7 @@ impl Redirector {
             if payload.len() > 0 {
                 // ACK
                 // Append to cache
-                let prev_recv_next = cache.recv_next();
                 let cont_payload = cache.append(tcp.sequence(), payload)?;
-                if cache.recv_next() != prev_recv_next {
-                    if let Some(ts) = tcp.ts() {
-                        // Update timestamp only when received new data
-                        self.tx.lock().unwrap().set_tcp_ts(dst, tcp.src(), ts);
-                    }
-                }
 
                 // Window scale
                 let wscale = *self.tcp_wscale_map.get(&key).unwrap_or(&0);
@@ -1542,11 +1486,6 @@ impl Redirector {
                         tx_locked.set_tcp_wscale(dst, tcp.src(), wscale);
                     }
                     let sack_perm = ENABLE_SACK && tcp.is_sack_perm();
-                    if ENABLE_TIMESTAMP {
-                        if let Some(ts) = tcp.ts() {
-                            tx_locked.set_tcp_ts(dst, tcp.src(), ts);
-                        }
-                    }
 
                     // Send ACK/SYN
                     let recv_wscale = match wscale {
@@ -1576,9 +1515,7 @@ impl Redirector {
                         tcp.src(),
                         tcp.sequence().checked_add(1).unwrap_or(0),
                     );
-                    if let Some(ts) = tcp.ts() {
-                        tx_locked.set_tcp_ts(dst, tcp.src(), ts);
-                    }
+
                     // Send ACK/RST
                     tx_locked.send_tcp_ack_rst(dst, tcp.src())?;
 
@@ -1633,9 +1570,6 @@ impl Redirector {
                         tcp.src(),
                         recv_next.checked_add(1).unwrap_or(0),
                     );
-                    if let Some(ts) = tcp.ts() {
-                        tx_locked.set_tcp_ts(dst, tcp.src(), ts);
-                    }
 
                     let recv_next_entry = self.tcp_recv_next_map.entry(key).or_insert(0);
                     *recv_next_entry = recv_next_entry.checked_add(1).unwrap_or(u32::MAX);

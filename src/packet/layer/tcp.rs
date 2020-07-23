@@ -28,8 +28,8 @@ impl Tcp {
         sequence: u32,
         acknowledgement: u32,
         window: u16,
-        ts: Option<(u32, u32)>,
         sacks: Option<&Vec<(u32, u32)>>,
+        ts: Option<(u32, u32)>,
     ) -> Tcp {
         let mut d_tcp = tcp::Tcp {
             source: src,
@@ -165,7 +165,7 @@ impl Tcp {
         window: u16,
         ts: Option<(u32, u32)>,
     ) -> Tcp {
-        let mut tcp = Tcp::new_ack(src, dst, sequence, acknowledgement, window, ts, None);
+        let mut tcp = Tcp::new_ack(src, dst, sequence, acknowledgement, window, None, ts);
         tcp.layer.flags |= TcpFlags::FIN;
         tcp
     }
@@ -179,7 +179,7 @@ impl Tcp {
         window: u16,
         ts: Option<(u32, u32)>,
     ) -> Tcp {
-        let mut tcp = Tcp::new_ack(src, dst, sequence, acknowledgement, window, ts, None);
+        let mut tcp = Tcp::new_ack(src, dst, sequence, acknowledgement, window, None, ts);
         tcp.layer.flags = TcpFlags::RST;
         tcp
     }
@@ -193,7 +193,7 @@ impl Tcp {
         window: u16,
         ts: Option<(u32, u32)>,
     ) -> Tcp {
-        let mut tcp = Tcp::new_ack(src, dst, sequence, acknowledgement, window, ts, None);
+        let mut tcp = Tcp::new_ack(src, dst, sequence, acknowledgement, window, None, ts);
         tcp.layer.flags = TcpFlags::FIN;
         tcp
     }
