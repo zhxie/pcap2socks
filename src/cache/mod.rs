@@ -4,7 +4,9 @@ use std::cmp::{max, min};
 use std::collections::{BTreeMap, VecDeque};
 use std::io;
 use std::ops::Bound::Included;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use super::Timer;
 
 /// Represents the initial size of cache.
 const INITIAL_SIZE: usize = u16::MAX as usize;
@@ -23,9 +25,10 @@ pub struct Queue {
     sequence: u32,
     head: usize,
     size: usize,
-    clocks: VecDeque<(u32, Instant)>,
+    clocks: VecDeque<(u32, Timer)>,
 }
 
+// TODO: update RTO
 impl Queue {
     /// Creates a new `Queue`.
     pub fn new(sequence: u32) -> Queue {
@@ -53,7 +56,7 @@ impl Queue {
     }
 
     /// Appends some bytes to the end of the queue.
-    pub fn append(&mut self, payload: &[u8]) -> io::Result<()> {
+    pub fn append(&mut self, payload: &[u8], rto: u64) -> io::Result<()> {
         if payload.len() > self.buffer.len() - self.size {
             if self.is_unbounded() {
                 // Extend the buffer
@@ -88,7 +91,7 @@ impl Queue {
             .sequence
             .checked_add(self.size as u32)
             .unwrap_or_else(|| self.size as u32 - (u32::MAX - self.sequence));
-        self.clocks.push_back((sequence, Instant::now()));
+        self.clocks.push_back((sequence, Timer::new(rto)));
 
         // From the tail to the end of the buffer
         let mut length_a = 0;
@@ -109,8 +112,8 @@ impl Queue {
         Ok(())
     }
 
-    /// Invalidates queue to the certain sequence.
-    pub fn invalidate_to(&mut self, sequence: u32) {
+    /// Invalidates queue to the certain sequence and returns the RTT.
+    pub fn invalidate_to(&mut self, sequence: u32) -> Option<Duration> {
         let size = sequence
             .checked_sub(self.sequence)
             .unwrap_or_else(|| u32::MAX - self.sequence + sequence) as usize;
@@ -123,6 +126,8 @@ impl Queue {
             } else {
                 self.head = (self.head + (size % self.buffer.len())) % self.buffer.len();
             }
+
+            let mut rtt = None;
 
             // Pop clocks
             while !self.clocks.is_empty() {
@@ -138,9 +143,14 @@ impl Queue {
                     .checked_sub(recv_next)
                     .unwrap_or_else(|| sequence + (u32::MAX - recv_next))
                     as usize;
+
                 if dist <= MAX_U32_WINDOW_SIZE as usize && dist_next <= MAX_U32_WINDOW_SIZE as usize
                 {
-                    self.clocks.pop_front();
+                    let clock = self.clocks.pop_front().unwrap();
+                    let timer = clock.1;
+                    if !timer.is_timedout() {
+                        rtt = Some(timer.elapsed());
+                    }
                 } else if dist <= MAX_U32_WINDOW_SIZE {
                     let instant = self.clocks[0].1;
                     self.clocks.pop_front();
@@ -150,7 +160,11 @@ impl Queue {
                     break;
                 }
             }
+
+            return rtt;
         }
+
+        None
     }
 
     /// Get the payload from the certain sequence of the queue in the given size.
@@ -197,11 +211,12 @@ impl Queue {
         self.get(self.sequence, self.size).unwrap()
     }
 
-    /// Get the payload which is timed out.
-    pub fn get_timed_out(&self, timedout: Duration) -> Vec<u8> {
+    /// Get the payload which is timed out from the begin to the first byte which is not timed out.
+    pub fn get_timed_out(&self) -> Vec<u8> {
         let mut recv_next = None;
         for clock in &self.clocks {
-            if clock.1.elapsed() <= timedout {
+            let timer = clock.1;
+            if !timer.is_timedout() {
                 recv_next = Some(clock.0);
                 break;
             }

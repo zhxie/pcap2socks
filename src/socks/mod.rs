@@ -15,6 +15,9 @@ use self::socks::SocksSendHalf;
 
 /// Trait for forwarding stream.
 pub trait ForwardStream: Send {
+    /// Opens a stream connection.
+    fn open(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()>;
+
     /// Forwards stream.
     fn forward(&mut self, dst: SocketAddrV4, src_port: u16, payload: &[u8]) -> io::Result<()>;
 
@@ -63,6 +66,9 @@ impl StreamWorker {
         let is_read_closed = Arc::new(AtomicBool::new(false));
         let is_read_closed_cloned = Arc::clone(&is_read_closed);
         let is_read_closed_cloned2 = Arc::clone(&is_read_closed);
+
+        // Open
+        tx_cloned.lock().unwrap().open(dst, src_port)?;
 
         // Forward
         tokio::spawn(async move {

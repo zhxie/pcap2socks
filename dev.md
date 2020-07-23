@@ -6,8 +6,6 @@ This is the development documentation of pcap2socks.
 
 ### Differences with the Standard [RFC 793](https://tools.ietf.org/html/rfc793) and Its Updates
 
-- pcap2socks does not compute the retransmission timer, which is also known as RTO. The RTO currently is a constant value named `RTO`. See below for details.
-
 - pcap2socks does not maintain the congestion window ([RFC 5681](https://tools.ietf.org/html/rfc5681)). The congestion control will be implemented in the future release, and the algorithm CUBIC ([RFC 8312](https://tools.ietf.org/html/rfc8312)), PRR ([RFC 6973](https://tools.ietf.org/html/rfc6937)) or [BBR](https://github.com/google/bbr) may be considered.
 
 - pcap2socks does not consider the wait time in states like `TIME_WAIT` since the source should maintain its state.
@@ -56,7 +54,11 @@ This is the development documentation of pcap2socks.
 
 `PREFER_SEND_MSS`: Represents if the received send MSS should be preferred instead of manually set MTU in TCP. Default as `true`.
 
-`RTO`: Represents the timeout for a retransmission in a TCP connection. In fact, this value should be adjusted based on RTT ([RFC 6298](https://tools.ietf.org/html/rfc6298)). Default as `3000` ms.
+`INITIAL_RTO`: Represents the initial timeout for a retransmission in a TCP connection. Default as `1000` ms.
+
+`MIN_RTO`: Represents the minimum timeout for a retransmission in a TCP connection. Default as `1000` ms.
+
+`MIN_SYN_RTO`: Represents the minimum timeout for a retransmission of a SYN or ACK/SYN in a TCP connection. The connection will take `INITIAL_RTO` as default, and will revert to `MIN_SYN_RTO` if the SYN or ACK/SYN is lost. Default as `3000` ms.
 
 `DUPLICATES_BEFORE_FAST_RETRANSMISSION`: Represents the TCP ACK duplicates before trigger a fast retransmission, also recognized as fast retransmission. Default as `3`.
 
@@ -74,7 +76,7 @@ This is the development documentation of pcap2socks.
 
 pcap2socks has some defects in the view of engineering.
 
-- Because pcap2socks does not implement the TCP congestion control and the RTO calculation, the traffic transmission performance may be lost. However, since pcap2socks is mainly used in LANs, the actual impact may be minimal.
+- Because pcap2socks does not implement the TCP congestion control, the traffic transmission performance may be lost. However, since pcap2socks is mainly used in LANs, the actual impact may be minimal.
 
 - pcap2socks ignores checksums, lengths and some other fields in headers to support non-standard systems and LRO (large receive offload), but will also bring security issues.
 
