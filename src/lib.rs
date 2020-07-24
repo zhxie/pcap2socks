@@ -1593,7 +1593,7 @@ impl Redirector {
             self.remove_tcp(tcp);
 
             // Admit SYN
-            self.set_tcp_recv_next(tcp, tcp.sequence().checked_add(1).unwrap_or(u32::MAX));
+            self.set_tcp_recv_next(tcp, tcp.sequence().checked_add(1).unwrap_or(0));
             let wscale = match ENABLE_WSCALE {
                 true => tcp.wscale(),
                 false => None,
@@ -1702,6 +1702,7 @@ impl Redirector {
                 );
             }
 
+            // If the receive next is the same as the FIN sequence, the FIN should be popped
             let fin_sequence = *self.tcp_fin_sequence_map.get(&key).unwrap();
             if fin_sequence == *self.tcp_recv_next_map.get(&key).unwrap_or(&0) {
                 // Admit FIN
