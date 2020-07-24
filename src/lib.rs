@@ -310,7 +310,7 @@ impl Forwarder {
         }
     }
 
-    /// Acknowledges the TCP connection to the given sequence.
+    /// Acknowledges a TCP connection to the given sequence.
     pub fn acknowledge(&mut self, dst: SocketAddrV4, src_port: u16, sequence: u32) {
         let key = (src_port, dst);
 
@@ -404,7 +404,7 @@ impl Forwarder {
         }
         self.tcp_fin_queue_map.remove(&key);
         self.tcp_rto_map.remove(&key);
-        trace!("remove {} -> {}", dst, src_port);
+        trace!("remove TCP {} -> {}", dst, src_port);
     }
 
     /// Get the size of the cache and the queue of a TCP connection.
@@ -443,7 +443,7 @@ impl Forwarder {
         self.send(&indicator)
     }
 
-    /// Appends TCP ACK payload to queue.
+    /// Appends TCP ACK payload to the queue.
     pub fn append_to_queue(
         &mut self,
         dst: SocketAddrV4,
@@ -1715,41 +1715,42 @@ impl Redirector {
             }
 
             // If the receive next is the same as the FIN sequence, the FIN should be popped
-            let fin_sequence = *self.tcp_fin_sequence_map.get(&key).unwrap();
-            if fin_sequence == *self.tcp_recv_next_map.get(&key).unwrap_or(&0) {
-                // Admit FIN
-                self.tcp_fin_sequence_map.remove(&key);
-                self.add_tcp_recv_next(tcp, 1);
+            if let Some(&fin_sequence) = self.tcp_fin_sequence_map.get(&key) {
+                if fin_sequence == *self.tcp_recv_next_map.get(&key).unwrap_or(&0) {
+                    // Admit FIN
+                    self.tcp_fin_sequence_map.remove(&key);
+                    self.add_tcp_recv_next(tcp, 1);
 
-                {
-                    let mut tx_locked = self.tx.lock().unwrap();
-                    tx_locked.add_tcp_acknowledgement(dst, tcp.src(), 1);
+                    {
+                        let mut tx_locked = self.tx.lock().unwrap();
+                        tx_locked.add_tcp_acknowledgement(dst, tcp.src(), 1);
 
-                    // Send ACK0
-                    tx_locked.send_tcp_ack_0(dst, tcp.src())?;
-                }
-                if is_readable {
-                    // Close by local
-                    let stream = self.streams.get_mut(&key).unwrap();
-                    stream.close();
+                        // Send ACK0
+                        tx_locked.send_tcp_ack_0(dst, tcp.src())?;
+                    }
+                    if is_readable {
+                        // Close by local
+                        let stream = self.streams.get_mut(&key).unwrap();
+                        stream.close();
+                    } else {
+                        // Close by remote
+                        // Clean up
+                        self.tx.lock().unwrap().remove_tcp(dst, tcp.src());
+
+                        self.remove_tcp(tcp);
+                    }
                 } else {
-                    // Close by remote
-                    // Clean up
-                    self.tx.lock().unwrap().remove_tcp(dst, tcp.src());
+                    trace!(
+                        "TCP out of order of {} -> {} at {}",
+                        tcp.src(),
+                        dst,
+                        tcp.sequence()
+                    );
 
-                    self.remove_tcp(tcp);
-                }
-            } else {
-                trace!(
-                    "TCP out of order of {} -> {} at {}",
-                    tcp.src(),
-                    dst,
-                    tcp.sequence()
-                );
-
-                if payload.len() == 0 {
-                    // Send ACK0
-                    self.tx.lock().unwrap().send_tcp_ack_0(dst, tcp.src())?;
+                    if payload.len() == 0 {
+                        // Send ACK0
+                        self.tx.lock().unwrap().send_tcp_ack_0(dst, tcp.src())?;
+                    }
                 }
             }
         } else {
@@ -1885,7 +1886,7 @@ impl Redirector {
             );
         }
         self.tcp_fin_sequence_map.remove(&key);
-        trace!("remove {} -> {}", tcp.src(), dst);
+        trace!("remove TCP {} -> {}", tcp.src(), dst);
     }
 
     fn get_tx(&self) -> Arc<Mutex<Forwarder>> {

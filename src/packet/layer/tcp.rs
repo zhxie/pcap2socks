@@ -47,7 +47,10 @@ impl Tcp {
         };
         // TCP options
         let is_ts = ts.is_some();
-        let is_sacks = sacks.is_some() && sacks.unwrap().len() > 0;
+        let is_sacks = match sacks {
+            Some(sacks) => sacks.len() > 0,
+            None => false,
+        };
 
         if is_ts && is_sacks {
             let ts = ts.unwrap();

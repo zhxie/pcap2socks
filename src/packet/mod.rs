@@ -101,52 +101,37 @@ impl Indicator {
 
     /// Get the brief of the `Indicator`.
     pub fn brief(&self) -> String {
-        match self.network_kind() {
-            Some(t) => match t {
-                LayerKinds::Arp => {
-                    let layer = self.arp().unwrap();
-                    format!("{}", layer)
-                }
-                LayerKinds::Ipv4 => match self.transport_kind() {
-                    Some(t) => match t {
-                        LayerKinds::Tcp => {
-                            let layer = self.tcp().unwrap();
-                            format!(
-                                "{}: {}:{} -> {}:{} {}",
-                                layer.kind(),
-                                layer.src_ip_addr(),
-                                layer.src(),
-                                layer.dst_ip_addr(),
-                                layer.dst(),
-                                layer.flag_string(),
-                            )
-                        }
-                        LayerKinds::Udp => {
-                            let layer = self.udp().unwrap();
-                            format!(
-                                "{}: {}:{} -> {}:{}, Length = {}",
-                                layer.kind(),
-                                layer.src_ip_addr(),
-                                layer.src(),
-                                layer.dst_ip_addr(),
-                                layer.dst(),
-                                layer.length(),
-                            )
-                        }
+        match self.network() {
+            Some(network) => match network {
+                Layers::Arp(arp) => format!("{}", arp),
+                Layers::Ipv4(ipv4) => match self.transport() {
+                    Some(transport) => match transport {
+                        Layers::Tcp(tcp) => format!(
+                            "{}: {}:{} -> {}:{} {}",
+                            tcp.kind(),
+                            tcp.src_ip_addr(),
+                            tcp.src(),
+                            tcp.dst_ip_addr(),
+                            tcp.dst(),
+                            tcp.flag_string(),
+                        ),
+                        Layers::Udp(udp) => format!(
+                            "{}: {}:{} -> {}:{}, Length = {}",
+                            udp.kind(),
+                            udp.src_ip_addr(),
+                            udp.src(),
+                            udp.dst_ip_addr(),
+                            udp.dst(),
+                            udp.length(),
+                        ),
                         _ => unreachable!(),
                     },
-                    None => {
-                        let layer = self.ipv4().unwrap();
-                        format!("{}", layer)
-                    }
+                    None => format!("{}", ipv4),
                 },
                 _ => unreachable!(),
             },
-            None => match self.link_kind() {
-                LayerKinds::Ethernet => {
-                    let layer = self.ethernet().unwrap();
-                    format!("{}", layer)
-                }
+            None => match self.link() {
+                Layers::Ethernet(ethernet) => format!("{}", ethernet),
                 _ => unreachable!(),
             },
         }
@@ -472,15 +457,10 @@ impl Defraggler {
 
         let key = (ipv4.src(), ipv4.dst(), ipv4.identification());
 
-        let mut is_create = false;
-        if self.frags.contains_key(&key) {
-            if self.frags.get(&key).unwrap().is_expired() {
-                // Expired
-                is_create = true;
-            }
-        } else {
-            is_create = true;
-        }
+        let is_create = match self.frags.get(&key) {
+            Some(frag) => frag.is_expired(),
+            None => true,
+        };
 
         if is_create {
             let frag = match Fragmentation::new(indicator) {

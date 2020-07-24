@@ -33,7 +33,7 @@ async fn main() {
     // Route
     let src = match flags.preset {
         Some(ref preset) => match preset.as_str() {
-            "t" | "tencent" => "10.6.0.1".parse().unwrap(),
+            "t" | "tencent" => Ipv4Addr::new(10, 6, 0, 1),
             "n" | "netease" | "u" | "uu" => {
                 let mut ip_octets = inter.ip_addrs[0].octets();
                 ip_octets[0] = 172;
@@ -51,7 +51,7 @@ async fn main() {
     };
     let publish = match flags.preset {
         Some(ref preset) => match preset.as_str() {
-            "t" | "tencent" => Some("10.6.0.2".parse().unwrap()),
+            "t" | "tencent" => Some(Ipv4Addr::new(10, 6, 0, 2)),
             "n" | "netease" | "u" | "uu" => {
                 let mut ip_octets = inter.ip_addrs[0].octets();
                 ip_octets[0] = 172;
