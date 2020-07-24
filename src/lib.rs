@@ -592,6 +592,7 @@ impl Forwarder {
             self.double_tcp_rto(dst, src_port);
             // TODO: update RTO
 
+            // If all the cache is get, the FIN should also be sent
             if size == payload.len() && self.tcp_fin_map.contains_key(&key) {
                 // ACK/FIN
                 self.tcp_fin_map.insert(
@@ -783,7 +784,7 @@ impl Forwarder {
                 .checked_sub(record_sequence)
                 .unwrap_or_else(|| recv_next + (u32::MAX - record_sequence));
             if (sub_sequence as usize) <= MAX_U32_WINDOW_SIZE {
-                self.add_tcp_acknowledgement(dst, src_port, sub_sequence);
+                self.add_tcp_sequence(dst, src_port, sub_sequence);
             }
 
             i = i + 1;
