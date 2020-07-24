@@ -1583,6 +1583,9 @@ impl Redirector {
             if tcp.is_fin() || self.tcp_fin_sequence_map.contains_key(&key) {
                 self.handle_tcp_fin(tcp, payload)?;
             }
+
+            // Trigger sending remaining data
+            self.tx.lock().unwrap().send_tcp_ack(dst, tcp.src())?;
         } else {
             // Send RST
             self.tx.lock().unwrap().send_tcp_rst(dst, tcp.src(), None)?;
