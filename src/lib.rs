@@ -111,11 +111,6 @@ const INITIAL_RTO: u64 = 1000;
 /// Represents the minimum timeout for a retransmission in a TCP connection.
 const MIN_RTO: u64 = 1000;
 
-/// Represents the minimum timeout for a retransmission of a SYN or ACK/SYN in a TCP connection.
-/// The connection will take `INITIAL_RTO` as default, and will revert to `MIN_SYN_RTO` if the
-/// SYN or ACK/SYN is lost.
-const MIN_SYN_RTO: u64 = 3000;
-
 /// Represents the minimum packet size.
 /// Because all traffic is in Ethernet, and the 802.3 specifies the minimum is 64 Bytes.
 /// Exclude the 4 bytes used in FCS, the minimum packet size in pcap2socks is 60 Bytes.
@@ -134,7 +129,6 @@ pub struct Forwarder {
     tcp_send_mss_map: HashMap<(u16, SocketAddrV4), u16>,
     tcp_send_wscale_map: HashMap<(u16, SocketAddrV4), u8>,
     tcp_send_sack_perm_map: HashMap<(u16, SocketAddrV4), bool>,
-    tcp_ack_syn_map: HashMap<(u16, SocketAddrV4), Timer>,
     tcp_fin_map: HashMap<(u16, SocketAddrV4), Timer>,
     tcp_sequence_map: HashMap<(u16, SocketAddrV4), u32>,
     tcp_acknowledgement_map: HashMap<(u16, SocketAddrV4), u32>,
@@ -167,7 +161,6 @@ impl Forwarder {
             tcp_send_mss_map: HashMap::new(),
             tcp_send_wscale_map: HashMap::new(),
             tcp_send_sack_perm_map: HashMap::new(),
-            tcp_ack_syn_map: HashMap::new(),
             tcp_fin_map: HashMap::new(),
             tcp_sequence_map: HashMap::new(),
             tcp_acknowledgement_map: HashMap::new(),
@@ -306,7 +299,7 @@ impl Forwarder {
     pub fn invalidate_to(&mut self, dst: SocketAddrV4, src_port: u16, sequence: u32) {
         let key = (src_port, dst);
 
-        // TODO: acknowledges ACK/SYN and FIN
+        // TODO: acknowledges FIN
         // Invalidate cache
         if let Some(cache) = self.tcp_cache_map.get_mut(&key) {
             // TODO: update RTO
@@ -333,7 +326,6 @@ impl Forwarder {
         self.tcp_send_mss_map.remove(&key);
         self.tcp_send_wscale_map.remove(&key);
         self.tcp_send_sack_perm_map.remove(&key);
-        self.tcp_ack_syn_map.remove(&key);
         self.tcp_fin_map.remove(&key);
         self.tcp_sequence_map.remove(&key);
         self.tcp_acknowledgement_map.remove(&key);
@@ -534,87 +526,62 @@ impl Forwarder {
     ) -> io::Result<()> {
         let key = (src_port, dst);
 
-        // ACK/SYN
-        let retrans_ack_syn = match self.tcp_ack_syn_map.get(&key) {
-            Some(timer) => timer.is_timedout(),
-            None => false,
+        let mut payload = Vec::new();
+        let mut sequence = 0;
+        if let Some(cache) = self.tcp_cache_map.get(&key) {
+            payload = cache.get_timed_out();
+            sequence = cache.sequence();
         };
 
-        // Retransmit
-        if retrans_ack_syn {
-            // ACK/SYN
-            // Double RTO
-            let next_rto = max(
-                MIN_SYN_RTO,
-                *self.tcp_rto_map.get(&key).unwrap_or(&INITIAL_RTO) * 2,
+        if payload.len() > 0 {
+            // ACK
+            trace!(
+                "retransmit {} Bytes {} -> {} from {} due to timeout",
+                payload.len(),
+                dst,
+                src_port,
+                sequence
             );
-            self.set_tcp_rto(dst, src_port, next_rto);
-            self.tcp_ack_syn_map.insert(
-                key,
-                Timer::new(*self.tcp_rto_map.get(&key).unwrap_or(&INITIAL_RTO)),
-            );
-
-            trace!("retransmit TCP SYN {} -> {} due to timeout", dst, src_port);
             // Send
-            self.send_tcp_ack_syn(dst, src_port)?;
+            self.send_tcp_ack_raw(dst, src_port, sequence, payload.as_slice())?;
         } else {
-            let mut payload = Vec::new();
-            let mut sequence = 0;
-            if let Some(cache) = self.tcp_cache_map.get(&key) {
-                payload = cache.get_timed_out();
-                sequence = cache.sequence();
-            };
+            // FIN
+            let retrans_fin = match self.tcp_fin_map.get(&key) {
+                Some(timer) => {
+                    if timer.is_timedout() {
+                        let is_queue_empty = match self.tcp_queue_map.get(&key) {
+                            Some(cache) => cache.is_empty(),
+                            None => true,
+                        };
+                        let is_cache_empty = match self.tcp_cache_map.get(&key) {
+                            Some(cache) => cache.is_empty(),
+                            None => true,
+                        };
 
-            if payload.len() > 0 {
-                // ACK
-                trace!(
-                    "retransmit {} Bytes {} -> {} from {} due to timeout",
-                    payload.len(),
-                    dst,
-                    src_port,
-                    sequence
-                );
-                // Send
-                self.send_tcp_ack_raw(dst, src_port, sequence, payload.as_slice())?;
-            } else {
-                // FIN
-                let retrans_fin = match self.tcp_fin_map.get(&key) {
-                    Some(timer) => {
-                        if timer.is_timedout() {
-                            let is_queue_empty = match self.tcp_queue_map.get(&key) {
-                                Some(cache) => cache.is_empty(),
-                                None => true,
-                            };
-                            let is_cache_empty = match self.tcp_cache_map.get(&key) {
-                                Some(cache) => cache.is_empty(),
-                                None => true,
-                            };
-
-                            if is_queue_empty && is_cache_empty {
-                                true
-                            } else {
-                                false
-                            }
+                        if is_queue_empty && is_cache_empty {
+                            true
                         } else {
                             false
                         }
+                    } else {
+                        false
                     }
-                    None => false,
-                };
-
-                if retrans_fin {
-                    // Double RTO
-                    let next_rto = *self.tcp_rto_map.get(&key).unwrap_or(&INITIAL_RTO) * 2;
-                    self.set_tcp_rto(dst, src_port, next_rto);
-                    self.tcp_fin_map.insert(
-                        key,
-                        Timer::new(*self.tcp_rto_map.get(&key).unwrap_or(&INITIAL_RTO)),
-                    );
-
-                    trace!("retransmit TCP FIN {} -> {} due to timeout", dst, src_port);
-                    // Send
-                    self.send_tcp_fin(dst, src_port)?;
                 }
+                None => false,
+            };
+
+            if retrans_fin {
+                // Double RTO
+                let next_rto = *self.tcp_rto_map.get(&key).unwrap_or(&INITIAL_RTO) * 2;
+                self.set_tcp_rto(dst, src_port, next_rto);
+                self.tcp_fin_map.insert(
+                    key,
+                    Timer::new(*self.tcp_rto_map.get(&key).unwrap_or(&INITIAL_RTO)),
+                );
+
+                trace!("retransmit TCP FIN {} -> {} due to timeout", dst, src_port);
+                // Send
+                self.send_tcp_fin(dst, src_port)?;
             }
         }
 
@@ -625,58 +592,52 @@ impl Forwarder {
     pub fn send_tcp_ack(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()> {
         let key = (src_port, dst);
 
-        if self.tcp_ack_syn_map.contains_key(&key) {
-            // ACK/SYN
-            // Send
-            self.send_tcp_ack_syn(dst, src_port)?;
-        } else {
-            if let Some(queue) = self.tcp_queue_map.get_mut(&key) {
-                let window = *self.tcp_send_window_map.get(&key).unwrap_or(&0);
-                if window > 0 {
-                    // TCP sequence
-                    let sequence = *self.tcp_sequence_map.get(&key).unwrap_or(&0);
-                    let wscale = *self.tcp_wscale_map.get(&key).unwrap_or(&0);
+        if let Some(queue) = self.tcp_queue_map.get_mut(&key) {
+            let window = *self.tcp_send_window_map.get(&key).unwrap_or(&0);
+            if window > 0 {
+                // TCP sequence
+                let sequence = *self.tcp_sequence_map.get(&key).unwrap_or(&0);
+                let wscale = *self.tcp_wscale_map.get(&key).unwrap_or(&0);
 
+                let cache = self.tcp_cache_map.entry(key).or_insert_with(|| {
+                    Queue::with_capacity((u16::MAX as usize) << wscale as usize, sequence)
+                });
+                let sent_size = cache.len();
+                let remain_size = window.checked_sub(sent_size).unwrap_or(0);
+                let remain_size = min(remain_size, u16::MAX as usize) as u16;
+
+                let size = min(remain_size as usize, queue.len());
+                if size > 0 {
+                    let payload: Vec<u8> = queue.drain(..size).collect();
+
+                    // Append to cache
                     let cache = self.tcp_cache_map.entry(key).or_insert_with(|| {
                         Queue::with_capacity((u16::MAX as usize) << wscale as usize, sequence)
                     });
-                    let sent_size = cache.len();
-                    let remain_size = window.checked_sub(sent_size).unwrap_or(0);
-                    let remain_size = min(remain_size, u16::MAX as usize) as u16;
+                    cache.append(
+                        &payload,
+                        *self.tcp_rto_map.get(&key).unwrap_or(&INITIAL_RTO),
+                    )?;
 
-                    let size = min(remain_size as usize, queue.len());
-                    if size > 0 {
-                        let payload: Vec<u8> = queue.drain(..size).collect();
-
-                        // Append to cache
-                        let cache = self.tcp_cache_map.entry(key).or_insert_with(|| {
-                            Queue::with_capacity((u16::MAX as usize) << wscale as usize, sequence)
-                        });
-                        cache.append(
-                            &payload,
-                            *self.tcp_rto_map.get(&key).unwrap_or(&INITIAL_RTO),
-                        )?;
-
-                        // Send
-                        self.send_tcp_ack_raw(dst, src_port, sequence, &payload)?;
-                    }
+                    // Send
+                    self.send_tcp_ack_raw(dst, src_port, sequence, &payload)?;
                 }
             }
+        }
 
-            // FIN
-            if self.tcp_fin_map.contains_key(&key) {
-                let is_queue_empty = match self.tcp_queue_map.get(&key) {
-                    Some(cache) => cache.is_empty(),
-                    None => true,
-                };
-                let is_cache_empty = match self.tcp_cache_map.get(&key) {
-                    Some(cache) => cache.is_empty(),
-                    None => true,
-                };
-                if is_queue_empty && is_cache_empty {
-                    // Send
-                    self.send_tcp_fin(dst, src_port)?;
-                }
+        // FIN
+        if self.tcp_fin_map.contains_key(&key) {
+            let is_queue_empty = match self.tcp_queue_map.get(&key) {
+                Some(cache) => cache.is_empty(),
+                None => true,
+            };
+            let is_cache_empty = match self.tcp_cache_map.get(&key) {
+                Some(cache) => cache.is_empty(),
+                None => true,
+            };
+            if is_queue_empty && is_cache_empty {
+                // Send
+                self.send_tcp_fin(dst, src_port)?;
             }
         }
 
@@ -1075,15 +1036,7 @@ impl Forwarder {
 
 impl ForwardStream for Forwarder {
     fn open(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()> {
-        let key = (src_port, dst);
-
-        self.tcp_ack_syn_map.insert(key, Timer::new(INITIAL_RTO));
-
-        self.send_tcp_ack(dst, src_port)?;
-
-        self.tcp_ack_syn_map.remove(&key);
-
-        Ok(())
+        self.send_tcp_ack_syn(dst, src_port)
     }
 
     fn forward(&mut self, dst: SocketAddrV4, src_port: u16, payload: &[u8]) -> io::Result<()> {
