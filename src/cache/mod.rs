@@ -115,8 +115,6 @@ impl Queue {
     /// Invalidates queue to the certain sequence and returns the RTT.
     pub fn invalidate_to(&mut self, sequence: u32) -> Option<Duration> {
         let size = sequence
-            .checked_add(1)
-            .unwrap_or(0)
             .checked_sub(self.sequence)
             .unwrap_or_else(|| u32::MAX - self.sequence + sequence) as usize;
 
