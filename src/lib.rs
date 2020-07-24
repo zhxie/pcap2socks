@@ -4,7 +4,7 @@ use log::{debug, info, trace, warn};
 use lru::LruCache;
 use rand::{self, Rng};
 use std::cmp::{max, min};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -129,14 +129,15 @@ pub struct Forwarder {
     tcp_send_mss_map: HashMap<(u16, SocketAddrV4), u16>,
     tcp_send_wscale_map: HashMap<(u16, SocketAddrV4), u8>,
     tcp_send_sack_perm_map: HashMap<(u16, SocketAddrV4), bool>,
-    tcp_fin_map: HashMap<(u16, SocketAddrV4), Timer>,
     tcp_sequence_map: HashMap<(u16, SocketAddrV4), u32>,
     tcp_acknowledgement_map: HashMap<(u16, SocketAddrV4), u32>,
     tcp_window_map: HashMap<(u16, SocketAddrV4), u16>,
     tcp_wscale_map: HashMap<(u16, SocketAddrV4), u8>,
     tcp_sacks_map: HashMap<(u16, SocketAddrV4), Vec<(u32, u32)>>,
     tcp_cache_map: HashMap<(u16, SocketAddrV4), Queue>,
+    tcp_fin_map: HashMap<(u16, SocketAddrV4), Timer>,
     tcp_queue_map: HashMap<(u16, SocketAddrV4), VecDeque<u8>>,
+    tcp_fin_queue_map: HashSet<(u16, SocketAddrV4)>,
     tcp_rto_map: HashMap<(u16, SocketAddrV4), u64>,
 }
 
@@ -161,14 +162,15 @@ impl Forwarder {
             tcp_send_mss_map: HashMap::new(),
             tcp_send_wscale_map: HashMap::new(),
             tcp_send_sack_perm_map: HashMap::new(),
-            tcp_fin_map: HashMap::new(),
             tcp_sequence_map: HashMap::new(),
             tcp_acknowledgement_map: HashMap::new(),
             tcp_window_map: HashMap::new(),
             tcp_wscale_map: HashMap::new(),
             tcp_sacks_map: HashMap::new(),
             tcp_cache_map: HashMap::new(),
+            tcp_fin_map: HashMap::new(),
             tcp_queue_map: HashMap::new(),
+            tcp_fin_queue_map: HashSet::new(),
             tcp_rto_map: HashMap::new(),
         }
     }
@@ -300,27 +302,47 @@ impl Forwarder {
         }
     }
 
-    /// Invalidates TCP cache to the given sequence.
-    pub fn invalidate_to(&mut self, dst: SocketAddrV4, src_port: u16, sequence: u32) {
+    /// Acknowledges the TCP connection to the given sequence.
+    pub fn acknowledge(&mut self, dst: SocketAddrV4, src_port: u16, sequence: u32) {
         let key = (src_port, dst);
 
-        // TODO: acknowledges FIN
         // Invalidate cache
         if let Some(cache) = self.tcp_cache_map.get_mut(&key) {
             // TODO: update RTO
             cache.invalidate_to(sequence);
+
+            trace!(
+                "acknowledge TCP cache {} -> {} to sequence {}",
+                dst,
+                src_port,
+                sequence
+            );
+
+            if sequence
+                .checked_sub(cache.recv_next())
+                .unwrap_or_else(|| sequence + (u32::MAX - cache.recv_next()))
+                as usize
+                <= MAX_U32_WINDOW_SIZE
+                && self.tcp_fin_map.contains_key(&key)
+            {
+                self.tcp_fin_map.remove(&key);
+
+                trace!("acknowledge TCP FIN of {} -> {}", dst, src_port);
+            }
         }
-        trace!(
-            "invalidate cache {} -> {} to sequence {}",
-            dst,
-            src_port,
-            sequence
-        );
     }
 
     fn set_tcp_rto(&mut self, dst: SocketAddrV4, src_port: u16, rto: u64) {
         self.tcp_rto_map.insert((src_port, dst), max(MIN_RTO, rto));
         trace!("set TCP RTO of {} -> {} to {}", dst, src_port, rto);
+    }
+
+    fn double_tcp_rto(&mut self, dst: SocketAddrV4, src_port: u16) {
+        let rto = *self
+            .tcp_rto_map
+            .get(&(src_port, dst))
+            .unwrap_or(&INITIAL_RTO);
+        self.set_tcp_rto(dst, src_port, rto * 2);
     }
 
     /// Removes all information related to a TCP connection.
@@ -337,26 +359,42 @@ impl Forwarder {
         self.tcp_window_map.remove(&key);
         self.tcp_wscale_map.remove(&key);
         self.tcp_sacks_map.remove(&key);
-        self.tcp_cache_map.remove(&key);
         if let Some(cache) = self.tcp_cache_map.get(&key) {
             if !cache.is_empty() {
                 trace!(
-                    "cache {} -> {} was removed while the cache is not empty",
+                    "TCP cache {} -> {} was removed while the cache is not empty",
+                    dst,
+                    src_port
+                );
+            }
+        }
+        self.tcp_cache_map.remove(&key);
+        if self.tcp_fin_map.contains_key(&key) {
+            trace!(
+                "TCP FIN of {} -> {} was removed while the FIN is not handled",
+                dst,
+                src_port
+            );
+        }
+        self.tcp_fin_map.remove(&key);
+        if let Some(queue) = self.tcp_queue_map.get(&key) {
+            if !queue.is_empty() {
+                trace!(
+                    "TCP queue {} -> {} was removed while the queue is not empty",
                     dst,
                     src_port
                 );
             }
         }
         self.tcp_queue_map.remove(&key);
-        if let Some(queue) = self.tcp_queue_map.get(&key) {
-            if !queue.is_empty() {
-                trace!(
-                    "queue {} -> {} was removed while the queue is not empty",
-                    dst,
-                    src_port
-                );
-            }
+        if self.tcp_fin_queue_map.contains(&key) {
+            trace!(
+                "TCP FIN of {} -> {} was removed while the FIN is not handled",
+                dst,
+                src_port
+            );
         }
+        self.tcp_fin_queue_map.remove(&key);
         self.tcp_rto_map.remove(&key);
         trace!("remove {} -> {}", dst, src_port);
     }
@@ -445,7 +483,7 @@ impl Forwarder {
                 src_port,
                 sequence
             );
-            self.send_tcp_ack_raw(dst, src_port, sequence, payload.as_slice())?;
+            self.send_tcp_ack_raw(dst, src_port, sequence, payload.as_slice(), false)?;
         }
 
         Ok(())
@@ -461,15 +499,13 @@ impl Forwarder {
     ) -> io::Result<()> {
         let key = (src_port, dst);
 
-        if let None = self.tcp_cache_map.get(&key) {
-            return Err(io::Error::new(io::ErrorKind::Other, "cannot get cache"));
-        }
+        let cache = match self.tcp_cache_map.get(&key) {
+            Some(cache) => cache,
+            None => return Err(io::Error::new(io::ErrorKind::Other, "cannot get cache")),
+        };
 
-        let mut sequence = self.tcp_cache_map.get(&key).unwrap().sequence();
-        let mut size = self.tcp_cache_map.get(&key).unwrap().len();
-        let recv_next = sequence
-            .checked_add(size as u32)
-            .unwrap_or_else(|| size as u32 - (u32::MAX - sequence));
+        let sequence = cache.sequence();
+        let recv_next = cache.recv_next();
 
         // Find all disjointed ranges
         let mut ranges = Vec::new();
@@ -486,17 +522,8 @@ impl Forwarder {
             ranges = temp_ranges;
         }
 
-        // Update the last range
-        if let Some(range) = ranges.last() {
-            let last_recv_next = range.1;
-            size = recv_next
-                .checked_sub(last_recv_next)
-                .unwrap_or_else(|| sequence + (u32::MAX - last_recv_next))
-                as usize;
-            sequence = last_recv_next;
-        }
-
         // Retransmit
+        // TODO: cannot retransmit a pure ACK/FIN
         for range in ranges {
             let size = range
                 .1
@@ -504,19 +531,31 @@ impl Forwarder {
                 .unwrap_or_else(|| range.1 + (u32::MAX - range.0)) as usize;
             let payload = self.tcp_cache_map.get(&key).unwrap().get(range.0, size)?;
             if payload.len() > 0 {
-                self.send_tcp_ack_raw(dst, src_port, range.0, payload.as_slice())?;
+                if range.1 == recv_next && self.tcp_fin_map.contains_key(&key) {
+                    // ACK/FIN
+                    // ACK
+                    trace!(
+                        "retransmit TCP ACK/FIN ({} Bytes) {} -> {} from {}",
+                        payload.len(),
+                        dst,
+                        src_port,
+                        sequence
+                    );
+                    // Send
+                    self.send_tcp_ack_raw(dst, src_port, range.0, payload.as_slice(), true)?;
+                } else {
+                    // ACK
+                    trace!(
+                        "retransmit TCP ACK ({} Bytes) {} -> {} from {}",
+                        payload.len(),
+                        dst,
+                        src_port,
+                        sequence
+                    );
+                    // Send
+                    self.send_tcp_ack_raw(dst, src_port, range.0, payload.as_slice(), false)?;
+                }
             }
-        }
-        let payload = self.tcp_cache_map.get(&key).unwrap().get(sequence, size)?;
-        if payload.len() > 0 {
-            trace!(
-                "retransmit {} Bytes {} -> {} from {}",
-                payload.len(),
-                dst,
-                src_port,
-                sequence
-            );
-            self.send_tcp_ack_raw(dst, src_port, sequence, payload.as_slice())?;
         }
 
         Ok(())
@@ -533,60 +572,61 @@ impl Forwarder {
 
         let mut payload = Vec::new();
         let mut sequence = 0;
+        let mut size: usize = 0;
         if let Some(cache) = self.tcp_cache_map.get(&key) {
             payload = cache.get_timed_out();
             sequence = cache.sequence();
+            size = cache.len();
         };
 
-        if payload.len() > 0 {
-            // ACK
-            trace!(
-                "retransmit {} Bytes {} -> {} from {} due to timeout",
-                payload.len(),
-                dst,
-                src_port,
-                sequence
-            );
-            // Send
-            self.send_tcp_ack_raw(dst, src_port, sequence, payload.as_slice())?;
-        } else {
-            // FIN
-            let retrans_fin = match self.tcp_fin_map.get(&key) {
-                Some(timer) => {
-                    if timer.is_timedout() {
-                        let is_queue_empty = match self.tcp_queue_map.get(&key) {
-                            Some(cache) => cache.is_empty(),
-                            None => true,
-                        };
-                        let is_cache_empty = match self.tcp_cache_map.get(&key) {
-                            Some(cache) => cache.is_empty(),
-                            None => true,
-                        };
+        if size > 0 {
+            // Double RTO
+            self.double_tcp_rto(dst, src_port);
+            // TODO: update RTO
 
-                        if is_queue_empty && is_cache_empty {
-                            true
-                        } else {
-                            false
-                        }
-                    } else {
-                        false
-                    }
-                }
-                None => false,
-            };
-
-            if retrans_fin {
-                // Double RTO
-                let next_rto = *self.tcp_rto_map.get(&key).unwrap_or(&INITIAL_RTO) * 2;
-                self.set_tcp_rto(dst, src_port, next_rto);
+            if size == payload.len() && self.tcp_fin_map.contains_key(&key) {
+                // ACK/FIN
                 self.tcp_fin_map.insert(
                     key,
                     Timer::new(*self.tcp_rto_map.get(&key).unwrap_or(&INITIAL_RTO)),
                 );
 
-                trace!("retransmit TCP FIN {} -> {} due to timeout", dst, src_port);
+                trace!(
+                    "retransmit TCP ACK/FIN ({} Bytes) and FIN {} -> {} from {} due to timeout",
+                    payload.len(),
+                    dst,
+                    src_port,
+                    sequence
+                );
                 // Send
-                self.send_tcp_fin(dst, src_port)?;
+                self.send_tcp_ack_raw(dst, src_port, sequence, payload.as_slice(), true)?;
+            } else {
+                // ACK
+                trace!(
+                    "retransmit TCP ACK ({} Bytes) {} -> {} from {} due to timeout",
+                    payload.len(),
+                    dst,
+                    src_port,
+                    sequence
+                );
+                // Send
+                self.send_tcp_ack_raw(dst, src_port, sequence, payload.as_slice(), false)?;
+            }
+        } else {
+            // FIN
+            if let Some(timer) = self.tcp_fin_map.get(&key) {
+                if timer.is_timedout() {
+                    // Double RTO
+                    self.double_tcp_rto(dst, src_port);
+                    self.tcp_fin_map.insert(
+                        key,
+                        Timer::new(*self.tcp_rto_map.get(&key).unwrap_or(&INITIAL_RTO)),
+                    );
+
+                    trace!("retransmit TCP FIN {} -> {} due to timeout", dst, src_port);
+                    // Send
+                    self.send_tcp_fin(dst, src_port)?;
+                }
             }
         }
 
@@ -624,14 +664,26 @@ impl Forwarder {
                         *self.tcp_rto_map.get(&key).unwrap_or(&INITIAL_RTO),
                     )?;
 
-                    // Send
-                    self.send_tcp_ack_raw(dst, src_port, sequence, &payload)?;
+                    if queue.is_empty() && self.tcp_fin_queue_map.contains(&key) {
+                        // ACK/FIN
+                        self.tcp_fin_queue_map.remove(&key);
+                        self.tcp_fin_map.insert(
+                            key,
+                            Timer::new(*self.tcp_rto_map.get(&key).unwrap_or(&INITIAL_RTO)),
+                        );
+
+                        // Send
+                        self.send_tcp_ack_raw(dst, src_port, sequence, &payload, true)?;
+                    } else {
+                        // ACK
+                        self.send_tcp_ack_raw(dst, src_port, sequence, &payload, false)?;
+                    }
                 }
             }
         }
 
         // FIN
-        if self.tcp_fin_map.contains_key(&key) {
+        if self.tcp_fin_queue_map.contains(&key) {
             let is_queue_empty = match self.tcp_queue_map.get(&key) {
                 Some(cache) => cache.is_empty(),
                 None => true,
@@ -641,6 +693,13 @@ impl Forwarder {
                 None => true,
             };
             if is_queue_empty && is_cache_empty {
+                // FIN
+                self.tcp_fin_queue_map.remove(&key);
+                self.tcp_fin_map.insert(
+                    key,
+                    Timer::new(*self.tcp_rto_map.get(&key).unwrap_or(&INITIAL_RTO)),
+                );
+
                 // Send
                 self.send_tcp_fin(dst, src_port)?;
             }
@@ -655,11 +714,12 @@ impl Forwarder {
         src_port: u16,
         sequence: u32,
         payload: &[u8],
+        is_fin: bool,
     ) -> io::Result<()> {
         let key = (src_port, dst);
 
         // Pseudo headers
-        let tcp = Tcp::new_ack(0, 0, 0, 0, 0, self.tcp_sacks_map.get(&key), None);
+        let tcp = Tcp::new_ack(0, 0, 0, 0, 0, None, None);
         let ipv4 = Ipv4::new(0, tcp.kind(), Ipv4Addr::UNSPECIFIED, Ipv4Addr::UNSPECIFIED).unwrap();
 
         // Segmentation
@@ -680,15 +740,29 @@ impl Forwarder {
                 .unwrap_or_else(|| (i * max_payload_size) as u32 - (u32::MAX - sequence));
 
             // TCP
-            let tcp = Tcp::new_ack(
-                dst.port(),
-                src_port,
-                sequence,
-                *self.tcp_acknowledgement_map.get(&key).unwrap_or(&0),
-                *self.tcp_window_map.get(&key).unwrap_or(&65535),
-                self.tcp_sacks_map.get(&key),
-                None,
-            );
+            let tcp;
+            if is_fin && max_payload_size * (i + 1) >= payload.len() {
+                // ACK/FIN
+                tcp = Tcp::new_ack_fin(
+                    dst.port(),
+                    src_port,
+                    sequence,
+                    *self.tcp_acknowledgement_map.get(&key).unwrap_or(&0),
+                    *self.tcp_window_map.get(&key).unwrap_or(&65535),
+                    None,
+                );
+            } else {
+                // ACK
+                tcp = Tcp::new_ack(
+                    dst.port(),
+                    src_port,
+                    sequence,
+                    *self.tcp_acknowledgement_map.get(&key).unwrap_or(&0),
+                    *self.tcp_window_map.get(&key).unwrap_or(&65535),
+                    None,
+                    None,
+                );
+            }
 
             // Send
             self.send_ipv4_with_transport(dst.ip().clone(), Layers::Tcp(tcp), Some(payload))?;
@@ -1055,16 +1129,9 @@ impl ForwardStream for Forwarder {
     fn close(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()> {
         let key = (src_port, dst);
 
-        self.tcp_fin_map.insert(
-            key,
-            Timer::new(*self.tcp_rto_map.get(&key).unwrap_or(&INITIAL_RTO)),
-        );
+        self.tcp_fin_queue_map.insert(key);
 
-        self.send_tcp_ack(dst, src_port)?;
-
-        self.tcp_fin_map.remove(&key);
-
-        Ok(())
+        self.send_tcp_ack(dst, src_port)
     }
 }
 
@@ -1153,7 +1220,7 @@ pub struct Redirector {
     tcp_duplicate_map: HashMap<(u16, SocketAddrV4), usize>,
     tcp_last_retransmission_map: HashMap<(u16, SocketAddrV4), Instant>,
     tcp_wscale_map: HashMap<(u16, SocketAddrV4), u8>,
-    tcp_sack_perm_map: HashMap<(u16, SocketAddrV4), bool>,
+    tcp_sack_perm_map: HashSet<(u16, SocketAddrV4)>,
     tcp_cache_map: HashMap<(u16, SocketAddrV4), Window>,
     tcp_fin_sequence_map: HashMap<(u16, SocketAddrV4), u32>,
     datagrams: HashMap<u16, DatagramWorker>,
@@ -1183,7 +1250,7 @@ impl Redirector {
             tcp_duplicate_map: HashMap::new(),
             tcp_last_retransmission_map: HashMap::new(),
             tcp_wscale_map: HashMap::new(),
-            tcp_sack_perm_map: HashMap::new(),
+            tcp_sack_perm_map: HashSet::new(),
             tcp_cache_map: HashMap::new(),
             tcp_fin_sequence_map: HashMap::new(),
             datagrams: HashMap::new(),
@@ -1370,7 +1437,7 @@ impl Redirector {
             let wscale = *self.tcp_wscale_map.get(&key).unwrap_or(&0);
             {
                 let mut tx_locked = self.tx.lock().unwrap();
-                tx_locked.invalidate_to(dst, tcp.src(), tcp.acknowledgement());
+                tx_locked.acknowledge(dst, tcp.src(), tcp.acknowledgement());
                 tx_locked.set_tcp_send_window(
                     dst,
                     tcp.src(),
@@ -1391,7 +1458,7 @@ impl Redirector {
                 let wscale = *self.tcp_wscale_map.get(&key).unwrap_or(&0);
 
                 // SACK
-                if *self.tcp_sack_perm_map.get(&key).unwrap_or(&false) {
+                if self.tcp_sack_perm_map.contains(&key) {
                     let sacks = cache.filled();
                     self.tx
                         .lock()
@@ -1477,7 +1544,7 @@ impl Redirector {
                         if !is_cooled_down {
                             // Fast retransmit
                             let mut is_sr = false;
-                            if *self.tcp_sack_perm_map.get(&key).unwrap_or(&false) {
+                            if self.tcp_sack_perm_map.contains(&key) {
                                 if let Some(sacks) = tcp.sack() {
                                     if sacks.len() > 0 {
                                         // Selective retransmission
@@ -1772,7 +1839,7 @@ impl Redirector {
         let dst = SocketAddrV4::new(tcp.dst_ip_addr(), tcp.dst());
         let key = (tcp.src(), dst);
 
-        self.tcp_sack_perm_map.insert(key, true);
+        self.tcp_sack_perm_map.insert(key);
 
         trace!("permit TCP sack of {} -> {}", dst, tcp.src(),);
     }
@@ -1799,7 +1866,7 @@ impl Redirector {
         self.tcp_cache_map.remove(&key);
         if self.tcp_fin_sequence_map.contains_key(&key) {
             trace!(
-                "TCP FIN {} -> {} was removed while the FIN is not handled",
+                "TCP FIN of {} -> {} was removed while the FIN is not handled",
                 tcp.src(),
                 dst
             );
