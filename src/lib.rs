@@ -225,7 +225,7 @@ impl Forwarder {
         trace!("permit TCP send sack of {} -> {}", src_port, dst);
     }
 
-    /// Sets the sequence of a TCP connection. In fact, this function should never be used.
+    /// Sets the sequence of a TCP connection.
     pub fn set_tcp_sequence(&mut self, dst: SocketAddrV4, src_port: u16, acknowledgement: u32) {
         self.tcp_sequence_map
             .insert((src_port, dst), acknowledgement);
@@ -1155,6 +1155,7 @@ pub struct Redirector {
     tcp_wscale_map: HashMap<(u16, SocketAddrV4), u8>,
     tcp_sack_perm_map: HashMap<(u16, SocketAddrV4), bool>,
     tcp_cache_map: HashMap<(u16, SocketAddrV4), Window>,
+    tcp_fin_sequence_map: HashMap<(u16, SocketAddrV4), u32>,
     datagrams: HashMap<u16, DatagramWorker>,
     /// Represents the map mapping a source port to a local port.
     datagram_map: Vec<u16>,
@@ -1184,6 +1185,7 @@ impl Redirector {
             tcp_wscale_map: HashMap::new(),
             tcp_sack_perm_map: HashMap::new(),
             tcp_cache_map: HashMap::new(),
+            tcp_fin_sequence_map: HashMap::new(),
             datagrams: HashMap::new(),
             datagram_map: vec![0u16; u16::MAX as usize],
             udp_lru: LruCache::new(PORT_COUNT),
@@ -1502,16 +1504,9 @@ impl Redirector {
             }
 
             // FIN
-            let is_cache_empty = match self.tcp_cache_map.get(&key) {
-                Some(cache) => cache.is_empty(),
-                None => true,
-            };
-            if tcp.is_fin() && is_cache_empty {
-                return self.handle_tcp_fin(tcp, payload);
+            if tcp.is_fin() || self.tcp_fin_sequence_map.contains_key(&key) {
+                self.handle_tcp_fin(tcp, payload)?;
             }
-
-            // Trigger sending remaining data
-            self.tx.lock().unwrap().send_tcp_ack(dst, tcp.src())?;
         } else {
             // Send RST
             self.tx.lock().unwrap().send_tcp_rst(dst, tcp.src(), None)?;
@@ -1530,6 +1525,7 @@ impl Redirector {
             // Clean up
             self.remove_tcp(tcp);
 
+            // Admit SYN
             self.set_tcp_recv_next(tcp, tcp.sequence().checked_add(1).unwrap_or(u32::MAX));
             let wscale = match ENABLE_WSCALE {
                 true => tcp.wscale(),
@@ -1629,41 +1625,39 @@ impl Redirector {
         };
 
         if is_exist {
-            let recv_next = tcp
-                .sequence()
-                .checked_add(payload.len() as u32)
-                .unwrap_or_else(|| payload.len() as u32 - (u32::MAX - tcp.sequence()));
-            if recv_next == *self.tcp_recv_next_map.get(&key).unwrap_or(&0) {
-                let is_cache_empty = match self.tcp_cache_map.get(&key) {
-                    Some(cache) => cache.is_empty(),
-                    None => true,
-                };
-                if is_cache_empty {
-                    self.add_tcp_recv_next(tcp, 1);
+            if tcp.is_fin() {
+                // Update FIN sequence
+                self.tcp_fin_sequence_map.insert(
+                    key,
+                    tcp.sequence()
+                        .checked_add(payload.len() as u32)
+                        .unwrap_or_else(|| payload.len() as u32 - (u32::MAX - tcp.sequence())),
+                );
+            }
 
+            let fin_sequence = *self.tcp_fin_sequence_map.get(&key).unwrap();
+            if fin_sequence == *self.tcp_recv_next_map.get(&key).unwrap_or(&0) {
+                // Admit FIN
+                self.tcp_fin_sequence_map.remove(&key);
+                self.add_tcp_recv_next(tcp, 1);
+
+                {
                     let mut tx_locked = self.tx.lock().unwrap();
-                    tx_locked.set_tcp_acknowledgement(
-                        dst,
-                        tcp.src(),
-                        recv_next.checked_add(1).unwrap_or(0),
-                    );
+                    tx_locked.add_tcp_acknowledgement(dst, tcp.src(), 1);
 
                     // Send ACK0
                     tx_locked.send_tcp_ack_0(dst, tcp.src())?;
-                    if is_readable {
-                        // Close by local
-                        let stream = self.streams.get_mut(&key).unwrap();
-                        stream.close();
-                    } else {
-                        // Close by remote
-                        // Clean up
-                        tx_locked.remove_tcp(dst, tcp.src());
-                        drop(tx_locked);
-                        self.remove_tcp(tcp);
-                    }
+                }
+                if is_readable {
+                    // Close by local
+                    let stream = self.streams.get_mut(&key).unwrap();
+                    stream.close();
                 } else {
-                    // Send ACK0
-                    self.tx.lock().unwrap().send_tcp_ack_0(dst, tcp.src())?;
+                    // Close by remote
+                    // Clean up
+                    self.tx.lock().unwrap().remove_tcp(dst, tcp.src());
+
+                    self.remove_tcp(tcp);
                 }
             } else {
                 trace!(
@@ -1672,8 +1666,11 @@ impl Redirector {
                     dst,
                     tcp.sequence()
                 );
-                // Send ACK0
-                self.tx.lock().unwrap().send_tcp_ack_0(dst, tcp.src())?;
+
+                if payload.len() == 0 {
+                    // Send ACK0
+                    self.tx.lock().unwrap().send_tcp_ack_0(dst, tcp.src())?;
+                }
             }
         } else {
             // Send RST
@@ -1793,13 +1790,21 @@ impl Redirector {
         if let Some(cache) = self.tcp_cache_map.get(&key) {
             if !cache.is_empty() {
                 trace!(
-                    "cache {} -> {} was removed while the cache is not empty",
+                    "TCP cache {} -> {} was removed while the cache is not empty",
                     tcp.src(),
                     dst
                 );
             }
         }
         self.tcp_cache_map.remove(&key);
+        if self.tcp_fin_sequence_map.contains_key(&key) {
+            trace!(
+                "TCP FIN {} -> {} was removed while the FIN is not handled",
+                tcp.src(),
+                dst
+            );
+        }
+        self.tcp_fin_sequence_map.remove(&key);
         trace!("remove {} -> {}", tcp.src(), dst);
     }
 
