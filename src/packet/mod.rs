@@ -19,7 +19,7 @@ use layer::ethernet::Ethernet;
 use layer::ipv4::Ipv4;
 use layer::tcp::Tcp;
 use layer::udp::Udp;
-use layer::{Layer, LayerKind, LayerKinds, Layers};
+use layer::{Layer, LayerKind, Layers};
 
 /// Represents a packet indicator.
 #[derive(Clone, Debug)]
