@@ -239,6 +239,14 @@ impl Forwarder {
         );
     }
 
+    fn add_tcp_sequence(&mut self, dst: SocketAddrV4, src_port: u16, n: u32) {
+        let entry = self.tcp_sequence_map.entry((src_port, dst)).or_insert(0);
+        *entry = entry
+            .checked_add(n)
+            .unwrap_or_else(|| n - (u32::MAX - *entry));
+        trace!("add TCP sequence of {} -> {} to {}", dst, src_port, entry);
+    }
+
     /// Sets the acknowledgement of a TCP connection.
     pub fn set_tcp_acknowledgement(&mut self, dst: SocketAddrV4, src_port: u16, sequence: u32) {
         self.tcp_acknowledgement_map
@@ -664,6 +672,7 @@ impl Forwarder {
                         *self.tcp_rto_map.get(&key).unwrap_or(&INITIAL_RTO),
                     )?;
 
+                    // If the queue is empty and a FIN is in the queue, pop it
                     if queue.is_empty() && self.tcp_fin_queue_map.contains(&key) {
                         // ACK/FIN
                         self.tcp_fin_queue_map.remove(&key);
@@ -682,17 +691,14 @@ impl Forwarder {
             }
         }
 
+        // If the queue is empty and a FIN is in the queue, pop it
         // FIN
         if self.tcp_fin_queue_map.contains(&key) {
             let is_queue_empty = match self.tcp_queue_map.get(&key) {
                 Some(cache) => cache.is_empty(),
                 None => true,
             };
-            let is_cache_empty = match self.tcp_cache_map.get(&key) {
-                Some(cache) => cache.is_empty(),
-                None => true,
-            };
-            if is_queue_empty && is_cache_empty {
+            if is_queue_empty {
                 // FIN
                 self.tcp_fin_queue_map.remove(&key);
                 self.tcp_fin_map.insert(
@@ -733,11 +739,14 @@ impl Forwarder {
         };
         let mut i = 0;
         while max_payload_size * i < payload.len() {
-            let length = min(max_payload_size, payload.len() - i * max_payload_size);
-            let payload = &payload[i * max_payload_size..i * max_payload_size + length];
+            let size = min(max_payload_size, payload.len() - i * max_payload_size);
+            let payload = &payload[i * max_payload_size..i * max_payload_size + size];
             let sequence = sequence
                 .checked_add((i * max_payload_size) as u32)
                 .unwrap_or_else(|| (i * max_payload_size) as u32 - (u32::MAX - sequence));
+            let mut recv_next = sequence
+                .checked_add(size as u32)
+                .unwrap_or_else(|| size as u32 - (u32::MAX - sequence));
 
             // TCP
             let tcp;
@@ -751,6 +760,7 @@ impl Forwarder {
                     *self.tcp_window_map.get(&key).unwrap_or(&65535),
                     None,
                 );
+                recv_next = recv_next.checked_add(1).unwrap_or(0);
             } else {
                 // ACK
                 tcp = Tcp::new_ack(
@@ -768,15 +778,12 @@ impl Forwarder {
             self.send_ipv4_with_transport(dst.ip().clone(), Layers::Tcp(tcp), Some(payload))?;
 
             // Update TCP sequence
-            let next_sequence = sequence
-                .checked_add(length as u32)
-                .unwrap_or_else(|| length as u32 - (u32::MAX - sequence));
             let record_sequence = *self.tcp_sequence_map.get(&key).unwrap_or(&0);
-            let sub_sequence = next_sequence
+            let sub_sequence = recv_next
                 .checked_sub(record_sequence)
-                .unwrap_or_else(|| next_sequence + (u32::MAX - record_sequence));
+                .unwrap_or_else(|| recv_next + (u32::MAX - record_sequence));
             if (sub_sequence as usize) <= MAX_U32_WINDOW_SIZE {
-                self.tcp_sequence_map.insert(key, next_sequence);
+                self.add_tcp_acknowledgement(dst, src_port, sub_sequence);
             }
 
             i = i + 1;
@@ -822,10 +829,6 @@ impl Forwarder {
 
         // Send
         self.send_ipv4_with_transport(dst.ip().clone(), Layers::Tcp(tcp), None)?;
-
-        // Update TCP sequence
-        let tcp_sequence_entry = self.tcp_sequence_map.entry(key).or_insert(0);
-        *tcp_sequence_entry = tcp_sequence_entry.checked_add(1).unwrap_or(0);
 
         Ok(())
     }
@@ -1115,7 +1118,12 @@ impl Forwarder {
 
 impl ForwardStream for Forwarder {
     fn open(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()> {
-        self.send_tcp_ack_syn(dst, src_port)
+        self.send_tcp_ack_syn(dst, src_port)?;
+
+        // Update TCP sequence
+        self.add_tcp_sequence(dst, src_port, 1);
+
+        Ok(())
     }
 
     fn forward(&mut self, dst: SocketAddrV4, src_port: u16, payload: &[u8]) -> io::Result<()> {
