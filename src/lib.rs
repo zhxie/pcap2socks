@@ -219,7 +219,7 @@ impl Forwarder {
         );
     }
 
-    /// Permits the send selective acknowledgements of a TCP connection.
+    /// Permits the send SACK of a TCP connection.
     pub fn perm_tcp_send_sack(&mut self, dst: SocketAddrV4, src_port: u16) {
         self.tcp_send_sack_perm_map.insert((src_port, dst), true);
         trace!("permit TCP send sack of {} -> {}", src_port, dst);
@@ -275,10 +275,15 @@ impl Forwarder {
     /// Sets the window scale of a TCP connection.
     pub fn set_tcp_wscale(&mut self, dst: SocketAddrV4, src_port: u16, wscale: u8) {
         self.tcp_wscale_map.insert((src_port, dst), wscale);
-        trace!("set TCP wscale of {} -> {} to {}", dst, src_port, wscale);
+        trace!(
+            "set TCP window scale of {} -> {} to {}",
+            dst,
+            src_port,
+            wscale
+        );
     }
 
-    /// Sets the selective acknowledgements of a TCP connection.
+    /// Sets the SACKs of a TCP connection.
     pub fn set_tcp_sacks(&mut self, dst: SocketAddrV4, src_port: u16, sacks: &Vec<(u32, u32)>) {
         if sacks.len() <= 0 {
             self.tcp_sacks_map.remove(&(src_port, dst));
@@ -1371,14 +1376,14 @@ impl Redirector {
                 );
             }
 
-            let cache = self.tcp_cache_map.entry(key).or_insert_with(|| {
-                Window::with_capacity((u16::MAX as usize) << wscale as usize, tcp.sequence())
-            });
-            let stream = self.streams.get_mut(&key).unwrap();
             if payload.len() > 0 {
                 // ACK
                 // Append to cache
+                let cache = self.tcp_cache_map.entry(key).or_insert_with(|| {
+                    Window::with_capacity((u16::MAX as usize) << wscale as usize, tcp.sequence())
+                });
                 let cont_payload = cache.append(tcp.sequence(), payload)?;
+                let cache = self.tcp_cache_map.get(&key).unwrap();
 
                 // Window scale
                 let wscale = *self.tcp_wscale_map.get(&key).unwrap_or(&0);
@@ -1395,15 +1400,17 @@ impl Redirector {
                 match cont_payload {
                     Some(payload) => {
                         // Send
+                        let stream = self.streams.get_mut(&key).unwrap();
                         match stream.send(payload.as_slice()).await {
                             Ok(_) => {
+                                let cache_remaining_size =
+                                    (cache.remaining_size() >> wscale as usize) as u16;
+
+                                self.add_tcp_recv_next(tcp, payload.len() as u32);
+
                                 // Update window size
                                 let mut tx_locked = self.tx.lock().unwrap();
-                                tx_locked.set_tcp_window(
-                                    dst,
-                                    tcp.src(),
-                                    (cache.remaining_size() << wscale as usize) as u16,
-                                );
+                                tx_locked.set_tcp_window(dst, tcp.src(), cache_remaining_size);
 
                                 // Update TCP acknowledgement
                                 tx_locked.add_tcp_acknowledgement(
@@ -1411,13 +1418,6 @@ impl Redirector {
                                     tcp.src(),
                                     payload.len() as u32,
                                 );
-                                let recv_next_entry =
-                                    self.tcp_recv_next_map.entry(key).or_insert(0);
-                                *recv_next_entry = recv_next_entry
-                                    .checked_add(payload.len() as u32)
-                                    .unwrap_or_else(|| {
-                                        payload.len() as u32 - (u32::MAX - *recv_next_entry)
-                                    });
 
                                 // Send ACK0
                                 // If there is a heavy traffic, the ACK reported may be inaccurate, which would results in retransmission
@@ -1502,7 +1502,11 @@ impl Redirector {
             }
 
             // FIN
-            if tcp.is_fin() && cache.is_empty() {
+            let is_cache_empty = match self.tcp_cache_map.get(&key) {
+                Some(cache) => cache.is_empty(),
+                None => true,
+            };
+            if tcp.is_fin() && is_cache_empty {
                 return self.handle_tcp_fin(tcp, payload);
             }
 
@@ -1526,12 +1530,28 @@ impl Redirector {
             // Clean up
             self.remove_tcp(tcp);
 
+            self.set_tcp_recv_next(tcp, tcp.sequence().checked_add(1).unwrap_or(u32::MAX));
+            let wscale = match ENABLE_WSCALE {
+                true => tcp.wscale(),
+                false => None,
+            };
+            let recv_wscale = match wscale {
+                Some(wscale) => Some(min(wscale, MAX_RECV_WSCALE)),
+                None => None,
+            };
+            if let Some(wscale) = recv_wscale {
+                self.set_tcp_wscale(tcp, wscale);
+            }
+            let sack_perm = ENABLE_SACK && tcp.is_sack_perm();
+            if sack_perm {
+                self.perm_tcp_sack(tcp);
+            }
+
             {
                 let mut tx_locked = self.tx.lock().unwrap();
                 // Clean up
                 tx_locked.remove_tcp(dst, tcp.src());
 
-                // Initialize values
                 let mut rng = rand::thread_rng();
                 let sequence: u32 = rng.gen();
                 tx_locked.set_tcp_sequence(dst, tcp.src(), sequence);
@@ -1540,30 +1560,18 @@ impl Redirector {
                     tcp.src(),
                     tcp.sequence().checked_add(1).unwrap_or(0),
                 );
-
-                self.tcp_recv_next_map
-                    .insert(key, tcp.sequence().checked_add(1).unwrap_or(u32::MAX));
-
-                // Options
                 if PREFER_SEND_MSS {
                     if let Some(mss) = tcp.mss() {
                         tx_locked.set_tcp_send_mss(dst, tcp.src(), mss);
                     }
                 }
-                let wscale = match ENABLE_WSCALE {
-                    true => tcp.wscale(),
-                    false => None,
-                };
                 if let Some(wscale) = wscale {
                     tx_locked.set_tcp_wscale(dst, tcp.src(), wscale);
 
-                    let recv_wscale = min(wscale, MAX_RECV_WSCALE);
-                    tx_locked.set_tcp_send_wscale(dst, tcp.src(), recv_wscale);
+                    tx_locked.set_tcp_send_wscale(dst, tcp.src(), recv_wscale.unwrap());
                 }
-                if ENABLE_SACK && tcp.is_sack_perm() {
+                if sack_perm {
                     tx_locked.perm_tcp_send_sack(dst, tcp.src());
-
-                    self.tcp_sack_perm_map.insert(key, true);
                 }
             }
 
@@ -1631,15 +1639,14 @@ impl Redirector {
                     None => true,
                 };
                 if is_cache_empty {
+                    self.add_tcp_recv_next(tcp, 1);
+
                     let mut tx_locked = self.tx.lock().unwrap();
                     tx_locked.set_tcp_acknowledgement(
                         dst,
                         tcp.src(),
                         recv_next.checked_add(1).unwrap_or(0),
                     );
-
-                    let recv_next_entry = self.tcp_recv_next_map.entry(key).or_insert(0);
-                    *recv_next_entry = recv_next_entry.checked_add(1).unwrap_or(u32::MAX);
 
                     // Send ACK0
                     tx_locked.send_tcp_ack_0(dst, tcp.src())?;
@@ -1719,6 +1726,58 @@ impl Redirector {
             .await?;
 
         Ok(())
+    }
+
+    fn set_tcp_recv_next(&mut self, tcp: &Tcp, recv_next: u32) {
+        let dst = SocketAddrV4::new(tcp.dst_ip_addr(), tcp.dst());
+        let key = (tcp.src(), dst);
+
+        self.tcp_recv_next_map.insert(key, recv_next);
+        trace!(
+            "set TCP receive next of {} -> {} to {}",
+            dst,
+            tcp.src(),
+            recv_next
+        );
+    }
+
+    fn add_tcp_recv_next(&mut self, tcp: &Tcp, n: u32) {
+        let dst = SocketAddrV4::new(tcp.dst_ip_addr(), tcp.dst());
+        let key = (tcp.src(), dst);
+
+        let entry = self.tcp_recv_next_map.entry(key).or_insert(0);
+        *entry = entry
+            .checked_add(n)
+            .unwrap_or_else(|| n - (u32::MAX - *entry));
+        trace!(
+            "add TCP receive next of {} -> {} to {}",
+            dst,
+            tcp.src(),
+            entry
+        );
+    }
+
+    fn set_tcp_wscale(&mut self, tcp: &Tcp, wscale: u8) {
+        let dst = SocketAddrV4::new(tcp.dst_ip_addr(), tcp.dst());
+        let key = (tcp.src(), dst);
+
+        self.tcp_wscale_map.insert(key, wscale);
+
+        trace!(
+            "set TCP window scale of {} -> {} to {}",
+            dst,
+            tcp.src(),
+            wscale
+        );
+    }
+
+    fn perm_tcp_sack(&mut self, tcp: &Tcp) {
+        let dst = SocketAddrV4::new(tcp.dst_ip_addr(), tcp.dst());
+        let key = (tcp.src(), dst);
+
+        self.tcp_sack_perm_map.insert(key, true);
+
+        trace!("permit TCP sack of {} -> {}", dst, tcp.src(),);
     }
 
     fn remove_tcp(&mut self, tcp: &Tcp) {
