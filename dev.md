@@ -6,15 +6,17 @@ This is the development documentation of pcap2socks.
 
 ### Differences with the Standard [RFC 793](https://tools.ietf.org/html/rfc793) and Its Updates
 
+- pcap2socks does not retransmit the ACK/SYN packet in handshaking since if this packet is dropped accidentally, the source will attempt to re-establish the connection.
+
 - pcap2socks does not maintain the congestion window ([RFC 5681](https://tools.ietf.org/html/rfc5681)). The congestion control will be implemented in the future release, and the algorithm CUBIC ([RFC 8312](https://tools.ietf.org/html/rfc8312)), PRR ([RFC 6973](https://tools.ietf.org/html/rfc6937)) or [BBR](https://github.com/google/bbr) may be considered.
 
 - pcap2socks does not consider the wait time in states like `TIME_WAIT` since the source should maintain its state.
 
-- pcap2socks does not realize MSS ([RFC 793](https://tools.ietf.org/html/rfc793)) option since the way getting interface's MSS in difference kernels and systems are totally different, and one workable dependency crate [interfaces](https://crates.io/crates/interfaces) cannot be compiled in Windows successfully with MSVC.
+- pcap2socks does not realize the MSS ([RFC 793](https://tools.ietf.org/html/rfc793)) option since the way getting interface's MSS in difference kernels and systems are totally different, and one workable dependency crate [interfaces](https://crates.io/crates/interfaces) cannot be compiled in Windows successfully with MSVC.
 
-- pcap2socks does not calculate for window scale ([RFC 7323](https://tools.ietf.org/html/rfc7323)) option and will open a same-size receive window as the source by default.
+- pcap2socks does not calculate for the window scale ([RFC 7323](https://tools.ietf.org/html/rfc7323)) option and will open a same-size receive window as the source by default.
 
-- pcap2socks does not realize timestamp ([RFC 7323](https://www.iana.org/go/rfc7323)) option. Since only the source and destination know the full information of the traffic, pcap2socks may not trace any packet and report its timestamp correctly.
+- pcap2socks does not realize the timestamp ([RFC 7323](https://www.iana.org/go/rfc7323)) option. Since only the source and destination know the full information of the traffic, pcap2socks may not trace any packet and report its timestamp correctly.
 
 - pcap2socks sends all TCP data in `TCP_NODELAY` since pcap2socks owns no timers.
 
