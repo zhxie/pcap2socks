@@ -137,7 +137,7 @@ pub struct Forwarder {
     tcp_cache_map: HashMap<(u16, SocketAddrV4), Queue>,
     tcp_fin_map: HashMap<(u16, SocketAddrV4), Timer>,
     tcp_queue_map: HashMap<(u16, SocketAddrV4), VecDeque<u8>>,
-    tcp_fin_queue_map: HashSet<(u16, SocketAddrV4)>,
+    tcp_fin_queue_set: HashSet<(u16, SocketAddrV4)>,
     tcp_rto_map: HashMap<(u16, SocketAddrV4), u64>,
 }
 
@@ -170,7 +170,7 @@ impl Forwarder {
             tcp_cache_map: HashMap::new(),
             tcp_fin_map: HashMap::new(),
             tcp_queue_map: HashMap::new(),
-            tcp_fin_queue_map: HashSet::new(),
+            tcp_fin_queue_set: HashSet::new(),
             tcp_rto_map: HashMap::new(),
         }
     }
@@ -395,14 +395,14 @@ impl Forwarder {
             }
         }
         self.tcp_queue_map.remove(&key);
-        if self.tcp_fin_queue_map.contains(&key) {
+        if self.tcp_fin_queue_set.contains(&key) {
             trace!(
                 "TCP FIN of {} -> {} was removed while the FIN is not handled",
                 dst,
                 src_port
             );
         }
-        self.tcp_fin_queue_map.remove(&key);
+        self.tcp_fin_queue_set.remove(&key);
         self.tcp_rto_map.remove(&key);
         trace!("remove TCP {} -> {}", dst, src_port);
     }
@@ -674,9 +674,9 @@ impl Forwarder {
                     )?;
 
                     // If the queue is empty and a FIN is in the queue, pop it
-                    if queue.is_empty() && self.tcp_fin_queue_map.contains(&key) {
+                    if queue.is_empty() && self.tcp_fin_queue_set.contains(&key) {
                         // ACK/FIN
-                        self.tcp_fin_queue_map.remove(&key);
+                        self.tcp_fin_queue_set.remove(&key);
                         self.tcp_fin_map.insert(
                             key,
                             Timer::new(*self.tcp_rto_map.get(&key).unwrap_or(&INITIAL_RTO)),
@@ -694,14 +694,14 @@ impl Forwarder {
 
         // If the queue is empty and a FIN is in the queue, pop it
         // FIN
-        if self.tcp_fin_queue_map.contains(&key) {
+        if self.tcp_fin_queue_set.contains(&key) {
             let is_queue_empty = match self.tcp_queue_map.get(&key) {
                 Some(cache) => cache.is_empty(),
                 None => true,
             };
             if is_queue_empty {
                 // FIN
-                self.tcp_fin_queue_map.remove(&key);
+                self.tcp_fin_queue_set.remove(&key);
                 self.tcp_fin_map.insert(
                     key,
                     Timer::new(*self.tcp_rto_map.get(&key).unwrap_or(&INITIAL_RTO)),
@@ -1138,7 +1138,7 @@ impl ForwardStream for Forwarder {
     fn close(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()> {
         let key = (src_port, dst);
 
-        self.tcp_fin_queue_map.insert(key);
+        self.tcp_fin_queue_set.insert(key);
 
         self.send_tcp_ack(dst, src_port)
     }
@@ -1201,10 +1201,10 @@ fn disjoint_u32_range(main: (u32, u32), sub: (u32, u32)) -> Vec<(u32, u32)> {
     vector
 }
 
-/// Represents the TCP ACK duplicates before trigger a fast retransmission.
-const DUPLICATES_BEFORE_FAST_RETRANSMISSION: usize = 3;
+/// Represents the threshold of TCP ACK duplicates before trigger a fast retransmission.
+const DUPLICATES_THRESHOLD: usize = 3;
 /// Represents the cool down time between 2 retransmissions.
-const RETRANSMISSION_COOL_DOWN: u128 = 200;
+const RETRANS_COOL_DOWN: u128 = 200;
 
 /// Represents if the TCP window scale option is enabled.
 const ENABLE_WSCALE: bool = true;
@@ -1227,7 +1227,7 @@ pub struct Redirector {
     streams: HashMap<(u16, SocketAddrV4), StreamWorker>,
     tcp_recv_next_map: HashMap<(u16, SocketAddrV4), u32>,
     tcp_duplicate_map: HashMap<(u16, SocketAddrV4), usize>,
-    tcp_last_retransmission_map: HashMap<(u16, SocketAddrV4), Instant>,
+    tcp_last_retrans_map: HashMap<(u16, SocketAddrV4), Instant>,
     tcp_wscale_map: HashMap<(u16, SocketAddrV4), u8>,
     tcp_sack_perm_map: HashSet<(u16, SocketAddrV4)>,
     tcp_cache_map: HashMap<(u16, SocketAddrV4), Window>,
@@ -1257,7 +1257,7 @@ impl Redirector {
             streams: HashMap::new(),
             tcp_recv_next_map: HashMap::new(),
             tcp_duplicate_map: HashMap::new(),
-            tcp_last_retransmission_map: HashMap::new(),
+            tcp_last_retrans_map: HashMap::new(),
             tcp_wscale_map: HashMap::new(),
             tcp_sack_perm_map: HashSet::new(),
             tcp_cache_map: HashMap::new(),
@@ -1539,15 +1539,11 @@ impl Redirector {
                     self.tx.lock().unwrap().remove_tcp(dst, tcp.src());
 
                     return Ok(());
-                } else if *self.tcp_duplicate_map.get(&key).unwrap_or(&0)
-                    >= DUPLICATES_BEFORE_FAST_RETRANSMISSION
-                {
+                } else if *self.tcp_duplicate_map.get(&key).unwrap_or(&0) >= DUPLICATES_THRESHOLD {
                     // Duplicate ACK
                     if !tcp.is_zero_window() {
-                        let is_cooled_down = match self.tcp_last_retransmission_map.get(&key) {
-                            Some(ref instant) => {
-                                instant.elapsed().as_millis() < RETRANSMISSION_COOL_DOWN
-                            }
+                        let is_cooled_down = match self.tcp_last_retrans_map.get(&key) {
+                            Some(ref instant) => instant.elapsed().as_millis() < RETRANS_COOL_DOWN,
                             None => false,
                         };
                         if !is_cooled_down {
@@ -1573,7 +1569,7 @@ impl Redirector {
                             }
 
                             self.tcp_duplicate_map.insert(key, 0);
-                            self.tcp_last_retransmission_map.insert(key, Instant::now());
+                            self.tcp_last_retrans_map.insert(key, Instant::now());
                         }
                     }
                 }
@@ -1865,7 +1861,7 @@ impl Redirector {
         self.streams.remove(&key);
         self.tcp_recv_next_map.remove(&key);
         self.tcp_duplicate_map.remove(&key);
-        self.tcp_last_retransmission_map.remove(&key);
+        self.tcp_last_retrans_map.remove(&key);
         self.tcp_wscale_map.remove(&key);
         self.tcp_sack_perm_map.remove(&key);
         if let Some(cache) = self.tcp_cache_map.get(&key) {

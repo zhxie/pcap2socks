@@ -60,11 +60,9 @@ This is the development documentation of pcap2socks.
 
 `MIN_RTO`: Represents the minimum timeout for a retransmission in a TCP connection. Default as `1000` ms.
 
-`MIN_SYN_RTO`: Represents the minimum timeout for a retransmission of a SYN or ACK/SYN in a TCP connection. The connection will take `INITIAL_RTO` as default, and will revert to `MIN_SYN_RTO` if the SYN or ACK/SYN is lost. Default as `3000` ms.
+`DUPLICATES_THRESHOLD`: Represents the threshold of TCP ACK duplicates before trigger a fast retransmission, also recognized as fast retransmission. Default as `3`.
 
-`DUPLICATES_BEFORE_FAST_RETRANSMISSION`: Represents the TCP ACK duplicates before trigger a fast retransmission, also recognized as fast retransmission. Default as `3`.
-
-`RETRANSMISSION_COOL_DOWN`: Represents the cool down time between 2 retransmissions. Default as `200` ms.
+`RETRANS_COOL_DOWN`: Represents the cool down time between 2 retransmissions. Default as `200` ms.
 
 `ENABLE_WSCALE`: Represents if the TCP window scale ([RFC 7323](https://tools.ietf.org/html/rfc7323)) option is enabled. Enable window scale may lead to a bufferbloat described above, and the `MAX_U32_WINDOW_SIZE` must be set at a reasonable value. Default as `true`.
 
