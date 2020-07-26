@@ -60,6 +60,8 @@ This is the development documentation of pcap2socks.
 
 `MIN_RTO`: Represents the minimum timeout for a retransmission in a TCP connection. Default as `1000` ms.
 
+`MAX_RTO`: Represents the maximum timeout for a retransmission in a TCP connection. Default as `60000` ms.
+
 `DUPLICATES_THRESHOLD`: Represents the threshold of TCP ACK duplicates before trigger a fast retransmission, also recognized as fast retransmission. Default as `3`.
 
 `RETRANS_COOL_DOWN`: Represents the cool down time between 2 retransmissions. Default as `200` ms.
@@ -76,6 +78,8 @@ This is the development documentation of pcap2socks.
 
 pcap2socks has some defects in the view of engineering.
 
+- The RTO computation method implemented in pcap2socks is based on [RFC 6298](https://tools.ietf.org/html/rfc6298), which is outdated at the moment.
+
 - Because pcap2socks does not implement the TCP congestion control, the traffic transmission performance may be lost. However, since pcap2socks is mainly used in LANs, the actual impact may be minimal.
 
 - pcap2socks ignores checksums, lengths and some other fields in headers to support non-standard systems and LRO (large receive offload), but will also bring security issues.
@@ -84,4 +88,4 @@ pcap2socks has some defects in the view of engineering.
 
 - The structure of the `Redirector`, the `SocksStream` & `SocksDatagram` and the `Forwarder` looks like a chaos. Caches and states should be located in the `SocksStream` & `SocksDatagram` instead of the `Redirector` and the `Forwarder`.
 
-- pcap2socks cannot close gracefully, all the data in the receive and send cache will be dropped. The connections will be closed (or shutdown, depending on the kernel or the system) immediately.
+- pcap2socks cannot close gracefully, all the data in the receive and send cache will be dropped. The connections will be closed (or shutdown, depending on the kernel or the OS) immediately.

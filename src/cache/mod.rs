@@ -26,9 +26,9 @@ pub struct Queue {
     head: usize,
     size: usize,
     clocks: VecDeque<(u32, Timer)>,
+    retrans: Option<u32>,
 }
 
-// TODO: update RTO
 impl Queue {
     /// Creates a new `Queue`.
     pub fn new(sequence: u32) -> Queue {
@@ -44,6 +44,7 @@ impl Queue {
             head: 0,
             size: 0,
             clocks: VecDeque::with_capacity(capacity),
+            retrans: None,
         }
     }
 
@@ -149,7 +150,22 @@ impl Queue {
                     let clock = self.clocks.pop_front().unwrap();
                     let timer = clock.1;
                     if !timer.is_timedout() {
-                        rtt = Some(timer.elapsed());
+                        // Choose the largest RTT
+                        if rtt.is_none() {
+                            rtt = Some(timer.elapsed());
+
+                            // Rollback on retransmission
+                            if let Some(retrans) = self.retrans {
+                                if retrans
+                                    .checked_sub(sequence)
+                                    .unwrap_or_else(|| retrans + (u32::MAX - sequence))
+                                    as usize
+                                    <= MAX_U32_WINDOW_SIZE
+                                {
+                                    rtt = None;
+                                }
+                            }
+                        }
                     }
                 } else if dist <= MAX_U32_WINDOW_SIZE {
                     let instant = self.clocks[0].1;
@@ -158,6 +174,19 @@ impl Queue {
                     break;
                 } else {
                     break;
+                }
+            }
+
+            // Retransmission
+            if let Some(retrans) = self.retrans {
+                if self
+                    .sequence
+                    .checked_sub(retrans)
+                    .unwrap_or_else(|| self.sequence + (u32::MAX - retrans))
+                    as usize
+                    <= MAX_U32_WINDOW_SIZE
+                {
+                    self.retrans = None;
                 }
             }
 
@@ -212,6 +241,7 @@ impl Queue {
     }
 
     /// Get the payload which is timed out from the begin to the first byte which is not timed out.
+    #[deprecated = "use get_timed_out_and_update instead"]
     pub fn get_timed_out(&self) -> Vec<u8> {
         let mut recv_next = None;
         for clock in &self.clocks {
@@ -232,6 +262,54 @@ impl Queue {
                 self.get(self.sequence, size).unwrap()
             }
             None => self.get_all(),
+        }
+    }
+
+    pub fn get_timed_out_and_update(&mut self, rto: u64) -> Vec<u8> {
+        let mut recv_next = None;
+        for clock in &self.clocks {
+            let timer = clock.1;
+            if !timer.is_timedout() {
+                recv_next = Some(clock.0);
+                break;
+            }
+        }
+
+        match recv_next {
+            Some(recv_next) => {
+                let size = recv_next
+                    .checked_sub(self.sequence)
+                    .unwrap_or_else(|| recv_next + (u32::MAX - self.sequence))
+                    as usize;
+
+                // Update clock
+                while !self.clocks.is_empty() {
+                    let next_sequence = self.clocks.front().unwrap().0;
+                    if recv_next
+                        .checked_sub(next_sequence)
+                        .unwrap_or_else(|| recv_next + (u32::MAX - next_sequence))
+                        as usize
+                        <= MAX_U32_WINDOW_SIZE
+                    {
+                        self.clocks.pop_front();
+                    } else {
+                        self.clocks.push_front((self.sequence, Timer::new(rto)));
+
+                        break;
+                    }
+                }
+                self.retrans = Some(recv_next);
+
+                self.get(self.sequence, size).unwrap()
+            }
+            None => {
+                // Update clock
+                self.clocks.clear();
+                self.clocks.push_back((self.sequence, Timer::new(rto)));
+                self.retrans = Some(self.recv_next());
+
+                self.get_all()
+            }
         }
     }
 

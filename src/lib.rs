@@ -111,6 +111,9 @@ const INITIAL_RTO: u64 = 1000;
 /// Represents the minimum timeout for a retransmission in a TCP connection.
 const MIN_RTO: u64 = 1000;
 
+/// Represents the maximum timeout for a retransmission in a TCP connection.
+const MAX_RTO: u64 = 60000;
+
 /// Represents the minimum packet size.
 /// Because all traffic is in Ethernet, and the 802.3 specifies the minimum is 64 Bytes.
 /// Exclude the 4 bytes used in FCS, the minimum packet size in pcap2socks is 60 Bytes.
@@ -135,10 +138,14 @@ pub struct Forwarder {
     tcp_wscale_map: HashMap<(u16, SocketAddrV4), u8>,
     tcp_sacks_map: HashMap<(u16, SocketAddrV4), Vec<(u32, u32)>>,
     tcp_cache_map: HashMap<(u16, SocketAddrV4), Queue>,
+    tcp_syn_map: HashMap<(u16, SocketAddrV4), Instant>,
     tcp_fin_map: HashMap<(u16, SocketAddrV4), Timer>,
+    tcp_fin_retrans_set: HashSet<(u16, SocketAddrV4)>,
     tcp_queue_map: HashMap<(u16, SocketAddrV4), VecDeque<u8>>,
     tcp_fin_queue_set: HashSet<(u16, SocketAddrV4)>,
     tcp_rto_map: HashMap<(u16, SocketAddrV4), u64>,
+    tcp_srtt_map: HashMap<(u16, SocketAddrV4), u64>,
+    tcp_rttvar_map: HashMap<(u16, SocketAddrV4), u64>,
 }
 
 impl Forwarder {
@@ -168,10 +175,14 @@ impl Forwarder {
             tcp_wscale_map: HashMap::new(),
             tcp_sacks_map: HashMap::new(),
             tcp_cache_map: HashMap::new(),
+            tcp_syn_map: HashMap::new(),
             tcp_fin_map: HashMap::new(),
+            tcp_fin_retrans_set: HashSet::new(),
             tcp_queue_map: HashMap::new(),
             tcp_fin_queue_set: HashSet::new(),
             tcp_rto_map: HashMap::new(),
+            tcp_srtt_map: HashMap::new(),
+            tcp_rttvar_map: HashMap::new(),
         }
     }
 
@@ -314,10 +325,30 @@ impl Forwarder {
     pub fn acknowledge(&mut self, dst: SocketAddrV4, src_port: u16, sequence: u32) {
         let key = (src_port, dst);
 
+        let mut rtt = None;
+
+        // SYN
+        if let Some(instant) = self.tcp_syn_map.get(&key) {
+            let send_next = *self.tcp_sequence_map.get(&key).unwrap_or(&0);
+            if sequence
+                .checked_sub(send_next)
+                .unwrap_or_else(|| sequence + (u32::MAX - send_next)) as usize
+                <= MAX_U32_WINDOW_SIZE
+            {
+                rtt = Some(instant.elapsed());
+
+                self.tcp_syn_map.remove(&key);
+
+                trace!("acknowledge TCP SYN of {} -> {}", dst, src_port);
+            }
+        }
+
         // Invalidate cache
         if let Some(cache) = self.tcp_cache_map.get_mut(&key) {
-            // TODO: update RTO
-            cache.invalidate_to(sequence);
+            let cache_rtt = cache.invalidate_to(sequence);
+            if rtt.is_none() {
+                rtt = cache_rtt;
+            }
 
             trace!(
                 "acknowledge TCP cache {} -> {} to sequence {}",
@@ -331,17 +362,29 @@ impl Forwarder {
                 .unwrap_or_else(|| sequence + (u32::MAX - cache.recv_next()))
                 as usize
                 <= MAX_U32_WINDOW_SIZE
-                && self.tcp_fin_map.contains_key(&key)
             {
-                self.tcp_fin_map.remove(&key);
+                if let Some(timer) = self.tcp_fin_map.get(&key) {
+                    if rtt.is_none() && !timer.is_timedout() {
+                        rtt = Some(timer.elapsed());
+                    }
 
-                trace!("acknowledge TCP FIN of {} -> {}", dst, src_port);
+                    self.tcp_fin_map.remove(&key);
+
+                    trace!("acknowledge TCP FIN of {} -> {}", dst, src_port);
+                }
             }
+        }
+
+        // Update RTO
+        if let Some(rtt) = rtt {
+            self.update_tcp_rto(dst, src_port, rtt);
         }
     }
 
     fn set_tcp_rto(&mut self, dst: SocketAddrV4, src_port: u16, rto: u64) {
-        self.tcp_rto_map.insert((src_port, dst), max(MIN_RTO, rto));
+        let rto = min(MAX_RTO, max(MIN_RTO, rto));
+
+        self.tcp_rto_map.insert((src_port, dst), rto);
         trace!("set TCP RTO of {} -> {} to {}", dst, src_port, rto);
     }
 
@@ -353,6 +396,53 @@ impl Forwarder {
         self.set_tcp_rto(dst, src_port, rto * 2);
     }
 
+    fn update_tcp_rto(&mut self, dst: SocketAddrV4, src_port: u16, rtt: Duration) {
+        let key = (src_port, dst);
+        // TODO: the RTT may be computed unexpectedly
+        let rtt = rtt.as_millis() as u64;
+
+        let srtt;
+        let rttvar;
+        match self.tcp_srtt_map.get(&key) {
+            Some(&prev_srtt) => {
+                // RTTVAR
+                let prev_rttvar = *self.tcp_rttvar_map.get(&key).unwrap_or(&(prev_srtt / 2));
+                rttvar = (prev_rttvar / 8 * 7)
+                    .checked_add(
+                        prev_srtt
+                            .checked_sub(rtt)
+                            .unwrap_or_else(|| rtt - prev_srtt)
+                            / 4,
+                    )
+                    .unwrap_or(u64::MAX);
+
+                // SRTT
+                srtt = (prev_rttvar / 8 * 7)
+                    .checked_add(rtt / 8)
+                    .unwrap_or(u64::MAX);
+            }
+            None => {
+                // SRTT
+                srtt = rtt;
+
+                // RTTVAR
+                rttvar = rtt / 2;
+            }
+        }
+
+        // SRTT
+        self.tcp_srtt_map.insert(key, srtt);
+        trace!("set TCP SRTT of {} -> {} to {}", dst, src_port, srtt);
+
+        // RTTVAR
+        self.tcp_rttvar_map.insert(key, rttvar);
+        trace!("set TCP RTTVAR of {} -> {} to {}", dst, src_port, rttvar);
+
+        // RTO
+        let rto = srtt.checked_add(max(1, 4 * rttvar)).unwrap_or(u64::MAX);
+        self.set_tcp_rto(dst, src_port, rto);
+    }
+
     /// Removes all information related to a TCP connection.
     pub fn remove_tcp(&mut self, dst: SocketAddrV4, src_port: u16) {
         let key = (src_port, dst);
@@ -361,7 +451,6 @@ impl Forwarder {
         self.tcp_send_mss_map.remove(&key);
         self.tcp_send_wscale_map.remove(&key);
         self.tcp_send_sack_perm_map.remove(&key);
-        self.tcp_fin_map.remove(&key);
         self.tcp_sequence_map.remove(&key);
         self.tcp_acknowledgement_map.remove(&key);
         self.tcp_window_map.remove(&key);
@@ -377,14 +466,9 @@ impl Forwarder {
             }
         }
         self.tcp_cache_map.remove(&key);
-        if self.tcp_fin_map.contains_key(&key) {
-            trace!(
-                "TCP FIN of {} -> {} was removed while the FIN is not handled",
-                dst,
-                src_port
-            );
-        }
+        self.tcp_syn_map.remove(&key);
         self.tcp_fin_map.remove(&key);
+        self.tcp_fin_retrans_set.remove(&key);
         if let Some(queue) = self.tcp_queue_map.get(&key) {
             if !queue.is_empty() {
                 trace!(
@@ -395,15 +479,10 @@ impl Forwarder {
             }
         }
         self.tcp_queue_map.remove(&key);
-        if self.tcp_fin_queue_set.contains(&key) {
-            trace!(
-                "TCP FIN of {} -> {} was removed while the FIN is not handled",
-                dst,
-                src_port
-            );
-        }
         self.tcp_fin_queue_set.remove(&key);
         self.tcp_rto_map.remove(&key);
+        self.tcp_srtt_map.remove(&key);
+        self.tcp_rttvar_map.remove(&key);
         trace!("remove TCP {} -> {}", dst, src_port);
     }
 
@@ -581,8 +660,14 @@ impl Forwarder {
         let mut payload = Vec::new();
         let mut sequence = 0;
         let mut size: usize = 0;
-        if let Some(cache) = self.tcp_cache_map.get(&key) {
-            payload = cache.get_timed_out();
+        if let Some(cache) = self.tcp_cache_map.get_mut(&key) {
+            payload = cache.get_timed_out_and_update(max(
+                MAX_RTO,
+                min(
+                    MIN_RTO,
+                    *self.tcp_rto_map.get(&key).unwrap_or(&INITIAL_RTO) * 2,
+                ),
+            ));
             sequence = cache.sequence();
             size = cache.len();
         };
@@ -590,7 +675,6 @@ impl Forwarder {
         if size > 0 {
             // Double RTO
             self.double_tcp_rto(dst, src_port);
-            // TODO: update RTO
 
             // If all the cache is get, the FIN should also be sent
             if size == payload.len() && self.tcp_fin_map.contains_key(&key) {
@@ -1120,6 +1204,8 @@ impl Forwarder {
 impl ForwardStream for Forwarder {
     fn open(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()> {
         self.send_tcp_ack_syn(dst, src_port)?;
+
+        self.tcp_syn_map.insert((src_port, dst), Instant::now());
 
         // Update TCP sequence
         self.add_tcp_sequence(dst, src_port, 1);
