@@ -406,7 +406,8 @@ impl Fragmentation {
         let offset = (ipv4.fragment_offset() as usize) * 8;
         let header_size = self.ethernet.len() + self.ipv4.len();
 
-        self.buffer[header_size + offset..].copy_from_slice(payload);
+        self.buffer[header_size + offset..header_size + offset + payload.len()]
+            .copy_from_slice(payload);
         self.length += payload.len();
     }
 
