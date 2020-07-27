@@ -608,10 +608,10 @@ impl Forwarder {
 
             ranges = temp_ranges;
         }
+        let ranges = ranges;
 
         // Retransmit
-        // TODO: cannot retransmit a pure ACK/FIN
-        for range in ranges {
+        for range in &ranges {
             let size = range
                 .1
                 .checked_sub(range.0)
@@ -620,7 +620,6 @@ impl Forwarder {
             if payload.len() > 0 {
                 if range.1 == recv_next && self.tcp_fin_map.contains_key(&key) {
                     // ACK/FIN
-                    // ACK
                     trace!(
                         "retransmit TCP ACK/FIN ({} Bytes) {} -> {} from {}",
                         payload.len(),
@@ -643,6 +642,14 @@ impl Forwarder {
                     self.send_tcp_ack_raw(dst, src_port, range.0, payload.as_slice(), false)?;
                 }
             }
+        }
+
+        // Pure FIN
+        if ranges.len() == 0 && self.tcp_fin_map.contains_key(&key) {
+            // FIN
+            trace!("retransmit TCP FIN {} -> {}", dst, src_port);
+            // Send
+            self.send_tcp_fin(dst, src_port)?;
         }
 
         Ok(())
@@ -1207,7 +1214,7 @@ impl ForwardStream for Forwarder {
 
         self.tcp_syn_map.insert((src_port, dst), Instant::now());
 
-        // Update TCP sequence
+        // TODO: Update TCP sequence
         self.add_tcp_sequence(dst, src_port, 1);
 
         Ok(())
