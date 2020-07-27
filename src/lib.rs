@@ -32,24 +32,8 @@ use pcap::{HardwareAddr, Receiver, Sender};
 pub fn interfaces() -> Vec<Interface> {
     pcap::interfaces()
         .into_iter()
-        .filter(|inter| !inter.is_loopback)
+        .filter(|inter| inter.is_up && !inter.is_loopback)
         .collect()
-}
-
-/// Gets a list of available network interfaces which is possibly can be used for the current
-/// machine.
-fn auto_interfaces() -> Vec<Interface> {
-    // With specified IP address
-    let mut inters: Vec<Interface> = interfaces()
-        .into_iter()
-        .filter(|inter| !inter.ip_addrs[0].is_unspecified())
-        .collect();
-    // Is up
-    if inters.len() > 1 {
-        inters = inters.into_iter().filter(|inter| inter.is_up).collect();
-    }
-
-    inters
 }
 
 /// Gets an available network interface.
@@ -57,10 +41,10 @@ pub fn interface(name: Option<String>) -> Option<Interface> {
     let inters = match name {
         Some(ref name) => {
             let mut inters = interfaces();
-            inters.retain(|ref current_inter| &current_inter.name == name);
+            inters.retain(|ref inter| &inter.name == name);
             inters
         }
-        None => auto_interfaces(),
+        None => interfaces(),
     };
 
     if inters.len() != 1 {

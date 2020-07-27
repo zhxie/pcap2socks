@@ -1,5 +1,7 @@
 //! Support for handling pcap interfaces.
 
+#[cfg(target_os = "windows")]
+use netifs;
 use pnet::datalink::{self, Channel, Config, DataLinkReceiver, DataLinkSender, MacAddr};
 use std::clone::Clone;
 use std::fmt::{self, Display, Formatter};
@@ -140,6 +142,30 @@ pub fn interfaces() -> Vec<Interface> {
         .filter_map(Result::ok)
         .collect();
 
+    let ifs = mark_interfaces(ifs);
+
+    ifs
+}
+
+#[cfg(target_os = "windows")]
+fn mark_interfaces(mut ifs: Vec<Interface>) -> Vec<Interface> {
+    if let Ok(sys_inters) = netifs::get_interfaces() {
+        for inter in sys_inters {
+            for i in &mut ifs {
+                if i.name.ends_with(&inter.name) {
+                    i.alias = Some(inter.display_name.clone());
+                    i.is_up = inter.is_up;
+                    i.is_loopback = inter.is_loopback;
+                }
+            }
+        }
+    }
+
+    ifs
+}
+
+#[cfg(not(target_os = "windows"))]
+fn mark_interfaces(ifs: Vec<Interface>) -> Vec<Interface> {
     ifs
 }
 

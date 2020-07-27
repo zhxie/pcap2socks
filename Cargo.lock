@@ -148,6 +148,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "eui48"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aed879f3568d10584530251e4078713e459d2d328e3289c181742f78bdf1cea7"
+dependencies = [
+ "rustc-serialize",
+]
+
+[[package]]
 name = "fuchsia-zircon"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -357,6 +366,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "netifs"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8c8569e31238905b08e210867dfcf0b3d5600c9bcb854fea6ff082ac47ca3f24"
+dependencies = [
+ "eui48",
+ "ipnetwork",
+ "libc",
+ "widestring",
+ "winapi 0.3.8",
+]
+
+[[package]]
 name = "num_cpus"
 version = "1.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -376,6 +398,7 @@ dependencies = [
  "ipnetwork",
  "log 0.4.8",
  "lru",
+ "netifs",
  "pnet",
  "rand",
  "structopt",
@@ -873,6 +896,12 @@ name = "wasi"
 version = "0.9.0+wasi-snapshot-preview1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cccddf32554fecc6acb585f82a32a72e28b48f8c4c1883ddfeeeaa96f7d8e519"
+
+[[package]]
+name = "widestring"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a763e303c0e0f23b0da40888724762e802a8ffefbc22de4127ef42493c2ea68c"
 
 [[package]]
 name = "winapi"
