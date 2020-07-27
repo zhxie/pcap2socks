@@ -554,23 +554,40 @@ impl Forwarder {
         // Retransmit
         let payload;
         let sequence;
+        let size;
         match self.tcp_cache_map.get(&key) {
             Some(cache) => {
                 payload = cache.get_all();
                 sequence = cache.sequence();
+                size = cache.len();
             }
             None => return Ok(()),
         };
 
         if payload.len() > 0 {
-            trace!(
-                "retransmit {} Bytes {} -> {} from {}",
-                payload.len(),
-                dst,
-                src_port,
-                sequence
-            );
-            self.send_tcp_ack_raw(dst, src_port, sequence, payload.as_slice(), false)?;
+            if size == payload.len() && self.tcp_fin_map.contains_key(&key) {
+                // ACK/FIN
+                trace!(
+                    "retransmit TCP ACK/FIN ({} Bytes) {} -> {} from {}",
+                    payload.len(),
+                    dst,
+                    src_port,
+                    sequence
+                );
+                // Send
+                self.send_tcp_ack_raw(dst, src_port, sequence, payload.as_slice(), true)?;
+            } else {
+                // ACK
+                trace!(
+                    "retransmit TCP ACK ({} Bytes) {} -> {} from {}",
+                    payload.len(),
+                    dst,
+                    src_port,
+                    sequence
+                );
+                // Send
+                self.send_tcp_ack_raw(dst, src_port, sequence, payload.as_slice(), false)?;
+            }
         }
 
         Ok(())
@@ -736,6 +753,8 @@ impl Forwarder {
     /// Sends TCP ACK packets from the queue.
     pub fn send_tcp_ack(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()> {
         let key = (src_port, dst);
+
+        // TODO: If any unhandled SYN or FIN exists, handle them first
 
         if let Some(queue) = self.tcp_queue_map.get_mut(&key) {
             let window = *self.tcp_send_window_map.get(&key).unwrap_or(&0);
@@ -1214,13 +1233,19 @@ impl ForwardStream for Forwarder {
 
         self.tcp_syn_map.insert((src_port, dst), Instant::now());
 
-        // TODO: Update TCP sequence
+        // Update TCP sequence
         self.add_tcp_sequence(dst, src_port, 1);
 
         Ok(())
     }
 
     fn forward(&mut self, dst: SocketAddrV4, src_port: u16, payload: &[u8]) -> io::Result<()> {
+        let key = (src_port, dst);
+
+        if self.tcp_fin_map.contains_key(&key) || self.tcp_fin_queue_set.contains(&key) {
+            return Err(io::Error::from(io::ErrorKind::NotConnected));
+        }
+
         self.append_to_queue(dst, src_port, payload)
     }
 
