@@ -393,13 +393,16 @@ impl Forwarder {
             .tcp_rto_map
             .get(&(src_port, dst))
             .unwrap_or(&INITIAL_RTO);
-        self.set_tcp_rto(dst, src_port, rto * 2);
+        self.set_tcp_rto(dst, src_port, rto.checked_mul(2).unwrap_or(u64::MAX));
     }
 
     fn update_tcp_rto(&mut self, dst: SocketAddrV4, src_port: u16, rtt: Duration) {
         let key = (src_port, dst);
-        // TODO: the RTT may be computed unexpectedly
-        let rtt = rtt.as_millis() as u64;
+        let rtt = if rtt.as_millis() > u64::MAX as u128 {
+            u64::MAX
+        } else {
+            rtt.as_millis() as u64
+        };
 
         let srtt;
         let rttvar;
