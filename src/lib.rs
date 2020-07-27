@@ -340,6 +340,9 @@ impl Forwarder {
                 self.tcp_syn_map.remove(&key);
 
                 trace!("acknowledge TCP SYN of {} -> {}", dst, src_port);
+
+                // Update TCP sequence
+                self.add_tcp_sequence(dst, src_port, 1);
             }
         }
 
@@ -371,6 +374,9 @@ impl Forwarder {
                     self.tcp_fin_map.remove(&key);
 
                     trace!("acknowledge TCP FIN of {} -> {}", dst, src_port);
+
+                    // Update TCP sequence
+                    self.add_tcp_sequence(dst, src_port, 1);
                 }
             }
         }
@@ -757,7 +763,10 @@ impl Forwarder {
     pub fn send_tcp_ack(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()> {
         let key = (src_port, dst);
 
-        // TODO: If any unhandled SYN or FIN exists, handle them first
+        // Retransmit unhandled SYN
+        if self.tcp_syn_map.contains_key(&key) {
+            return self.send_tcp_ack_syn(dst, src_port);
+        }
 
         if let Some(queue) = self.tcp_queue_map.get_mut(&key) {
             let window = *self.tcp_send_window_map.get(&key).unwrap_or(&0);
@@ -1235,9 +1244,6 @@ impl ForwardStream for Forwarder {
         self.send_tcp_ack_syn(dst, src_port)?;
 
         self.tcp_syn_map.insert((src_port, dst), Instant::now());
-
-        // Update TCP sequence
-        self.add_tcp_sequence(dst, src_port, 1);
 
         Ok(())
     }
