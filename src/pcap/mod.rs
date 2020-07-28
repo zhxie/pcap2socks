@@ -1,6 +1,5 @@
 //! Support for handling pcap interfaces.
 
-#[cfg(target_os = "windows")]
 use netifs;
 use pnet::datalink::{self, Channel, Config, DataLinkReceiver, DataLinkSender, MacAddr};
 use std::clone::Clone;
@@ -29,6 +28,7 @@ pub struct Interface {
     pub alias: Option<String>,
     pub hardware_addr: MacAddr,
     pub ip_addrs: Vec<Ipv4Addr>,
+    pub mtu: usize,
     pub is_up: bool,
     pub is_loopback: bool,
 }
@@ -41,6 +41,7 @@ impl Interface {
             alias: None,
             hardware_addr: MacAddr::zero(),
             ip_addrs: vec![],
+            mtu: 0,
             is_up: false,
             is_loopback: false,
         }
@@ -147,13 +148,13 @@ pub fn interfaces() -> Vec<Interface> {
     ifs
 }
 
-#[cfg(target_os = "windows")]
 fn mark_interfaces(mut ifs: Vec<Interface>) -> Vec<Interface> {
     if let Ok(sys_inters) = netifs::get_interfaces() {
         for inter in sys_inters {
             for i in &mut ifs {
                 if i.name.ends_with(&inter.name) {
                     i.alias = Some(inter.display_name.clone());
+                    i.mtu = inter.mtu;
                     i.is_up = inter.is_up;
                     i.is_loopback = inter.is_loopback;
                 }
@@ -161,11 +162,6 @@ fn mark_interfaces(mut ifs: Vec<Interface>) -> Vec<Interface> {
         }
     }
 
-    ifs
-}
-
-#[cfg(not(target_os = "windows"))]
-fn mark_interfaces(ifs: Vec<Interface>) -> Vec<Interface> {
     ifs
 }
 

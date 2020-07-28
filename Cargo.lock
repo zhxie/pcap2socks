@@ -368,8 +368,7 @@ dependencies = [
 [[package]]
 name = "netifs"
 version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8c8569e31238905b08e210867dfcf0b3d5600c9bcb854fea6ff082ac47ca3f24"
+source = "git+https://github.com/zhxie/netifs-rs#c2314b407c7d0361351ba2851cd6e9b7e69b8957"
 dependencies = [
  "eui48",
  "ipnetwork",
