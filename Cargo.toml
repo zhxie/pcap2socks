@@ -19,8 +19,13 @@ env_logger = "0.7.1"
 ipnetwork = "0.16.0"
 log = "0.4.8"
 lru = "0.5.2"
-netifs = { git = "https://github.com/zhxie/netifs-rs" }
 pnet = "0.26.0"
 rand = "0.7.3"
 structopt = "0.3.15"
 tokio = { version = "0.2.21", features = ["macros", "rt-core", "rt-threaded", "tcp", "time", "udp"] }
+
+[target.'cfg(windows)'.dependencies]
+netifs = { git = "https://github.com/zhxie/netifs-rs" }
+
+[target.'cfg(not(windows))'.dependencies]
+interfaces = "0.0.4"

@@ -1,11 +1,16 @@
 //! Support for handling pcap interfaces.
 
-use netifs;
 use pnet::datalink::{self, Channel, Config, DataLinkReceiver, DataLinkSender, MacAddr};
 use std::clone::Clone;
 use std::fmt::{self, Display, Formatter};
 use std::io;
 use std::net::Ipv4Addr;
+
+#[cfg(windows)]
+use netifs;
+
+#[cfg(not(windows))]
+use interfaces as c_interfaces;
 
 /// Represents the hardware address MAC in an Ethernet network.
 pub type HardwareAddr = pnet::datalink::MacAddr;
@@ -148,6 +153,7 @@ pub fn interfaces() -> Vec<Interface> {
     ifs
 }
 
+#[cfg(windows)]
 fn mark_interfaces(mut ifs: Vec<Interface>) -> Vec<Interface> {
     if let Ok(sys_inters) = netifs::get_interfaces() {
         for inter in sys_inters {
@@ -157,6 +163,23 @@ fn mark_interfaces(mut ifs: Vec<Interface>) -> Vec<Interface> {
                     i.mtu = inter.mtu;
                     i.is_up = inter.is_up;
                     i.is_loopback = inter.is_loopback;
+                }
+            }
+        }
+    }
+
+    ifs
+}
+
+#[cfg(not(windows))]
+fn mark_interfaces(mut ifs: Vec<Interface>) -> Vec<Interface> {
+    if let Ok(sys_inters) = c_interfaces::Interface::get_all() {
+        for inter in sys_inters {
+            for i in &mut ifs {
+                if i.name == inter.name {
+                    if let Ok(mtu) = inter.get_mtu() {
+                        i.mtu = mtu as usize;
+                    }
                 }
             }
         }
