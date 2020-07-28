@@ -1748,7 +1748,7 @@ impl Redirector {
 
                         let mtu = ipv4.len() + tcp.len() + mss as usize;
                         if let Some(prev_mtu) = tx_locked.update_mtu(mtu) {
-                            warn!("Update MTU from {} to {}", prev_mtu, mtu);
+                            info!("Update MTU from {} to {}", prev_mtu, mtu);
                         }
 
                         self.is_tx_mtu_updated = true;

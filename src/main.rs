@@ -20,7 +20,7 @@ async fn main() {
     let inter = match lib::interface(flags.inter) {
         Some(inter) => inter,
         None => {
-            error!("Cannot determine the interface. Available interfaces are listed below, use -i <INTERFACE> to designate:");
+            error!("Cannot determine the interface. Available interfaces are listed below, and please use -i <INTERFACE> to designate:");
             for inter in lib::interfaces().iter() {
                 info!("    {}", inter);
             }
@@ -28,7 +28,20 @@ async fn main() {
         }
     };
     info!("Listen on {}", inter);
-    info!("Break packets with MTU {}", flags.mtu);
+
+    // MTU
+    let mtu = match flags.mtu {
+        Some(mtu) => mtu,
+        None => {
+            if inter.mtu <= 0 {
+                error!("Cannot obtain the MTU. Please use --mtu <VALUE> to set");
+                return;
+            }
+
+            inter.mtu
+        }
+    };
+    info!("Break packets with MTU {}", mtu);
 
     // Route
     let src = match flags.preset {
@@ -87,7 +100,7 @@ async fn main() {
     }
 
     // Instructions
-    show_info(src, publish.unwrap_or(inter.ip_addrs[0]), flags.mtu);
+    show_info(src, publish.unwrap_or(inter.ip_addrs[0]), mtu);
 
     // Proxy
     let (tx, mut rx) = match inter.open() {
@@ -97,7 +110,7 @@ async fn main() {
             return;
         }
     };
-    let forwarder = Forwarder::new(tx, flags.mtu, inter.hardware_addr, src, inter.ip_addrs[0]);
+    let forwarder = Forwarder::new(tx, mtu, inter.hardware_addr, src, inter.ip_addrs[0]);
     let mut redirector = Redirector::new(Arc::new(Mutex::new(forwarder)), src, publish, flags.dst);
     info!("Proxy {} to {}", src, flags.dst);
     if let Err(ref e) = redirector.open(&mut rx).await {
@@ -158,8 +171,8 @@ struct Flags {
         value_name = "INTERFACE"
     )]
     pub inter: Option<String>,
-    #[structopt(long, help = "MTU", value_name = "VALUE", default_value = "1400")]
-    pub mtu: usize,
+    #[structopt(long, help = "MTU", value_name = "VALUE")]
+    pub mtu: Option<usize>,
     #[structopt(long, short = "P", help = "Preset", value_name = "PRESET")]
     pub preset: Option<String>,
     #[structopt(long, short, help = "ARP publishing address", value_name = "ADDRESS")]
