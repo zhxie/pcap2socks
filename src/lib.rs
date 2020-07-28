@@ -101,7 +101,8 @@ const MINIMUM_PACKET_SIZE: usize = 60;
 /// Represents a channel forward traffic to the source in pcap.
 pub struct Forwarder {
     tx: Sender,
-    mtu: usize,
+    src_mtu: usize,
+    local_mtu: usize,
     src_hardware_addr: HardwareAddr,
     local_hardware_addr: HardwareAddr,
     src_ip_addr: Ipv4Addr,
@@ -137,7 +138,8 @@ impl Forwarder {
     ) -> Forwarder {
         Forwarder {
             tx,
-            mtu,
+            src_mtu: mtu,
+            local_mtu: mtu,
             src_hardware_addr: pcap::HARDWARE_ADDR_UNSPECIFIED,
             local_hardware_addr,
             src_ip_addr,
@@ -163,18 +165,19 @@ impl Forwarder {
         }
     }
 
-    /// Updates the MTU.
-    pub fn update_mtu(&mut self, mtu: usize) -> Option<usize> {
-        let mut prev_mtu = None;
+    /// Sets the source MTU.
+    pub fn set_src_mtu(&mut self, mtu: usize) -> Option<usize> {
+        let prev_mtu = self.src_mtu;
 
-        if self.mtu != mtu {
-            prev_mtu = Some(self.mtu);
+        self.src_mtu = min(self.local_mtu, mtu);
 
-            self.mtu = mtu;
-            trace!("update MTU to {}", mtu);
+        if self.src_mtu != prev_mtu {
+            trace!("set source MTU to {}", mtu);
+
+            return Some(prev_mtu);
         }
 
-        prev_mtu
+        None
     }
 
     /// Sets the source hardware address.
@@ -837,7 +840,7 @@ impl Forwarder {
 
         // Segmentation
         let header_size = ipv4.len() + tcp.len();
-        let max_payload_size = self.mtu - header_size;
+        let max_payload_size = self.src_mtu - header_size;
         let mut i = 0;
         while max_payload_size * i < payload.len() {
             let size = min(max_payload_size, payload.len() - i * max_payload_size);
@@ -1009,7 +1012,7 @@ impl Forwarder {
         let size = udp_header_size + payload.len();
         let mut n = 0;
         while n < size {
-            let mut length = min(size - n, self.mtu - ipv4_header_size);
+            let mut length = min(size - n, self.src_mtu - ipv4_header_size);
             let mut remain = size - n - length;
 
             // Alignment
@@ -1325,7 +1328,6 @@ const PORT_COUNT: usize = 64;
 /// Represents a channel redirect traffic to the proxy of SOCKS or loopback to the source in pcap.
 pub struct Redirector {
     tx: Arc<Mutex<Forwarder>>,
-    is_tx_mtu_updated: bool,
     is_tx_src_hardware_addr_set: bool,
     src_ip_addr: Ipv4Addr,
     local_ip_addr: Option<Ipv4Addr>,
@@ -1356,7 +1358,6 @@ impl Redirector {
     ) -> Redirector {
         let redirector = Redirector {
             tx,
-            is_tx_mtu_updated: false,
             is_tx_src_hardware_addr_set: false,
             src_ip_addr,
             local_ip_addr,
@@ -1738,20 +1739,16 @@ impl Redirector {
                     tcp.src(),
                     tcp.sequence().checked_add(1).unwrap_or(0),
                 );
-                if !self.is_tx_mtu_updated {
-                    if let Some(mss) = tcp.mss() {
-                        // Pseudo headers
-                        let tcp = Tcp::new_ack(0, 0, 0, 0, 0, None, None);
-                        let ipv4 =
-                            Ipv4::new(0, tcp.kind(), Ipv4Addr::UNSPECIFIED, Ipv4Addr::UNSPECIFIED)
-                                .unwrap();
+                if let Some(mss) = tcp.mss() {
+                    // Pseudo headers
+                    let tcp = Tcp::new_ack(0, 0, 0, 0, 0, None, None);
+                    let ipv4 =
+                        Ipv4::new(0, tcp.kind(), Ipv4Addr::UNSPECIFIED, Ipv4Addr::UNSPECIFIED)
+                            .unwrap();
 
-                        let mtu = ipv4.len() + tcp.len() + mss as usize;
-                        if let Some(prev_mtu) = tx_locked.update_mtu(mtu) {
-                            info!("Update MTU from {} to {}", prev_mtu, mtu);
-                        }
-
-                        self.is_tx_mtu_updated = true;
+                    let mtu = ipv4.len() + tcp.len() + mss as usize;
+                    if let Some(prev_mtu) = tx_locked.set_src_mtu(mtu) {
+                        info!("Update MTU from {} to {}", prev_mtu, mtu);
                     }
                 }
                 if let Some(wscale) = wscale {
