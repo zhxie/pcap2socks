@@ -41,7 +41,7 @@ async fn main() {
             inter.mtu
         }
     };
-    info!("Break packets with MTU {}", mtu);
+    info!("Use MTU {}", mtu);
 
     // Route
     let src = match flags.preset {
@@ -147,7 +147,7 @@ fn show_info(ip_addr: Ipv4Addr, gateway: Ipv4Addr, mtu: usize) {
     info!("    │ {:<10} {:>15} │", "Mask", mask);
     info!("    │ {:<10} {:>15} │", "Gateway", gateway);
     info!("    │─{:─<10}─{:─>15}─│", "", "");
-    info!("    │ {:<10} {:>15} │", "MTU", mtu);
+    info!("    │ {:<10} {:>15} │", "MTU", format!("≤{}", mtu));
     info!("    └─{:─<10}─{:─>15}─┘", "", "");
     if mask == Ipv4Addr::UNSPECIFIED {
         warn!("The mask is all zeros, which may cause potential problems");

@@ -169,18 +169,13 @@ impl Forwarder {
     }
 
     /// Sets the source MTU.
-    pub fn set_src_mtu(&mut self, mtu: usize) -> Option<usize> {
+    pub fn set_src_mtu(&mut self, mtu: usize) -> bool {
         let prev_mtu = self.src_mtu;
 
         self.src_mtu = min(self.local_mtu, mtu);
+        trace!("set source MTU to {}", mtu);
 
-        if self.src_mtu != prev_mtu {
-            trace!("set source MTU to {}", mtu);
-
-            return Some(prev_mtu);
-        }
-
-        None
+        return self.src_mtu != prev_mtu;
     }
 
     /// Sets the source hardware address.
@@ -1769,8 +1764,8 @@ impl Redirector {
                             .unwrap();
 
                     let mtu = ipv4.len() + tcp.len() + mss as usize;
-                    if let Some(prev_mtu) = tx_locked.set_src_mtu(mtu) {
-                        info!("Update MTU from {} to {}", prev_mtu, mtu);
+                    if tx_locked.set_src_mtu(mtu) {
+                        info!("Update MTU to {}", mtu);
                     }
                 }
                 if let Some(wscale) = wscale {
