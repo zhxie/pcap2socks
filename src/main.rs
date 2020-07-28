@@ -105,7 +105,7 @@ async fn main() {
     }
 }
 
-fn show_info(ip_addr: Ipv4Addr, gateway: Ipv4Addr, mtu: u16) {
+fn show_info(ip_addr: Ipv4Addr, gateway: Ipv4Addr, mtu: usize) {
     let ip_addr_octets = ip_addr.octets();
     let gateway_octets = gateway.octets();
     let mut mask_value = u32::from_be_bytes([
@@ -159,7 +159,7 @@ struct Flags {
     )]
     pub inter: Option<String>,
     #[structopt(long, help = "MTU", value_name = "VALUE", default_value = "1400")]
-    pub mtu: u16,
+    pub mtu: usize,
     #[structopt(long, short = "P", help = "Preset", value_name = "PRESET")]
     pub preset: Option<String>,
     #[structopt(long, short, help = "ARP publishing address", value_name = "ADDRESS")]

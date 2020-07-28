@@ -86,15 +86,10 @@ const TIMEDOUT_WAIT: u64 = 20;
 /// Represents the max distance of `u32` values between packets in an `u32` window.
 const MAX_U32_WINDOW_SIZE: usize = 16 * 1024 * 1024;
 
-/// Represents if the received send MSS should be preferred instead of manually set MTU in TCP.
-const PREFER_SEND_MSS: bool = true;
-
 /// Represents the initial timeout for a retransmission in a TCP connection.
 const INITIAL_RTO: u64 = 1000;
-
 /// Represents the minimum timeout for a retransmission in a TCP connection.
 const MIN_RTO: u64 = 1000;
-
 /// Represents the maximum timeout for a retransmission in a TCP connection.
 const MAX_RTO: u64 = 60000;
 
@@ -106,14 +101,13 @@ const MINIMUM_PACKET_SIZE: usize = 60;
 /// Represents a channel forward traffic to the source in pcap.
 pub struct Forwarder {
     tx: Sender,
-    mtu: u16,
+    mtu: usize,
     src_hardware_addr: HardwareAddr,
     local_hardware_addr: HardwareAddr,
     src_ip_addr: Ipv4Addr,
     local_ip_addr: Ipv4Addr,
     ipv4_identification_map: HashMap<Ipv4Addr, u16>,
     tcp_send_window_map: HashMap<(u16, SocketAddrV4), usize>,
-    tcp_send_mss_map: HashMap<(u16, SocketAddrV4), u16>,
     tcp_send_wscale_map: HashMap<(u16, SocketAddrV4), u8>,
     tcp_send_sack_perm_map: HashMap<(u16, SocketAddrV4), bool>,
     tcp_sequence_map: HashMap<(u16, SocketAddrV4), u32>,
@@ -136,7 +130,7 @@ impl Forwarder {
     /// Creates a new `Forwarder`.
     pub fn new(
         tx: Sender,
-        mtu: u16,
+        mtu: usize,
         local_hardware_addr: HardwareAddr,
         src_ip_addr: Ipv4Addr,
         local_ip_addr: Ipv4Addr,
@@ -150,7 +144,6 @@ impl Forwarder {
             local_ip_addr,
             ipv4_identification_map: HashMap::new(),
             tcp_send_window_map: HashMap::new(),
-            tcp_send_mss_map: HashMap::new(),
             tcp_send_wscale_map: HashMap::new(),
             tcp_send_sack_perm_map: HashMap::new(),
             tcp_sequence_map: HashMap::new(),
@@ -168,6 +161,20 @@ impl Forwarder {
             tcp_srtt_map: HashMap::new(),
             tcp_rttvar_map: HashMap::new(),
         }
+    }
+
+    /// Updates the MTU.
+    pub fn update_mtu(&mut self, mtu: usize) -> Option<usize> {
+        let mut prev_mtu = None;
+
+        if self.mtu != mtu {
+            prev_mtu = Some(self.mtu);
+
+            self.mtu = mtu;
+            trace!("update MTU to {}", mtu);
+        }
+
+        prev_mtu
     }
 
     /// Sets the source hardware address.
@@ -197,12 +204,6 @@ impl Forwarder {
             dst,
             window,
         );
-    }
-
-    /// Sets the send MSS of a TCP connection.
-    pub fn set_tcp_send_mss(&mut self, dst: SocketAddrV4, src_port: u16, mss: u16) {
-        self.tcp_send_mss_map.insert((src_port, dst), mss);
-        trace!("set TCP send MSS of {} -> {} to {}", src_port, dst, mss);
     }
 
     /// Sets the send window scale of a TCP connection.
@@ -441,7 +442,6 @@ impl Forwarder {
         let key = (src_port, dst);
 
         self.tcp_send_window_map.remove(&key);
-        self.tcp_send_mss_map.remove(&key);
         self.tcp_send_wscale_map.remove(&key);
         self.tcp_send_sack_perm_map.remove(&key);
         self.tcp_sequence_map.remove(&key);
@@ -837,13 +837,7 @@ impl Forwarder {
 
         // Segmentation
         let header_size = ipv4.len() + tcp.len();
-        let max_payload_size = match PREFER_SEND_MSS {
-            true => match self.tcp_send_mss_map.get(&key) {
-                Some(&mss) => mss as usize,
-                None => self.mtu as usize - header_size,
-            },
-            false => self.mtu as usize - header_size,
-        };
+        let max_payload_size = self.mtu - header_size;
         let mut i = 0;
         while max_payload_size * i < payload.len() {
             let size = min(max_payload_size, payload.len() - i * max_payload_size);
@@ -1015,7 +1009,7 @@ impl Forwarder {
         let size = udp_header_size + payload.len();
         let mut n = 0;
         while n < size {
-            let mut length = min(size - n, self.mtu as usize - ipv4_header_size);
+            let mut length = min(size - n, self.mtu - ipv4_header_size);
             let mut remain = size - n - length;
 
             // Alignment
@@ -1331,6 +1325,7 @@ const PORT_COUNT: usize = 64;
 /// Represents a channel redirect traffic to the proxy of SOCKS or loopback to the source in pcap.
 pub struct Redirector {
     tx: Arc<Mutex<Forwarder>>,
+    is_tx_mtu_updated: bool,
     is_tx_src_hardware_addr_set: bool,
     src_ip_addr: Ipv4Addr,
     local_ip_addr: Option<Ipv4Addr>,
@@ -1361,6 +1356,7 @@ impl Redirector {
     ) -> Redirector {
         let redirector = Redirector {
             tx,
+            is_tx_mtu_updated: false,
             is_tx_src_hardware_addr_set: false,
             src_ip_addr,
             local_ip_addr,
@@ -1742,9 +1738,20 @@ impl Redirector {
                     tcp.src(),
                     tcp.sequence().checked_add(1).unwrap_or(0),
                 );
-                if PREFER_SEND_MSS {
+                if !self.is_tx_mtu_updated {
                     if let Some(mss) = tcp.mss() {
-                        tx_locked.set_tcp_send_mss(dst, tcp.src(), mss);
+                        // Pseudo headers
+                        let tcp = Tcp::new_ack(0, 0, 0, 0, 0, None, None);
+                        let ipv4 =
+                            Ipv4::new(0, tcp.kind(), Ipv4Addr::UNSPECIFIED, Ipv4Addr::UNSPECIFIED)
+                                .unwrap();
+
+                        let mtu = ipv4.len() + tcp.len() + mss as usize;
+                        if let Some(prev_mtu) = tx_locked.update_mtu(mtu) {
+                            warn!("Update MTU from {} to {}", prev_mtu, mtu);
+                        }
+
+                        self.is_tx_mtu_updated = true;
                     }
                 }
                 if let Some(wscale) = wscale {

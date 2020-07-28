@@ -54,8 +54,6 @@ This is the development documentation of pcap2socks.
 
 `MAX_U32_WINDOW_SIZE`: Same as above. Default as `16777216` Bytes, or 16 MB.
 
-`PREFER_SEND_MSS`: Represents if the received send MSS should be preferred instead of manually set MTU in TCP. Default as `true`.
-
 `INITIAL_RTO`: Represents the initial timeout for a retransmission in a TCP connection. Default as `1000` ms.
 
 `MIN_RTO`: Represents the minimum timeout for a retransmission in a TCP connection. Default as `1000` ms.
