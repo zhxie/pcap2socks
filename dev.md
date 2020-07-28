@@ -12,8 +12,6 @@ This is the development documentation of pcap2socks.
 
 - pcap2socks does not consider the wait time in states like `TIME_WAIT` since the source should maintain its state.
 
-- pcap2socks does not realize the MSS ([RFC 793](https://tools.ietf.org/html/rfc793)) option since the way getting interface's MSS in difference kernels and systems are totally different, and one workable dependency crate [interfaces](https://crates.io/crates/interfaces) cannot be compiled in Windows successfully with MSVC.
-
 - pcap2socks does not calculate for the window scale ([RFC 7323](https://tools.ietf.org/html/rfc7323)) option and will open a same-size receive window as the source by default.
 
 - pcap2socks does not realize the timestamp ([RFC 7323](https://www.iana.org/go/rfc7323)) option. Since only the source and destination know the full information of the traffic, pcap2socks may not trace any packet and report its timestamp correctly.
@@ -59,6 +57,8 @@ This is the development documentation of pcap2socks.
 `MIN_RTO`: Represents the minimum timeout for a retransmission in a TCP connection. Default as `1000` ms.
 
 `MAX_RTO`: Represents the maximum timeout for a retransmission in a TCP connection. Default as `60000` ms.
+
+`ENABLE_MSS`: Represents if the TCP MSS ([RFC 793](https://www.iana.org/go/rfc793)) option is enabled. Default as `true`.
 
 `DUPLICATES_THRESHOLD`: Represents the threshold of TCP ACK duplicates before trigger a fast retransmission, also recognized as fast retransmission. Default as `3`.
 

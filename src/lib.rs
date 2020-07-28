@@ -93,6 +93,9 @@ const MIN_RTO: u64 = 1000;
 /// Represents the maximum timeout for a retransmission in a TCP connection.
 const MAX_RTO: u64 = 60000;
 
+/// Represents if the TCP MSS option is enabled.
+const ENABLE_MSS: bool = true;
+
 /// Represents the minimum packet size.
 /// Because all traffic is in Ethernet, and the 802.3 specifies the minimum is 64 Bytes.
 /// Exclude the 4 bytes used in FCS, the minimum packet size in pcap2socks is 60 Bytes.
@@ -918,6 +921,25 @@ impl Forwarder {
     fn send_tcp_ack_syn(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()> {
         let key = (src_port, dst);
 
+        let mss = match ENABLE_MSS {
+            true => {
+                // Pseudo headers
+                let tcp = Tcp::new_ack(0, 0, 0, 0, 0, None, None);
+                let ipv4 =
+                    Ipv4::new(0, tcp.kind(), Ipv4Addr::UNSPECIFIED, Ipv4Addr::UNSPECIFIED).unwrap();
+
+                let mss = self.local_mtu - (ipv4.len() + tcp.len());
+                let mss = if mss > u16::MAX as usize {
+                    u16::MAX
+                } else {
+                    mss as u16
+                };
+
+                Some(mss)
+            }
+            false => None,
+        };
+
         // TCP
         let tcp = Tcp::new_ack_syn(
             dst.port(),
@@ -925,7 +947,7 @@ impl Forwarder {
             *self.tcp_sequence_map.get(&key).unwrap_or(&0),
             *self.tcp_acknowledgement_map.get(&key).unwrap_or(&0),
             *self.tcp_window_map.get(&key).unwrap_or(&65535),
-            None,
+            mss,
             self.tcp_send_wscale_map.get(&key).cloned(),
             *self.tcp_send_sack_perm_map.get(&key).unwrap_or(&false),
             None,
