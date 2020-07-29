@@ -11,9 +11,9 @@ use std::net::Ipv4Addr;
 /// Represents an UDP packet.
 #[derive(Clone, Debug)]
 pub struct Udp {
-    pub layer: udp::Udp,
-    pub src: Ipv4Addr,
-    pub dst: Ipv4Addr,
+    layer: udp::Udp,
+    src: Ipv4Addr,
+    dst: Ipv4Addr,
 }
 
 impl Udp {

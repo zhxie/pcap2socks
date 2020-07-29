@@ -99,7 +99,7 @@ impl Indicator {
         }
     }
 
-    /// Get the brief of the `Indicator`.
+    /// Get the brief of the indicator.
     pub fn brief(&self) -> String {
         match self.network() {
             Some(network) => match network {
@@ -137,7 +137,7 @@ impl Indicator {
         }
     }
 
-    /// Get The length of the `Indicator` when converted into a byte-array.
+    /// Get The length of the indicator when converted into a byte-array.
     pub fn len(&self) -> usize {
         let mut size = 0;
 
@@ -155,7 +155,7 @@ impl Indicator {
         size
     }
 
-    /// Get the content length of the `Indicator` when converted into a byte-array.
+    /// Get the content length of the indicator when converted into a byte-array.
     pub fn content_len(&self) -> usize {
         match self.link() {
             Layers::Ethernet(ethernet) => match self.network() {
@@ -170,7 +170,7 @@ impl Indicator {
         }
     }
 
-    /// Serialize the `Indicator` into a byte-array.
+    /// Serialize the indicator into a byte-array.
     pub fn serialize(&self, buffer: &mut [u8]) -> io::Result<usize> {
         let mut begin = 0;
         let mut total = self.len();
@@ -194,7 +194,7 @@ impl Indicator {
         Ok(begin)
     }
 
-    /// Serialize the `Indicator` into a byte-array with payload.
+    /// Serialize the indicator into a byte-array with payload.
     pub fn serialize_with_payload(&self, buffer: &mut [u8], payload: &[u8]) -> io::Result<usize> {
         let mut begin = 0;
         let mut total = self.len() + payload.len();
@@ -230,7 +230,7 @@ impl Indicator {
         self.link().kind()
     }
 
-    /// Get the `Ethernet`.
+    /// Get the Ethernet layer.
     pub fn ethernet(&self) -> Option<&Ethernet> {
         if let Layers::Ethernet(layer) = &self.link() {
             return Some(layer);
@@ -257,7 +257,7 @@ impl Indicator {
         None
     }
 
-    /// Get the ARP.
+    /// Get the ARP layer.
     pub fn arp(&self) -> Option<&Arp> {
         if let Some(layer) = self.network() {
             if let Layers::Arp(layer) = layer {
@@ -268,7 +268,7 @@ impl Indicator {
         None
     }
 
-    /// Get the IPv4.
+    /// Get the IPv4 layer.
     pub fn ipv4(&self) -> Option<&Ipv4> {
         if let Some(layer) = self.network() {
             if let Layers::Ipv4(layer) = layer {
@@ -297,7 +297,7 @@ impl Indicator {
         None
     }
 
-    /// Get the TCP.
+    /// Get the TCP layer.
     pub fn tcp(&self) -> Option<&Tcp> {
         if let Some(layer) = self.transport() {
             if let Layers::Tcp(layer) = layer {
@@ -308,7 +308,7 @@ impl Indicator {
         None
     }
 
-    /// Get the UDP.
+    /// Get the UDP layer.
     pub fn udp(&self) -> Option<&Udp> {
         if let Some(layer) = self.transport() {
             if let Layers::Udp(layer) = layer {
@@ -424,12 +424,12 @@ impl Fragmentation {
         (new_indicator, &self.buffer[0..header_size + self.length])
     }
 
-    /// Returns if the `Fragmentation` is completed.
+    /// Returns if the fragmentation is completed.
     pub fn is_completed(&self) -> bool {
         self.length == self.ipv4.total_length() as usize - self.ipv4.len()
     }
 
-    /// Returns if the `Fragmentation` is expired.
+    /// Returns if the fragmentation is expired.
     pub fn is_expired(&self) -> bool {
         self.last_seen.elapsed().as_millis() > EXPIRE_TIME
     }

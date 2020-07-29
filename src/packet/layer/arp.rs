@@ -77,17 +77,17 @@ impl Arp {
         Arp::from(arp)
     }
 
-    /// Returns if the `Arp` is an ARP request.
+    /// Returns if the layer is an ARP request.
     pub fn is_request(&self) -> bool {
         self.layer.operation == ArpOperations::Request
     }
 
-    /// Returns if the `Arp` is an ARP reply.
+    /// Returns if the layer is an ARP reply.
     pub fn is_reply(&self) -> bool {
         self.layer.operation == ArpOperations::Reply
     }
 
-    /// Returns if the `Arp` is an ARP request of the given source and destination.
+    /// Returns if the layer is an ARP request of the given source and destination.
     pub fn is_request_of(&self, src: Ipv4Addr, dst: Ipv4Addr) -> bool {
         match self.layer.operation {
             ArpOperations::Request => {

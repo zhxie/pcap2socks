@@ -265,6 +265,8 @@ impl Queue {
         }
     }
 
+    /// Get the payload which is timed out from the begin to the first byte which is not timed out
+    /// and update their timeout timer.
     pub fn get_timed_out_and_update(&mut self, rto: u64) -> Vec<u8> {
         let mut recv_next = None;
         for clock in &self.clocks {
@@ -578,12 +580,12 @@ impl Window {
             .unwrap_or_else(|| self.size as u32 - (u32::MAX - self.sequence))
     }
 
-    /// Get the remaining size of the `Window`.
+    /// Get the remaining size of the window.
     pub fn remaining_size(&self) -> usize {
         self.buffer.len() - self.size
     }
 
-    /// Get the filled edges of the `Window`.
+    /// Get the filled edges of the window.
     pub fn filled(&self) -> Vec<(u32, u32)> {
         let mut v = Vec::new();
         for (&sequence, &size) in &self.edges {

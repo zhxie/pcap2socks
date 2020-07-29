@@ -15,9 +15,9 @@ use std::net::Ipv4Addr;
 /// Represents a TCP packet.
 #[derive(Clone, Debug)]
 pub struct Tcp {
-    pub layer: tcp::Tcp,
-    pub src: Ipv4Addr,
-    pub dst: Ipv4Addr,
+    layer: tcp::Tcp,
+    src: Ipv4Addr,
+    dst: Ipv4Addr,
 }
 
 impl Tcp {
@@ -397,42 +397,42 @@ impl Tcp {
         None
     }
 
-    /// Returns if the `Tcp` is a TCP acknowledgement.
+    /// Returns if the layer is a TCP acknowledgement.
     pub fn is_ack(&self) -> bool {
         self.layer.flags & TcpFlags::ACK != 0
     }
 
-    /// Returns if the `Tcp` is a TCP acknowledgement and finish.
+    /// Returns if the layer is a TCP acknowledgement and finish.
     pub fn is_ack_fin(&self) -> bool {
         self.is_ack() && self.is_fin()
     }
 
-    /// Returns if the `Tcp` is a TCP reset.
+    /// Returns if the layer is a TCP reset.
     pub fn is_rst(&self) -> bool {
         self.layer.flags & TcpFlags::RST != 0
     }
 
-    /// Returns if the `Tcp` is a TCP synchronization.
+    /// Returns if the layer is a TCP synchronization.
     pub fn is_syn(&self) -> bool {
         self.layer.flags & TcpFlags::SYN != 0
     }
 
-    /// Returns if the `Tcp` is a TCP finish.
+    /// Returns if the layer is a TCP finish.
     pub fn is_fin(&self) -> bool {
         self.layer.flags & TcpFlags::FIN != 0
     }
 
-    /// Returns if the `Tcp` is a TCP reset or finish.
+    /// Returns if the layer is a TCP reset or finish.
     pub fn is_rst_or_fin(&self) -> bool {
         self.is_rst() || self.is_fin()
     }
 
-    /// Returns if the `Tcp` has zero window.
+    /// Returns if the layer has zero window.
     pub fn is_zero_window(&self) -> bool {
         self.layer.window == 0
     }
 
-    /// Returns if the `Tcp` indicates selective acknowledgements permitted. This function
+    /// Returns if the layer indicates selective acknowledgements permitted. This function
     /// allocates space for serializing options.
     pub fn is_sack_perm(&self) -> bool {
         for ref option in &self.layer.options {

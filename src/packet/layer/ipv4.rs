@@ -137,7 +137,7 @@ impl Ipv4 {
         self.layer.identification
     }
 
-    /// Returns if more fragments are follows this `Ipv4`.
+    /// Returns if more fragments are follows this layer.
     pub fn is_more_fragment(&self) -> bool {
         self.layer.flags & Ipv4Flags::MoreFragments != 0
     }
@@ -147,7 +147,7 @@ impl Ipv4 {
         self.layer.fragment_offset
     }
 
-    /// Returns if the `Ipv4` is a IPv4 fragment.
+    /// Returns if the layer is a IPv4 fragment.
     pub fn is_fragment(&self) -> bool {
         self.is_more_fragment() || self.fragment_offset() > 0
     }
