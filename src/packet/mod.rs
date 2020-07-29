@@ -340,6 +340,7 @@ impl Display for Indicator {
     }
 }
 
+/// Represents the expire time of each group of fragments.
 const EXPIRE_TIME: u128 = 10000;
 
 /// Represents a fragmentation.
