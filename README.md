@@ -48,7 +48,7 @@ pcap2socks -s <ADDRESS> -p <ADDRESS> -d <ADDRESS>
 
 `-s, --source <ADDRESS>`: Source.
 
-`-p, --publish <ADDRESS>`: ARP publishing address. If this value is set, `pcap2socks` will reply ARP request as it owns the specified address which is not on the network, also called proxy ARP.
+`-p, --publish <ADDRESS>`: ARP publishing address. If this value is set, pcap2socks will reply ARP request as it owns the specified address which is not on the network, also called proxy ARP.
 
 `-d, --destination <ADDRESS>`: Destination, default as `127.0.0.1:1080`.
 
