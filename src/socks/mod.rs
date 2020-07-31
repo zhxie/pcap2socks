@@ -170,8 +170,8 @@ impl StreamWorker {
         }
     }
 
-    /// Closes the write half of the worker, sends a TCP FIN to the other side.
-    pub fn close_write(&mut self) {
+    /// Shutdowns the write half of the worker and sends a TCP FIN to the other side.
+    pub fn shutdown_write(&mut self) {
         if !self.is_write_closed.load(Ordering::Relaxed) {
             self.stream_tx.take().unwrap().forget();
             self.is_write_closed.store(true, Ordering::Relaxed);
@@ -181,7 +181,7 @@ impl StreamWorker {
 
     /// Closes the worker.
     pub fn close(&mut self) {
-        self.close_write();
+        self.shutdown_write();
         self.is_read_closed.store(true, Ordering::Relaxed);
     }
 
