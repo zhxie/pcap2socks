@@ -93,13 +93,13 @@ async fn main() {
     match publish {
         Some(publish) => {
             if srcs.contains(&publish) {
-                error!("The source cannot contain the publish");
+                error!("The sources cannot contain the publish");
                 return;
             }
         }
         None => {
             if srcs.contains(&inter.ip_addrs[0]) {
-                error!("The source cannot contain the local address");
+                error!("The sources cannot contain the local address");
                 return;
             }
         }
