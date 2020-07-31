@@ -1,8 +1,8 @@
 //! Support for handling SOCKS proxies.
 
 use log::{debug, trace, warn};
-use std::net::SocketAddrV4;
-use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+use std::net::{Ipv4Addr, SocketAddrV4};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io;
@@ -16,16 +16,16 @@ use self::socks::SocksSendHalf;
 /// Trait for forwarding stream.
 pub trait ForwardStream: Send {
     /// Opens a stream connection.
-    fn open(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()>;
+    fn open(&mut self, dst: SocketAddrV4, src: SocketAddrV4) -> io::Result<()>;
 
     /// Forwards stream.
-    fn forward(&mut self, dst: SocketAddrV4, src_port: u16, payload: &[u8]) -> io::Result<()>;
+    fn forward(&mut self, dst: SocketAddrV4, src: SocketAddrV4, payload: &[u8]) -> io::Result<()>;
 
     /// Triggers a timed event. Used in retransmitting timed out data.
-    fn tick(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()>;
+    fn tick(&mut self, dst: SocketAddrV4, src: SocketAddrV4) -> io::Result<()>;
 
     /// Closes a stream connection.
-    fn close(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()>;
+    fn close(&mut self, dst: SocketAddrV4, src: SocketAddrV4) -> io::Result<()>;
 }
 
 /// Represents the wait time after a `TimedOut` `IoError`.
@@ -51,7 +51,7 @@ impl StreamWorker {
     /// Opens a new `StreamWorker`.
     pub async fn connect(
         tx: Arc<Mutex<dyn ForwardStream>>,
-        src_port: u16,
+        src: SocketAddrV4,
         dst: SocketAddrV4,
         remote: SocketAddrV4,
     ) -> io::Result<StreamWorker> {
@@ -68,7 +68,7 @@ impl StreamWorker {
         let is_read_closed_cloned2 = Arc::clone(&is_read_closed);
 
         // Open
-        tx_cloned.lock().unwrap().open(dst, src_port)?;
+        tx_cloned.lock().unwrap().open(dst, src)?;
 
         // Forward
         tokio::spawn(async move {
@@ -89,7 +89,7 @@ impl StreamWorker {
                                 // Close by remote
                                 trace!("close stream read {} -> {}", dst, 0);
 
-                                if let Err(ref e) = tx.lock().unwrap().close(dst, src_port) {
+                                if let Err(ref e) = tx.lock().unwrap().close(dst, src) {
                                     warn!("handle {}: {}", "TCP", e)
                                 }
                                 is_read_closed_cloned.store(true, Ordering::Relaxed);
@@ -105,9 +105,7 @@ impl StreamWorker {
                         );
 
                         // Send
-                        if let Err(ref e) =
-                            tx.lock().unwrap().forward(dst, src_port, &buffer[..size])
-                        {
+                        if let Err(ref e) = tx.lock().unwrap().forward(dst, src, &buffer[..size]) {
                             warn!("handle {}: {}", "TCP", e);
                         }
                     }
@@ -134,7 +132,7 @@ impl StreamWorker {
                 // Tick
                 trace!("tick on {} -> {}", dst, 0);
 
-                if let Err(ref e) = tx_cloned.lock().unwrap().tick(dst, src_port) {
+                if let Err(ref e) = tx_cloned.lock().unwrap().tick(dst, src) {
                     warn!("handle {}: {}", "TCP", e);
                 }
                 if is_read_closed_cloned2.load(Ordering::Relaxed) {
@@ -208,12 +206,12 @@ impl Drop for StreamWorker {
 /// Trait for forwarding datagram.
 pub trait ForwardDatagram: Send {
     /// Forwards datagram.
-    fn forward(&mut self, dst: SocketAddrV4, src_port: u16, payload: &[u8]) -> io::Result<()>;
+    fn forward(&mut self, dst: SocketAddrV4, src: SocketAddrV4, payload: &[u8]) -> io::Result<()>;
 }
 
 /// Represents a worker of a SOCKS5 UDP client.
 pub struct DatagramWorker {
-    src_port: Arc<AtomicU16>,
+    src: Arc<AtomicU64>,
     local_port: u16,
     socks_tx: SocksSendHalf,
     is_closed: Arc<AtomicBool>,
@@ -223,13 +221,13 @@ impl DatagramWorker {
     /// Creates a new `DatagramWorker`.
     pub async fn bind(
         tx: Arc<Mutex<dyn ForwardDatagram>>,
-        src_port: u16,
+        src: SocketAddrV4,
         remote: SocketAddrV4,
     ) -> io::Result<(DatagramWorker, u16)> {
         let (mut socks_rx, socks_tx, local_port) = socks::bind(remote).await?;
 
-        let a_src_port = Arc::new(AtomicU16::from(src_port));
-        let a_src_port_cloned = Arc::clone(&a_src_port);
+        let a_src = Arc::new(AtomicU64::from(socket_addr_v4_to_u64(&src)));
+        let a_src_cloned = Arc::clone(&a_src);
         let is_closed = Arc::new(AtomicBool::new(false));
         let is_closed_cloned = Arc::clone(&is_closed);
         tokio::spawn(async move {
@@ -251,7 +249,7 @@ impl DatagramWorker {
                         // Send
                         if let Err(ref e) = tx.lock().unwrap().forward(
                             addr,
-                            a_src_port_cloned.load(Ordering::Relaxed),
+                            u64_to_socket_addr_v4(a_src_cloned.load(Ordering::Relaxed)),
                             &buffer[..size],
                         ) {
                             warn!("handle {}: {}", "UDP", e);
@@ -266,7 +264,7 @@ impl DatagramWorker {
                             "SOCKS: {}: {} = {}: {}",
                             "UDP",
                             local_port,
-                            a_src_port_cloned.load(Ordering::Relaxed),
+                            u64_to_socket_addr_v4(a_src_cloned.load(Ordering::Relaxed)),
                             e
                         );
                         is_closed_cloned.store(true, Ordering::Relaxed);
@@ -277,11 +275,11 @@ impl DatagramWorker {
             }
         });
 
-        trace!("create datagram {} = {}", src_port, local_port);
+        trace!("create datagram {} = {}", src, local_port);
 
         Ok((
             DatagramWorker {
-                src_port: a_src_port,
+                src: a_src,
                 local_port,
                 socks_tx,
                 is_closed: is_closed,
@@ -304,19 +302,34 @@ impl DatagramWorker {
         self.socks_tx.send_to(payload, dst).await
     }
 
-    /// Sets the source port of the `DatagramWorker`.
-    pub fn set_src_port(&mut self, src_port: u16) {
-        self.src_port.store(src_port, Ordering::Relaxed);
-        trace!("set datagram {} = {}", src_port, self.local_port);
+    /// Sets the source of the `DatagramWorker`.
+    pub fn set_src(&mut self, src: &SocketAddrV4) {
+        self.src
+            .store(socket_addr_v4_to_u64(src), Ordering::Relaxed);
+        trace!("set datagram {} = {}", src, self.local_port);
     }
 
-    /// Get the source port of the `DatagramWorker`.
-    pub fn src_port(&self) -> u16 {
-        self.src_port.load(Ordering::Relaxed)
+    /// Get the source of the `DatagramWorker`.
+    pub fn src(&self) -> SocketAddrV4 {
+        u64_to_socket_addr_v4(self.src.load(Ordering::Relaxed))
     }
 
     /// Returns if the worker is closed.
     pub fn is_closed(&self) -> bool {
         self.is_closed.load(Ordering::Relaxed)
     }
+}
+
+fn socket_addr_v4_to_u64(addr: &SocketAddrV4) -> u64 {
+    let ip = u32::from(addr.ip().clone());
+
+    ((ip as u64) << 16) + addr.port() as u64
+}
+
+fn u64_to_socket_addr_v4(v: u64) -> SocketAddrV4 {
+    let port = v as u16;
+    let ip = (v >> 16) as u32;
+    let ip = Ipv4Addr::from(ip);
+
+    SocketAddrV4::new(ip, port)
 }

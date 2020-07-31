@@ -104,30 +104,29 @@ const MINIMUM_PACKET_SIZE: usize = 60;
 /// Represents a channel forward traffic to the source in pcap.
 pub struct Forwarder {
     tx: Sender,
-    src_mtu: usize,
+    src_mtu: HashMap<Ipv4Addr, usize>,
     local_mtu: usize,
-    src_hardware_addr: HardwareAddr,
+    src_hardware_addr: HashMap<Ipv4Addr, HardwareAddr>,
     local_hardware_addr: HardwareAddr,
-    src_ip_addr: Ipv4Addr,
     local_ip_addr: Ipv4Addr,
-    ipv4_identification_map: HashMap<Ipv4Addr, u16>,
-    tcp_send_window_map: HashMap<(u16, SocketAddrV4), usize>,
-    tcp_send_wscale_map: HashMap<(u16, SocketAddrV4), u8>,
-    tcp_send_sack_perm_map: HashMap<(u16, SocketAddrV4), bool>,
-    tcp_sequence_map: HashMap<(u16, SocketAddrV4), u32>,
-    tcp_acknowledgement_map: HashMap<(u16, SocketAddrV4), u32>,
-    tcp_window_map: HashMap<(u16, SocketAddrV4), u16>,
-    tcp_wscale_map: HashMap<(u16, SocketAddrV4), u8>,
-    tcp_sacks_map: HashMap<(u16, SocketAddrV4), Vec<(u32, u32)>>,
-    tcp_cache_map: HashMap<(u16, SocketAddrV4), Queue>,
-    tcp_syn_map: HashMap<(u16, SocketAddrV4), Instant>,
-    tcp_fin_map: HashMap<(u16, SocketAddrV4), Timer>,
-    tcp_fin_retrans_set: HashSet<(u16, SocketAddrV4)>,
-    tcp_queue_map: HashMap<(u16, SocketAddrV4), VecDeque<u8>>,
-    tcp_fin_queue_set: HashSet<(u16, SocketAddrV4)>,
-    tcp_rto_map: HashMap<(u16, SocketAddrV4), u64>,
-    tcp_srtt_map: HashMap<(u16, SocketAddrV4), u64>,
-    tcp_rttvar_map: HashMap<(u16, SocketAddrV4), u64>,
+    ipv4_identification_map: HashMap<(Ipv4Addr, Ipv4Addr), u16>,
+    tcp_send_window_map: HashMap<(SocketAddrV4, SocketAddrV4), usize>,
+    tcp_send_wscale_map: HashMap<(SocketAddrV4, SocketAddrV4), u8>,
+    tcp_send_sack_perm_map: HashMap<(SocketAddrV4, SocketAddrV4), bool>,
+    tcp_sequence_map: HashMap<(SocketAddrV4, SocketAddrV4), u32>,
+    tcp_acknowledgement_map: HashMap<(SocketAddrV4, SocketAddrV4), u32>,
+    tcp_window_map: HashMap<(SocketAddrV4, SocketAddrV4), u16>,
+    tcp_wscale_map: HashMap<(SocketAddrV4, SocketAddrV4), u8>,
+    tcp_sacks_map: HashMap<(SocketAddrV4, SocketAddrV4), Vec<(u32, u32)>>,
+    tcp_cache_map: HashMap<(SocketAddrV4, SocketAddrV4), Queue>,
+    tcp_syn_map: HashMap<(SocketAddrV4, SocketAddrV4), Instant>,
+    tcp_fin_map: HashMap<(SocketAddrV4, SocketAddrV4), Timer>,
+    tcp_fin_retrans_set: HashSet<(SocketAddrV4, SocketAddrV4)>,
+    tcp_queue_map: HashMap<(SocketAddrV4, SocketAddrV4), VecDeque<u8>>,
+    tcp_fin_queue_set: HashSet<(SocketAddrV4, SocketAddrV4)>,
+    tcp_rto_map: HashMap<(SocketAddrV4, SocketAddrV4), u64>,
+    tcp_srtt_map: HashMap<(SocketAddrV4, SocketAddrV4), u64>,
+    tcp_rttvar_map: HashMap<(SocketAddrV4, SocketAddrV4), u64>,
 }
 
 impl Forwarder {
@@ -136,16 +135,14 @@ impl Forwarder {
         tx: Sender,
         mtu: usize,
         local_hardware_addr: HardwareAddr,
-        src_ip_addr: Ipv4Addr,
         local_ip_addr: Ipv4Addr,
     ) -> Forwarder {
         Forwarder {
             tx,
-            src_mtu: mtu,
+            src_mtu: HashMap::new(),
             local_mtu: mtu,
-            src_hardware_addr: pcap::HARDWARE_ADDR_UNSPECIFIED,
+            src_hardware_addr: HashMap::new(),
             local_hardware_addr,
-            src_ip_addr,
             local_ip_addr,
             ipv4_identification_map: HashMap::new(),
             tcp_send_window_map: HashMap::new(),
@@ -169,19 +166,23 @@ impl Forwarder {
     }
 
     /// Sets the source MTU.
-    pub fn set_src_mtu(&mut self, mtu: usize) -> bool {
-        let prev_mtu = self.src_mtu;
+    pub fn set_src_mtu(&mut self, src_ip_addr: Ipv4Addr, mtu: usize) -> bool {
+        let prev_mtu = *self.src_mtu.get(&src_ip_addr).unwrap_or(&self.local_mtu);
 
-        self.src_mtu = min(self.local_mtu, mtu);
-        trace!("set source MTU to {}", mtu);
+        self.src_mtu.insert(src_ip_addr, min(self.local_mtu, mtu));
+        trace!("set source MTU of {} to {}", src_ip_addr, mtu);
 
-        return self.src_mtu != prev_mtu;
+        return *self.src_mtu.get(&src_ip_addr).unwrap_or(&self.local_mtu) != prev_mtu;
     }
 
     /// Sets the source hardware address.
-    pub fn set_src_hardware_addr(&mut self, hardware_addr: HardwareAddr) {
-        self.src_hardware_addr = hardware_addr;
-        trace!("set source hardware address to {}", hardware_addr);
+    pub fn set_src_hardware_addr(&mut self, src_ip_addr: Ipv4Addr, hardware_addr: HardwareAddr) {
+        self.src_hardware_addr.insert(src_ip_addr, hardware_addr);
+        trace!(
+            "set source hardware address of {} to {}",
+            src_ip_addr,
+            hardware_addr
+        );
     }
 
     /// Sets the local IP address.
@@ -190,126 +191,114 @@ impl Forwarder {
         trace!("set local IP address to {}", ip_addr);
     }
 
-    fn increase_ipv4_identification(&mut self, ip_addr: Ipv4Addr) {
-        let entry = self.ipv4_identification_map.entry(ip_addr).or_insert(0);
+    fn increase_ipv4_identification(&mut self, dst_ip_addr: Ipv4Addr, src_ip_addr: Ipv4Addr) {
+        let entry = self
+            .ipv4_identification_map
+            .entry((dst_ip_addr, src_ip_addr))
+            .or_insert(0);
         *entry = entry.checked_add(1).unwrap_or(0);
-        trace!("increase IPv4 identification of {} to {}", ip_addr, entry);
-    }
-
-    /// Sets the send window size of a TCP connection.
-    pub fn set_tcp_send_window(&mut self, dst: SocketAddrV4, src_port: u16, window: usize) {
-        self.tcp_send_window_map.insert((src_port, dst), window);
         trace!(
-            "set TCP send window of {} -> {} to {}",
-            src_port,
-            dst,
-            window,
+            "increase IPv4 identification of {} -> {} to {}",
+            dst_ip_addr,
+            src_ip_addr,
+            entry
         );
     }
 
+    /// Sets the send window size of a TCP connection.
+    pub fn set_tcp_send_window(&mut self, dst: SocketAddrV4, src: SocketAddrV4, window: usize) {
+        self.tcp_send_window_map.insert((src, dst), window);
+        trace!("set TCP send window of {} -> {} to {}", src, dst, window,);
+    }
+
     /// Sets the send window scale of a TCP connection.
-    pub fn set_tcp_send_wscale(&mut self, dst: SocketAddrV4, src_port: u16, wscale: u8) {
-        self.tcp_send_wscale_map.insert((src_port, dst), wscale);
+    pub fn set_tcp_send_wscale(&mut self, dst: SocketAddrV4, src: SocketAddrV4, wscale: u8) {
+        self.tcp_send_wscale_map.insert((src, dst), wscale);
         trace!(
             "set TCP send window scale of {} -> {} to {}",
-            src_port,
+            src,
             dst,
             wscale
         );
     }
 
     /// Permits the send SACK of a TCP connection.
-    pub fn perm_tcp_send_sack(&mut self, dst: SocketAddrV4, src_port: u16) {
-        self.tcp_send_sack_perm_map.insert((src_port, dst), true);
-        trace!("permit TCP send sack of {} -> {}", src_port, dst);
+    pub fn perm_tcp_send_sack(&mut self, dst: SocketAddrV4, src: SocketAddrV4) {
+        self.tcp_send_sack_perm_map.insert((src, dst), true);
+        trace!("permit TCP send sack of {} -> {}", src, dst);
     }
 
     /// Sets the sequence of a TCP connection.
-    pub fn set_tcp_sequence(&mut self, dst: SocketAddrV4, src_port: u16, acknowledgement: u32) {
-        self.tcp_sequence_map
-            .insert((src_port, dst), acknowledgement);
+    pub fn set_tcp_sequence(&mut self, dst: SocketAddrV4, src: SocketAddrV4, acknowledgement: u32) {
+        self.tcp_sequence_map.insert((src, dst), acknowledgement);
         trace!(
             "set TCP sequence of {} -> {} to {}",
             dst,
-            src_port,
+            src,
             acknowledgement
         );
     }
 
-    fn add_tcp_sequence(&mut self, dst: SocketAddrV4, src_port: u16, n: u32) {
-        let entry = self.tcp_sequence_map.entry((src_port, dst)).or_insert(0);
+    fn add_tcp_sequence(&mut self, dst: SocketAddrV4, src: SocketAddrV4, n: u32) {
+        let entry = self.tcp_sequence_map.entry((src, dst)).or_insert(0);
         *entry = entry
             .checked_add(n)
             .unwrap_or_else(|| n - (u32::MAX - *entry));
-        trace!("add TCP sequence of {} -> {} to {}", dst, src_port, entry);
+        trace!("add TCP sequence of {} -> {} to {}", dst, src, entry);
     }
 
     /// Sets the acknowledgement of a TCP connection.
-    pub fn set_tcp_acknowledgement(&mut self, dst: SocketAddrV4, src_port: u16, sequence: u32) {
-        self.tcp_acknowledgement_map
-            .insert((src_port, dst), sequence);
+    pub fn set_tcp_acknowledgement(&mut self, dst: SocketAddrV4, src: SocketAddrV4, sequence: u32) {
+        self.tcp_acknowledgement_map.insert((src, dst), sequence);
         trace!(
             "set TCP acknowledgement of {} -> {} to {}",
             dst,
-            src_port,
+            src,
             sequence
         );
     }
 
     /// Adds acknowledgement to a TCP connection.
-    pub fn add_tcp_acknowledgement(&mut self, dst: SocketAddrV4, src_port: u16, n: u32) {
-        let entry = self
-            .tcp_acknowledgement_map
-            .entry((src_port, dst))
-            .or_insert(0);
+    pub fn add_tcp_acknowledgement(&mut self, dst: SocketAddrV4, src: SocketAddrV4, n: u32) {
+        let entry = self.tcp_acknowledgement_map.entry((src, dst)).or_insert(0);
         *entry = entry
             .checked_add(n)
             .unwrap_or_else(|| n - (u32::MAX - *entry));
-        trace!(
-            "add TCP acknowledgement of {} -> {} to {}",
-            dst,
-            src_port,
-            entry
-        );
+        trace!("add TCP acknowledgement of {} -> {} to {}", dst, src, entry);
     }
 
     /// Sets the window size of a TCP connection.
-    pub fn set_tcp_window(&mut self, dst: SocketAddrV4, src_port: u16, window: u16) {
-        self.tcp_window_map.insert((src_port, dst), window);
-        trace!("set TCP window of {} -> {} to {}", dst, src_port, window);
+    pub fn set_tcp_window(&mut self, dst: SocketAddrV4, src: SocketAddrV4, window: u16) {
+        self.tcp_window_map.insert((src, dst), window);
+        trace!("set TCP window of {} -> {} to {}", dst, src, window);
     }
 
     /// Sets the window scale of a TCP connection.
-    pub fn set_tcp_wscale(&mut self, dst: SocketAddrV4, src_port: u16, wscale: u8) {
-        self.tcp_wscale_map.insert((src_port, dst), wscale);
-        trace!(
-            "set TCP window scale of {} -> {} to {}",
-            dst,
-            src_port,
-            wscale
-        );
+    pub fn set_tcp_wscale(&mut self, dst: SocketAddrV4, src: SocketAddrV4, wscale: u8) {
+        self.tcp_wscale_map.insert((src, dst), wscale);
+        trace!("set TCP window scale of {} -> {} to {}", dst, src, wscale);
     }
 
     /// Sets the SACKs of a TCP connection.
-    pub fn set_tcp_sacks(&mut self, dst: SocketAddrV4, src_port: u16, sacks: &Vec<(u32, u32)>) {
+    pub fn set_tcp_sacks(&mut self, dst: SocketAddrV4, src: SocketAddrV4, sacks: &Vec<(u32, u32)>) {
         if sacks.len() <= 0 {
-            self.tcp_sacks_map.remove(&(src_port, dst));
-            trace!("remove TCP sack of {} -> {}", dst, src_port);
+            self.tcp_sacks_map.remove(&(src, dst));
+            trace!("remove TCP sack of {} -> {}", dst, src);
         } else {
             let size = min(4, sacks.len());
             self.tcp_sacks_map
-                .insert((src_port, dst), Vec::from(&sacks[..size]));
+                .insert((src, dst), Vec::from(&sacks[..size]));
             let mut desc = format!("[{}, {}]", sacks[0].0, sacks[0].1);
             if sacks.len() > 1 {
                 desc += format!(" and {} more", sacks.len() - 1).as_str();
             }
-            trace!("set TCP sack of {} -> {} to {}", dst, src_port, desc);
+            trace!("set TCP sack of {} -> {} to {}", dst, src, desc);
         }
     }
 
     /// Acknowledges a TCP connection to the given sequence.
-    pub fn acknowledge(&mut self, dst: SocketAddrV4, src_port: u16, sequence: u32) {
-        let key = (src_port, dst);
+    pub fn acknowledge(&mut self, dst: SocketAddrV4, src: SocketAddrV4, sequence: u32) {
+        let key = (src, dst);
 
         let mut rtt = None;
 
@@ -325,10 +314,10 @@ impl Forwarder {
 
                 self.tcp_syn_map.remove(&key);
 
-                trace!("acknowledge TCP SYN of {} -> {}", dst, src_port);
+                trace!("acknowledge TCP SYN of {} -> {}", dst, src);
 
                 // Update TCP sequence
-                self.add_tcp_sequence(dst, src_port, 1);
+                self.add_tcp_sequence(dst, src, 1);
             }
         }
 
@@ -342,7 +331,7 @@ impl Forwarder {
             trace!(
                 "acknowledge TCP cache {} -> {} to sequence {}",
                 dst,
-                src_port,
+                src,
                 sequence
             );
 
@@ -359,37 +348,34 @@ impl Forwarder {
 
                     self.tcp_fin_map.remove(&key);
 
-                    trace!("acknowledge TCP FIN of {} -> {}", dst, src_port);
+                    trace!("acknowledge TCP FIN of {} -> {}", dst, src);
 
                     // Update TCP sequence
-                    self.add_tcp_sequence(dst, src_port, 1);
+                    self.add_tcp_sequence(dst, src, 1);
                 }
             }
         }
 
         // Update RTO
         if let Some(rtt) = rtt {
-            self.update_tcp_rto(dst, src_port, rtt);
+            self.update_tcp_rto(dst, src, rtt);
         }
     }
 
-    fn set_tcp_rto(&mut self, dst: SocketAddrV4, src_port: u16, rto: u64) {
+    fn set_tcp_rto(&mut self, dst: SocketAddrV4, src: SocketAddrV4, rto: u64) {
         let rto = min(MAX_RTO, max(MIN_RTO, rto));
 
-        self.tcp_rto_map.insert((src_port, dst), rto);
-        trace!("set TCP RTO of {} -> {} to {}", dst, src_port, rto);
+        self.tcp_rto_map.insert((src, dst), rto);
+        trace!("set TCP RTO of {} -> {} to {}", dst, src, rto);
     }
 
-    fn double_tcp_rto(&mut self, dst: SocketAddrV4, src_port: u16) {
-        let rto = *self
-            .tcp_rto_map
-            .get(&(src_port, dst))
-            .unwrap_or(&INITIAL_RTO);
-        self.set_tcp_rto(dst, src_port, rto.checked_mul(2).unwrap_or(u64::MAX));
+    fn double_tcp_rto(&mut self, dst: SocketAddrV4, src: SocketAddrV4) {
+        let rto = *self.tcp_rto_map.get(&(src, dst)).unwrap_or(&INITIAL_RTO);
+        self.set_tcp_rto(dst, src, rto.checked_mul(2).unwrap_or(u64::MAX));
     }
 
-    fn update_tcp_rto(&mut self, dst: SocketAddrV4, src_port: u16, rtt: Duration) {
-        let key = (src_port, dst);
+    fn update_tcp_rto(&mut self, dst: SocketAddrV4, src: SocketAddrV4, rtt: Duration) {
+        let key = (src, dst);
         let rtt = if rtt.as_millis() > u64::MAX as u128 {
             u64::MAX
         } else {
@@ -427,20 +413,20 @@ impl Forwarder {
 
         // SRTT
         self.tcp_srtt_map.insert(key, srtt);
-        trace!("set TCP SRTT of {} -> {} to {}", dst, src_port, srtt);
+        trace!("set TCP SRTT of {} -> {} to {}", dst, src, srtt);
 
         // RTTVAR
         self.tcp_rttvar_map.insert(key, rttvar);
-        trace!("set TCP RTTVAR of {} -> {} to {}", dst, src_port, rttvar);
+        trace!("set TCP RTTVAR of {} -> {} to {}", dst, src, rttvar);
 
         // RTO
         let rto = srtt.checked_add(max(1, 4 * rttvar)).unwrap_or(u64::MAX);
-        self.set_tcp_rto(dst, src_port, rto);
+        self.set_tcp_rto(dst, src, rto);
     }
 
     /// Removes all information related to a TCP connection.
-    pub fn remove_tcp(&mut self, dst: SocketAddrV4, src_port: u16) {
-        let key = (src_port, dst);
+    pub fn remove_tcp(&mut self, dst: SocketAddrV4, src: SocketAddrV4) {
+        let key = (src, dst);
 
         self.tcp_send_window_map.remove(&key);
         self.tcp_send_wscale_map.remove(&key);
@@ -455,7 +441,7 @@ impl Forwarder {
                 trace!(
                     "TCP cache {} -> {} was removed while the cache is not empty",
                     dst,
-                    src_port
+                    src
                 );
             }
         }
@@ -468,7 +454,7 @@ impl Forwarder {
                 trace!(
                     "TCP queue {} -> {} was removed while the queue is not empty",
                     dst,
-                    src_port
+                    src
                 );
             }
         }
@@ -477,12 +463,12 @@ impl Forwarder {
         self.tcp_rto_map.remove(&key);
         self.tcp_srtt_map.remove(&key);
         self.tcp_rttvar_map.remove(&key);
-        trace!("remove TCP {} -> {}", dst, src_port);
+        trace!("remove TCP {} -> {}", dst, src);
     }
 
     /// Get the size of the cache and the queue of a TCP connection.
-    pub fn get_cache_size(&mut self, dst: SocketAddrV4, src_port: u16) -> usize {
-        let key = (src_port, dst);
+    pub fn get_cache_size(&mut self, dst: SocketAddrV4, src: SocketAddrV4) -> usize {
+        let key = (src, dst);
 
         let mut size = 0;
         if let Some(cache) = self.tcp_cache_map.get(&key) {
@@ -496,13 +482,16 @@ impl Forwarder {
     }
 
     /// Sends an ARP reply packet.
-    pub fn send_arp_reply(&mut self) -> io::Result<()> {
+    pub fn send_arp_reply(&mut self, src_ip_addr: Ipv4Addr) -> io::Result<()> {
         // ARP
         let arp = Arp::new_reply(
             self.local_hardware_addr,
             self.local_ip_addr,
-            self.src_hardware_addr,
-            self.src_ip_addr,
+            *self
+                .src_hardware_addr
+                .get(&src_ip_addr)
+                .unwrap_or(&pcap::HARDWARE_ADDR_UNSPECIFIED),
+            src_ip_addr,
         );
 
         // Ethernet
@@ -520,10 +509,10 @@ impl Forwarder {
     pub fn append_to_queue(
         &mut self,
         dst: SocketAddrV4,
-        src_port: u16,
+        src: SocketAddrV4,
         payload: &[u8],
     ) -> io::Result<()> {
-        let key = (src_port, dst);
+        let key = (src, dst);
 
         // Append to queue
         let queue = self
@@ -535,15 +524,15 @@ impl Forwarder {
             "append {} Bytes to TCP queue {} -> {}",
             payload.len(),
             dst,
-            src_port
+            src
         );
 
-        self.send_tcp_ack(dst, src_port)
+        self.send_tcp_ack(dst, src)
     }
 
     /// Retransmits TCP ACK packets from the cache. This method is used for fast retransmission.
-    pub fn retransmit_tcp_ack(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()> {
-        let key = (src_port, dst);
+    pub fn retransmit_tcp_ack(&mut self, dst: SocketAddrV4, src: SocketAddrV4) -> io::Result<()> {
+        let key = (src, dst);
 
         // Retransmit
         let payload;
@@ -565,22 +554,22 @@ impl Forwarder {
                     "retransmit TCP ACK/FIN ({} Bytes) {} -> {} from {}",
                     payload.len(),
                     dst,
-                    src_port,
+                    src,
                     sequence
                 );
                 // Send
-                self.send_tcp_ack_raw(dst, src_port, sequence, payload.as_slice(), true)?;
+                self.send_tcp_ack_raw(dst, src, sequence, payload.as_slice(), true)?;
             } else {
                 // ACK
                 trace!(
                     "retransmit TCP ACK ({} Bytes) {} -> {} from {}",
                     payload.len(),
                     dst,
-                    src_port,
+                    src,
                     sequence
                 );
                 // Send
-                self.send_tcp_ack_raw(dst, src_port, sequence, payload.as_slice(), false)?;
+                self.send_tcp_ack_raw(dst, src, sequence, payload.as_slice(), false)?;
             }
         }
 
@@ -592,10 +581,10 @@ impl Forwarder {
     pub fn retransmit_tcp_ack_without(
         &mut self,
         dst: SocketAddrV4,
-        src_port: u16,
+        src: SocketAddrV4,
         sacks: Vec<(u32, u32)>,
     ) -> io::Result<()> {
-        let key = (src_port, dst);
+        let key = (src, dst);
 
         let cache = match self.tcp_cache_map.get(&key) {
             Some(cache) => cache,
@@ -635,22 +624,22 @@ impl Forwarder {
                         "retransmit TCP ACK/FIN ({} Bytes) {} -> {} from {}",
                         payload.len(),
                         dst,
-                        src_port,
+                        src,
                         sequence
                     );
                     // Send
-                    self.send_tcp_ack_raw(dst, src_port, range.0, payload.as_slice(), true)?;
+                    self.send_tcp_ack_raw(dst, src, range.0, payload.as_slice(), true)?;
                 } else {
                     // ACK
                     trace!(
                         "retransmit TCP ACK ({} Bytes) {} -> {} from {}",
                         payload.len(),
                         dst,
-                        src_port,
+                        src,
                         sequence
                     );
                     // Send
-                    self.send_tcp_ack_raw(dst, src_port, range.0, payload.as_slice(), false)?;
+                    self.send_tcp_ack_raw(dst, src, range.0, payload.as_slice(), false)?;
                 }
             }
         }
@@ -658,9 +647,9 @@ impl Forwarder {
         // Pure FIN
         if ranges.len() == 0 && self.tcp_fin_map.contains_key(&key) {
             // FIN
-            trace!("retransmit TCP FIN {} -> {}", dst, src_port);
+            trace!("retransmit TCP FIN {} -> {}", dst, src);
             // Send
-            self.send_tcp_fin(dst, src_port)?;
+            self.send_tcp_fin(dst, src)?;
         }
 
         Ok(())
@@ -671,9 +660,9 @@ impl Forwarder {
     pub fn retransmit_tcp_ack_timedout(
         &mut self,
         dst: SocketAddrV4,
-        src_port: u16,
+        src: SocketAddrV4,
     ) -> io::Result<()> {
-        let key = (src_port, dst);
+        let key = (src, dst);
 
         let mut payload = Vec::new();
         let mut sequence = 0;
@@ -692,7 +681,7 @@ impl Forwarder {
 
         if size > 0 {
             // Double RTO
-            self.double_tcp_rto(dst, src_port);
+            self.double_tcp_rto(dst, src);
 
             // If all the cache is get, the FIN should also be sent
             if size == payload.len() && self.tcp_fin_map.contains_key(&key) {
@@ -706,37 +695,37 @@ impl Forwarder {
                     "retransmit TCP ACK/FIN ({} Bytes) and FIN {} -> {} from {} due to timeout",
                     payload.len(),
                     dst,
-                    src_port,
+                    src,
                     sequence
                 );
                 // Send
-                self.send_tcp_ack_raw(dst, src_port, sequence, payload.as_slice(), true)?;
+                self.send_tcp_ack_raw(dst, src, sequence, payload.as_slice(), true)?;
             } else {
                 // ACK
                 trace!(
                     "retransmit TCP ACK ({} Bytes) {} -> {} from {} due to timeout",
                     payload.len(),
                     dst,
-                    src_port,
+                    src,
                     sequence
                 );
                 // Send
-                self.send_tcp_ack_raw(dst, src_port, sequence, payload.as_slice(), false)?;
+                self.send_tcp_ack_raw(dst, src, sequence, payload.as_slice(), false)?;
             }
         } else {
             // FIN
             if let Some(timer) = self.tcp_fin_map.get(&key) {
                 if timer.is_timedout() {
                     // Double RTO
-                    self.double_tcp_rto(dst, src_port);
+                    self.double_tcp_rto(dst, src);
                     self.tcp_fin_map.insert(
                         key,
                         Timer::new(*self.tcp_rto_map.get(&key).unwrap_or(&INITIAL_RTO)),
                     );
 
-                    trace!("retransmit TCP FIN {} -> {} due to timeout", dst, src_port);
+                    trace!("retransmit TCP FIN {} -> {} due to timeout", dst, src);
                     // Send
-                    self.send_tcp_fin(dst, src_port)?;
+                    self.send_tcp_fin(dst, src)?;
                 }
             }
         }
@@ -745,12 +734,12 @@ impl Forwarder {
     }
 
     /// Sends TCP ACK packets from the queue.
-    pub fn send_tcp_ack(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()> {
-        let key = (src_port, dst);
+    pub fn send_tcp_ack(&mut self, dst: SocketAddrV4, src: SocketAddrV4) -> io::Result<()> {
+        let key = (src, dst);
 
         // Retransmit unhandled SYN
         if self.tcp_syn_map.contains_key(&key) {
-            return self.send_tcp_ack_syn(dst, src_port);
+            return self.send_tcp_ack_syn(dst, src);
         }
 
         if let Some(queue) = self.tcp_queue_map.get_mut(&key) {
@@ -790,10 +779,10 @@ impl Forwarder {
                         );
 
                         // Send
-                        self.send_tcp_ack_raw(dst, src_port, sequence, &payload, true)?;
+                        self.send_tcp_ack_raw(dst, src, sequence, &payload, true)?;
                     } else {
                         // ACK
-                        self.send_tcp_ack_raw(dst, src_port, sequence, &payload, false)?;
+                        self.send_tcp_ack_raw(dst, src, sequence, &payload, false)?;
                     }
                 }
             }
@@ -815,7 +804,7 @@ impl Forwarder {
                 );
 
                 // Send
-                self.send_tcp_fin(dst, src_port)?;
+                self.send_tcp_fin(dst, src)?;
             }
         }
 
@@ -825,12 +814,12 @@ impl Forwarder {
     fn send_tcp_ack_raw(
         &mut self,
         dst: SocketAddrV4,
-        src_port: u16,
+        src: SocketAddrV4,
         sequence: u32,
         payload: &[u8],
         is_fin: bool,
     ) -> io::Result<()> {
-        let key = (src_port, dst);
+        let key = (src, dst);
 
         // Pseudo headers
         let tcp = Tcp::new_ack(0, 0, 0, 0, 0, None, None);
@@ -838,7 +827,7 @@ impl Forwarder {
 
         // Segmentation
         let header_size = ipv4.len() + tcp.len();
-        let max_payload_size = self.src_mtu - header_size;
+        let max_payload_size = *self.src_mtu.get(src.ip()).unwrap_or(&self.local_mtu) - header_size;
         let mut i = 0;
         while max_payload_size * i < payload.len() {
             let size = min(max_payload_size, payload.len() - i * max_payload_size);
@@ -856,7 +845,7 @@ impl Forwarder {
                 // ACK/FIN
                 tcp = Tcp::new_ack_fin(
                     dst.port(),
-                    src_port,
+                    src.port(),
                     sequence,
                     *self.tcp_acknowledgement_map.get(&key).unwrap_or(&0),
                     *self.tcp_window_map.get(&key).unwrap_or(&65535),
@@ -867,7 +856,7 @@ impl Forwarder {
                 // ACK
                 tcp = Tcp::new_ack(
                     dst.port(),
-                    src_port,
+                    src.port(),
                     sequence,
                     *self.tcp_acknowledgement_map.get(&key).unwrap_or(&0),
                     *self.tcp_window_map.get(&key).unwrap_or(&65535),
@@ -877,7 +866,12 @@ impl Forwarder {
             }
 
             // Send
-            self.send_ipv4_with_transport(dst.ip().clone(), Layers::Tcp(tcp), Some(payload))?;
+            self.send_ipv4_with_transport(
+                dst.ip().clone(),
+                src.ip().clone(),
+                Layers::Tcp(tcp),
+                Some(payload),
+            )?;
 
             // Update TCP sequence
             let record_sequence = *self.tcp_sequence_map.get(&key).unwrap_or(&0);
@@ -885,7 +879,7 @@ impl Forwarder {
                 .checked_sub(record_sequence)
                 .unwrap_or_else(|| recv_next + (u32::MAX - record_sequence));
             if (sub_sequence as usize) <= MAX_U32_WINDOW_SIZE {
-                self.add_tcp_sequence(dst, src_port, sub_sequence);
+                self.add_tcp_sequence(dst, src, sub_sequence);
             }
 
             i = i + 1;
@@ -895,13 +889,13 @@ impl Forwarder {
     }
 
     /// Sends an TCP ACK packet without payload.
-    pub fn send_tcp_ack_0(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()> {
-        let key = (src_port, dst);
+    pub fn send_tcp_ack_0(&mut self, dst: SocketAddrV4, src: SocketAddrV4) -> io::Result<()> {
+        let key = (src, dst);
 
         // TCP
         let tcp = Tcp::new_ack(
             dst.port(),
-            src_port,
+            src.port(),
             *self.tcp_sequence_map.get(&key).unwrap_or(&0),
             *self.tcp_acknowledgement_map.get(&key).unwrap_or(&0),
             *self.tcp_window_map.get(&key).unwrap_or(&65535),
@@ -910,11 +904,11 @@ impl Forwarder {
         );
 
         // Send
-        self.send_ipv4_with_transport(dst.ip().clone(), Layers::Tcp(tcp), None)
+        self.send_ipv4_with_transport(dst.ip().clone(), src.ip().clone(), Layers::Tcp(tcp), None)
     }
 
-    fn send_tcp_ack_syn(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()> {
-        let key = (src_port, dst);
+    fn send_tcp_ack_syn(&mut self, dst: SocketAddrV4, src: SocketAddrV4) -> io::Result<()> {
+        let key = (src, dst);
 
         let mss = match ENABLE_MSS {
             true => {
@@ -938,7 +932,7 @@ impl Forwarder {
         // TCP
         let tcp = Tcp::new_ack_syn(
             dst.port(),
-            src_port,
+            src.port(),
             *self.tcp_sequence_map.get(&key).unwrap_or(&0),
             *self.tcp_acknowledgement_map.get(&key).unwrap_or(&0),
             *self.tcp_window_map.get(&key).unwrap_or(&65535),
@@ -949,19 +943,19 @@ impl Forwarder {
         );
 
         // Send
-        self.send_ipv4_with_transport(dst.ip().clone(), Layers::Tcp(tcp), None)?;
+        self.send_ipv4_with_transport(dst.ip().clone(), src.ip().clone(), Layers::Tcp(tcp), None)?;
 
         Ok(())
     }
 
     /// Sends an TCP ACK/RST packet.
-    pub fn send_tcp_ack_rst(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()> {
-        let key = (src_port, dst);
+    pub fn send_tcp_ack_rst(&mut self, dst: SocketAddrV4, src: SocketAddrV4) -> io::Result<()> {
+        let key = (src, dst);
 
         // TCP
         let tcp = Tcp::new_ack_rst(
             dst.port(),
-            src_port,
+            src.port(),
             *self.tcp_sequence_map.get(&key).unwrap_or(&0),
             *self.tcp_acknowledgement_map.get(&key).unwrap_or(&0),
             *self.tcp_window_map.get(&key).unwrap_or(&65535),
@@ -969,17 +963,17 @@ impl Forwarder {
         );
 
         // Send
-        self.send_ipv4_with_transport(dst.ip().clone(), Layers::Tcp(tcp), None)
+        self.send_ipv4_with_transport(dst.ip().clone(), src.ip().clone(), Layers::Tcp(tcp), None)
     }
 
     /// Sends an TCP RST packet.
     pub fn send_tcp_rst(
         &mut self,
         dst: SocketAddrV4,
-        src_port: u16,
+        src: SocketAddrV4,
         ts: Option<u32>,
     ) -> io::Result<()> {
-        let key = (src_port, dst);
+        let key = (src, dst);
 
         // TCP
         let ts = match ts {
@@ -988,7 +982,7 @@ impl Forwarder {
         };
         let tcp = Tcp::new_rst(
             dst.port(),
-            src_port,
+            src.port(),
             *self.tcp_sequence_map.get(&key).unwrap_or(&0),
             0,
             *self.tcp_window_map.get(&key).unwrap_or(&65535),
@@ -996,16 +990,16 @@ impl Forwarder {
         );
 
         // Send
-        self.send_ipv4_with_transport(dst.ip().clone(), Layers::Tcp(tcp), None)
+        self.send_ipv4_with_transport(dst.ip().clone(), src.ip().clone(), Layers::Tcp(tcp), None)
     }
 
-    fn send_tcp_fin(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()> {
-        let key = (src_port, dst);
+    fn send_tcp_fin(&mut self, dst: SocketAddrV4, src: SocketAddrV4) -> io::Result<()> {
+        let key = (src, dst);
 
         // TCP
         let tcp = Tcp::new_fin(
             dst.port(),
-            src_port,
+            src.port(),
             *self.tcp_sequence_map.get(&key).unwrap_or(&0),
             *self.tcp_acknowledgement_map.get(&key).unwrap_or(&0),
             *self.tcp_window_map.get(&key).unwrap_or(&65535),
@@ -1013,11 +1007,16 @@ impl Forwarder {
         );
 
         // Send
-        self.send_ipv4_with_transport(dst.ip().clone(), Layers::Tcp(tcp), None)
+        self.send_ipv4_with_transport(dst.ip().clone(), src.ip().clone(), Layers::Tcp(tcp), None)
     }
 
     /// Sends UDP packets.
-    pub fn send_udp(&mut self, dst: SocketAddrV4, src_port: u16, payload: &[u8]) -> io::Result<()> {
+    pub fn send_udp(
+        &mut self,
+        dst: SocketAddrV4,
+        src: SocketAddrV4,
+        payload: &[u8],
+    ) -> io::Result<()> {
         // Pseudo headers
         let udp = Udp::new(0, 0);
         let ipv4 = Ipv4::new(0, udp.kind(), Ipv4Addr::UNSPECIFIED, Ipv4Addr::UNSPECIFIED).unwrap();
@@ -1029,7 +1028,10 @@ impl Forwarder {
         let size = udp_header_size + payload.len();
         let mut n = 0;
         while n < size {
-            let mut length = min(size - n, self.src_mtu - ipv4_header_size);
+            let mut length = min(
+                size - n,
+                self.src_mtu.get(src.ip()).unwrap_or(&self.local_mtu) - ipv4_header_size,
+            );
             let mut remain = size - n - length;
 
             // Alignment
@@ -1047,22 +1049,24 @@ impl Forwarder {
             if n == 0 {
                 if remain > 0 {
                     // UDP
-                    let udp = Udp::new(dst.port(), src_port);
+                    let udp = Udp::new(dst.port(), src.port());
 
                     self.send_ipv4_more_fragment(
                         dst.ip().clone(),
+                        src.ip().clone(),
                         udp.kind(),
                         (n / 8) as u16,
                         Some(Layers::Udp(udp)),
                         &payload[..length - udp_header_size],
                     )?;
                 } else {
-                    self.send_udp_raw(dst, src_port, payload)?;
+                    self.send_udp_raw(dst, src, payload)?;
                 }
             } else {
                 if remain > 0 {
                     self.send_ipv4_more_fragment(
                         dst.ip().clone(),
+                        src.ip().clone(),
                         udp.kind(),
                         (n / 8) as u16,
                         None,
@@ -1071,6 +1075,7 @@ impl Forwarder {
                 } else {
                     self.send_ipv4_last_fragment(
                         dst.ip().clone(),
+                        src.ip().clone(),
                         udp.kind(),
                         (n / 8) as u16,
                         &payload[n - udp_header_size..n + length - udp_header_size],
@@ -1084,16 +1089,27 @@ impl Forwarder {
         Ok(())
     }
 
-    fn send_udp_raw(&mut self, dst: SocketAddrV4, src_port: u16, payload: &[u8]) -> io::Result<()> {
+    fn send_udp_raw(
+        &mut self,
+        dst: SocketAddrV4,
+        src: SocketAddrV4,
+        payload: &[u8],
+    ) -> io::Result<()> {
         // UDP
-        let udp = Udp::new(dst.port(), src_port);
+        let udp = Udp::new(dst.port(), src.port());
 
-        self.send_ipv4_with_transport(dst.ip().clone(), Layers::Udp(udp), Some(payload))
+        self.send_ipv4_with_transport(
+            dst.ip().clone(),
+            src.ip().clone(),
+            Layers::Udp(udp),
+            Some(payload),
+        )
     }
 
     fn send_ipv4_more_fragment(
         &mut self,
         dst_ip_addr: Ipv4Addr,
+        src_ip_addr: Ipv4Addr,
         t: LayerKind,
         fragment_offset: u16,
         mut transport: Option<Layers>,
@@ -1101,11 +1117,14 @@ impl Forwarder {
     ) -> io::Result<()> {
         // IPv4
         let ipv4 = Ipv4::new_more_fragment(
-            *self.ipv4_identification_map.get(&dst_ip_addr).unwrap_or(&0),
+            *self
+                .ipv4_identification_map
+                .get(&(src_ip_addr, dst_ip_addr))
+                .unwrap_or(&0),
             t,
             fragment_offset,
             dst_ip_addr,
-            self.src_ip_addr,
+            src_ip_addr,
         )
         .unwrap();
 
@@ -1119,31 +1138,51 @@ impl Forwarder {
         };
 
         // Send
-        self.send_ethernet(Layers::Ipv4(ipv4), transport, Some(payload))
+        self.send_ethernet(
+            *self
+                .src_hardware_addr
+                .get(&src_ip_addr)
+                .unwrap_or(&pcap::HARDWARE_ADDR_UNSPECIFIED),
+            Layers::Ipv4(ipv4),
+            transport,
+            Some(payload),
+        )
     }
 
     fn send_ipv4_last_fragment(
         &mut self,
         dst_ip_addr: Ipv4Addr,
+        src_ip_addr: Ipv4Addr,
         t: LayerKind,
         fragment_offset: u16,
         payload: &[u8],
     ) -> io::Result<()> {
         // IPv4
         let ipv4 = Ipv4::new_last_fragment(
-            *self.ipv4_identification_map.get(&dst_ip_addr).unwrap_or(&0),
+            *self
+                .ipv4_identification_map
+                .get(&(src_ip_addr, dst_ip_addr))
+                .unwrap_or(&0),
             t,
             fragment_offset,
             dst_ip_addr,
-            self.src_ip_addr,
+            src_ip_addr,
         )
         .unwrap();
 
         // Send
-        self.send_ethernet(Layers::Ipv4(ipv4), None, Some(payload))?;
+        self.send_ethernet(
+            *self
+                .src_hardware_addr
+                .get(&src_ip_addr)
+                .unwrap_or(&pcap::HARDWARE_ADDR_UNSPECIFIED),
+            Layers::Ipv4(ipv4),
+            None,
+            Some(payload),
+        )?;
 
         // Update IPv4 identification
-        self.increase_ipv4_identification(dst_ip_addr);
+        self.increase_ipv4_identification(dst_ip_addr, src_ip_addr);
 
         Ok(())
     }
@@ -1151,15 +1190,19 @@ impl Forwarder {
     fn send_ipv4_with_transport(
         &mut self,
         dst_ip_addr: Ipv4Addr,
+        src_ip_addr: Ipv4Addr,
         mut transport: Layers,
         payload: Option<&[u8]>,
     ) -> io::Result<()> {
         // IPv4
         let ipv4 = Ipv4::new(
-            *self.ipv4_identification_map.get(&dst_ip_addr).unwrap_or(&0),
+            *self
+                .ipv4_identification_map
+                .get(&(src_ip_addr, dst_ip_addr))
+                .unwrap_or(&0),
             transport.kind(),
             dst_ip_addr,
-            self.src_ip_addr,
+            src_ip_addr,
         )
         .unwrap();
 
@@ -1171,27 +1214,32 @@ impl Forwarder {
         }
 
         // Send
-        self.send_ethernet(Layers::Ipv4(ipv4), Some(transport), payload)?;
+        self.send_ethernet(
+            *self
+                .src_hardware_addr
+                .get(&src_ip_addr)
+                .unwrap_or(&pcap::HARDWARE_ADDR_UNSPECIFIED),
+            Layers::Ipv4(ipv4),
+            Some(transport),
+            payload,
+        )?;
 
         // Update IPv4 identification
-        self.increase_ipv4_identification(dst_ip_addr);
+        self.increase_ipv4_identification(dst_ip_addr, src_ip_addr);
 
         Ok(())
     }
 
     fn send_ethernet(
         &mut self,
+        src_hardware_addr: HardwareAddr,
         network: Layers,
         transport: Option<Layers>,
         payload: Option<&[u8]>,
     ) -> io::Result<()> {
         // Ethernet
-        let ethernet = Ethernet::new(
-            network.kind(),
-            self.local_hardware_addr,
-            self.src_hardware_addr,
-        )
-        .unwrap();
+        let ethernet =
+            Ethernet::new(network.kind(), self.local_hardware_addr, src_hardware_addr).unwrap();
 
         // Indicator
         let indicator = Indicator::new(Layers::Ethernet(ethernet), Some(network), transport);
@@ -1238,40 +1286,40 @@ impl Forwarder {
 }
 
 impl ForwardStream for Forwarder {
-    fn open(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()> {
-        self.send_tcp_ack_syn(dst, src_port)?;
+    fn open(&mut self, dst: SocketAddrV4, src: SocketAddrV4) -> io::Result<()> {
+        self.send_tcp_ack_syn(dst, src)?;
 
-        self.tcp_syn_map.insert((src_port, dst), Instant::now());
+        self.tcp_syn_map.insert((src, dst), Instant::now());
 
         Ok(())
     }
 
-    fn forward(&mut self, dst: SocketAddrV4, src_port: u16, payload: &[u8]) -> io::Result<()> {
-        let key = (src_port, dst);
+    fn forward(&mut self, dst: SocketAddrV4, src: SocketAddrV4, payload: &[u8]) -> io::Result<()> {
+        let key = (src, dst);
 
         if self.tcp_fin_map.contains_key(&key) || self.tcp_fin_queue_set.contains(&key) {
             return Err(io::Error::from(io::ErrorKind::NotConnected));
         }
 
-        self.append_to_queue(dst, src_port, payload)
+        self.append_to_queue(dst, src, payload)
     }
 
-    fn tick(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()> {
-        self.retransmit_tcp_ack_timedout(dst, src_port)
+    fn tick(&mut self, dst: SocketAddrV4, src: SocketAddrV4) -> io::Result<()> {
+        self.retransmit_tcp_ack_timedout(dst, src)
     }
 
-    fn close(&mut self, dst: SocketAddrV4, src_port: u16) -> io::Result<()> {
-        let key = (src_port, dst);
+    fn close(&mut self, dst: SocketAddrV4, src: SocketAddrV4) -> io::Result<()> {
+        let key = (src, dst);
 
         self.tcp_fin_queue_set.insert(key);
 
-        self.send_tcp_ack(dst, src_port)
+        self.send_tcp_ack(dst, src)
     }
 }
 
 impl ForwardDatagram for Forwarder {
-    fn forward(&mut self, dst: SocketAddrV4, src_port: u16, payload: &[u8]) -> io::Result<()> {
-        self.send_udp(dst, src_port, payload)
+    fn forward(&mut self, dst: SocketAddrV4, src: SocketAddrV4, payload: &[u8]) -> io::Result<()> {
+        self.send_udp(dst, src, payload)
     }
 }
 
@@ -1340,28 +1388,28 @@ const MAX_RECV_WSCALE: u8 = 8;
 const ENABLE_SACK: bool = true;
 
 /// Represents the max limit of UDP port for binding in local.
-const PORT_COUNT: usize = 64;
+const MAX_UDP_PORT: usize = 256;
 
 /// Represents a channel redirect traffic to the proxy of SOCKS or loopback to the source in pcap.
 pub struct Redirector {
     tx: Arc<Mutex<Forwarder>>,
     is_tx_src_hardware_addr_set: bool,
-    src_ip_addr: Ipv4Addr,
+    src_ip_addrs: HashSet<Ipv4Addr>,
     local_ip_addr: Option<Ipv4Addr>,
     remote: SocketAddrV4,
-    streams: HashMap<(u16, SocketAddrV4), StreamWorker>,
-    tcp_recv_next_map: HashMap<(u16, SocketAddrV4), u32>,
-    tcp_duplicate_map: HashMap<(u16, SocketAddrV4), usize>,
-    tcp_last_retrans_map: HashMap<(u16, SocketAddrV4), Instant>,
-    tcp_wscale_map: HashMap<(u16, SocketAddrV4), u8>,
-    tcp_sack_perm_map: HashSet<(u16, SocketAddrV4)>,
-    tcp_cache_map: HashMap<(u16, SocketAddrV4), Window>,
-    tcp_fin_sequence_map: HashMap<(u16, SocketAddrV4), u32>,
+    streams: HashMap<(SocketAddrV4, SocketAddrV4), StreamWorker>,
+    tcp_recv_next_map: HashMap<(SocketAddrV4, SocketAddrV4), u32>,
+    tcp_duplicate_map: HashMap<(SocketAddrV4, SocketAddrV4), usize>,
+    tcp_last_retrans_map: HashMap<(SocketAddrV4, SocketAddrV4), Instant>,
+    tcp_wscale_map: HashMap<(SocketAddrV4, SocketAddrV4), u8>,
+    tcp_sack_perm_map: HashSet<(SocketAddrV4, SocketAddrV4)>,
+    tcp_cache_map: HashMap<(SocketAddrV4, SocketAddrV4), Window>,
+    tcp_fin_sequence_map: HashMap<(SocketAddrV4, SocketAddrV4), u32>,
     datagrams: HashMap<u16, DatagramWorker>,
     /// Represents the map mapping a source port to a local port.
-    datagram_map: Vec<u16>,
+    datagram_map: HashMap<SocketAddrV4, u16>,
     /// Represents the LRU mapping a local port to a source port.
-    udp_lru: LruCache<u16, u16>,
+    udp_lru: LruCache<u16, SocketAddrV4>,
     defrag: Defraggler,
 }
 
@@ -1369,14 +1417,14 @@ impl Redirector {
     /// Creates a new `Redirector`.
     pub fn new(
         tx: Arc<Mutex<Forwarder>>,
-        src_ip_addr: Ipv4Addr,
+        src_ip_addrs: HashSet<Ipv4Addr>,
         local_ip_addr: Option<Ipv4Addr>,
         remote: SocketAddrV4,
     ) -> Redirector {
         let redirector = Redirector {
             tx,
             is_tx_src_hardware_addr_set: false,
-            src_ip_addr,
+            src_ip_addrs,
             local_ip_addr,
             remote,
             streams: HashMap::new(),
@@ -1388,8 +1436,8 @@ impl Redirector {
             tcp_cache_map: HashMap::new(),
             tcp_fin_sequence_map: HashMap::new(),
             datagrams: HashMap::new(),
-            datagram_map: vec![0u16; u16::MAX as usize],
-            udp_lru: LruCache::new(PORT_COUNT),
+            datagram_map: HashMap::new(),
+            udp_lru: LruCache::new(MAX_UDP_PORT),
             defrag: Defraggler::new(),
         };
         if let Some(local_ip_addr) = local_ip_addr {
@@ -1440,7 +1488,7 @@ impl Redirector {
     fn handle_arp(&mut self, indicator: &Indicator) -> io::Result<()> {
         if let Some(local_ip_addr) = self.local_ip_addr {
             if let Some(arp) = indicator.arp() {
-                if arp.is_request_of(self.src_ip_addr, local_ip_addr) {
+                if self.src_ip_addrs.contains(&arp.src()) && arp.dst() == local_ip_addr {
                     debug!(
                         "receive from pcap: {} ({} Bytes)",
                         indicator.brief(),
@@ -1452,13 +1500,17 @@ impl Redirector {
                         self.tx
                             .lock()
                             .unwrap()
-                            .set_src_hardware_addr(arp.src_hardware_addr());
+                            .set_src_hardware_addr(arp.src(), arp.src_hardware_addr());
                         self.is_tx_src_hardware_addr_set = true;
-                        info!("Device {} joined the network", arp.src_hardware_addr());
+                        info!(
+                            "Device {} ({}) joined the network",
+                            arp.src(),
+                            arp.src_hardware_addr()
+                        );
                     }
 
                     // Send
-                    self.tx.lock().unwrap().send_arp_reply()?
+                    self.tx.lock().unwrap().send_arp_reply(arp.src())?
                 }
             }
         }
@@ -1469,7 +1521,7 @@ impl Redirector {
     async fn handle_ipv4(&mut self, indicator: &Indicator, frame: &[u8]) -> io::Result<()> {
         if let Some(ipv4) = indicator.ipv4() {
             let frame_without_padding = &frame[..indicator.content_len()];
-            if ipv4.src() == self.src_ip_addr {
+            if self.src_ip_addrs.contains(&ipv4.src()) {
                 debug!(
                     "receive from pcap: {} ({} + {} Bytes)",
                     indicator.brief(),
@@ -1481,7 +1533,7 @@ impl Redirector {
                     self.tx
                         .lock()
                         .unwrap()
-                        .set_src_hardware_addr(indicator.ethernet().unwrap().src());
+                        .set_src_hardware_addr(ipv4.src(), indicator.ethernet().unwrap().src());
                     self.is_tx_src_hardware_addr_set = true;
                     info!(
                         "Device {} joined the network",
@@ -1550,8 +1602,9 @@ impl Redirector {
     }
 
     async fn handle_tcp_ack(&mut self, tcp: &Tcp, payload: &[u8]) -> io::Result<()> {
+        let src = SocketAddrV4::new(tcp.src_ip_addr(), tcp.src());
         let dst = SocketAddrV4::new(tcp.dst_ip_addr(), tcp.dst());
-        let key = (tcp.src(), dst);
+        let key = (src, dst);
         let is_exist = self.streams.get(&key).is_some();
         let is_writable = match self.streams.get(&key) {
             Some(stream) => !stream.is_write_closed(),
@@ -1563,7 +1616,7 @@ impl Redirector {
             if tcp.sequence() != *self.tcp_recv_next_map.get(&key).unwrap_or(&0) {
                 trace!(
                     "TCP out of order of {} -> {} at {}",
-                    tcp.src(),
+                    src,
                     dst,
                     tcp.sequence()
                 );
@@ -1571,12 +1624,8 @@ impl Redirector {
             let wscale = *self.tcp_wscale_map.get(&key).unwrap_or(&0);
             {
                 let mut tx_locked = self.tx.lock().unwrap();
-                tx_locked.acknowledge(dst, tcp.src(), tcp.acknowledgement());
-                tx_locked.set_tcp_send_window(
-                    dst,
-                    tcp.src(),
-                    (tcp.window() as usize) << wscale as usize,
-                );
+                tx_locked.acknowledge(dst, src, tcp.acknowledgement());
+                tx_locked.set_tcp_send_window(dst, src, (tcp.window() as usize) << wscale as usize);
             }
 
             if payload.len() > 0 {
@@ -1594,10 +1643,7 @@ impl Redirector {
                 // SACK
                 if self.tcp_sack_perm_map.contains(&key) {
                     let sacks = cache.filled();
-                    self.tx
-                        .lock()
-                        .unwrap()
-                        .set_tcp_sacks(dst, tcp.src(), &sacks);
+                    self.tx.lock().unwrap().set_tcp_sacks(dst, src, &sacks);
                 }
 
                 match cont_payload {
@@ -1613,18 +1659,14 @@ impl Redirector {
 
                                 // Update window size
                                 let mut tx_locked = self.tx.lock().unwrap();
-                                tx_locked.set_tcp_window(dst, tcp.src(), cache_remaining_size);
+                                tx_locked.set_tcp_window(dst, src, cache_remaining_size);
 
                                 // Update TCP acknowledgement
-                                tx_locked.add_tcp_acknowledgement(
-                                    dst,
-                                    tcp.src(),
-                                    payload.len() as u32,
-                                );
+                                tx_locked.add_tcp_acknowledgement(dst, src, payload.len() as u32);
 
                                 // Send ACK0
                                 // If there is a heavy traffic, the ACK reported may be inaccurate, which would results in retransmission
-                                tx_locked.send_tcp_ack_0(dst, tcp.src())?;
+                                tx_locked.send_tcp_ack_0(dst, src)?;
                             }
                             Err(e) => {
                                 // Clean up
@@ -1632,10 +1674,10 @@ impl Redirector {
 
                                 // Send ACK/RST
                                 let mut tx_locked = self.tx.lock().unwrap();
-                                tx_locked.send_tcp_ack_rst(dst, tcp.src())?;
+                                tx_locked.send_tcp_ack_rst(dst, src)?;
 
                                 // Clean up
-                                tx_locked.remove_tcp(dst, tcp.src());
+                                tx_locked.remove_tcp(dst, src);
 
                                 return Err(e);
                             }
@@ -1647,21 +1689,21 @@ impl Redirector {
                         let mut tx_locked = self.tx.lock().unwrap();
                         tx_locked.set_tcp_window(
                             dst,
-                            tcp.src(),
+                            src,
                             (cache.remaining_size() << wscale as usize) as u16,
                         );
 
                         // Send ACK0
-                        tx_locked.send_tcp_ack_0(dst, tcp.src())?;
+                        tx_locked.send_tcp_ack_0(dst, src)?;
                     }
                 }
             } else {
                 // ACK0
-                if !is_writable && self.tx.lock().unwrap().get_cache_size(dst, tcp.src()) == 0 {
+                if !is_writable && self.tx.lock().unwrap().get_cache_size(dst, src) == 0 {
                     // LAST_ACK
                     // Clean up
                     self.remove_tcp(tcp);
-                    self.tx.lock().unwrap().remove_tcp(dst, tcp.src());
+                    self.tx.lock().unwrap().remove_tcp(dst, src);
 
                     return Ok(());
                 } else if *self.tcp_duplicate_map.get(&key).unwrap_or(&0) >= DUPLICATES_THRESHOLD {
@@ -1678,11 +1720,10 @@ impl Redirector {
                                 if let Some(sacks) = tcp.sack() {
                                     if sacks.len() > 0 {
                                         // Selective retransmission
-                                        self.tx.lock().unwrap().retransmit_tcp_ack_without(
-                                            dst,
-                                            tcp.src(),
-                                            sacks,
-                                        )?;
+                                        self.tx
+                                            .lock()
+                                            .unwrap()
+                                            .retransmit_tcp_ack_without(dst, src, sacks)?;
                                         is_sr = true;
                                     }
                                 }
@@ -1690,7 +1731,7 @@ impl Redirector {
 
                             if !is_sr {
                                 // Back N
-                                self.tx.lock().unwrap().retransmit_tcp_ack(dst, tcp.src())?;
+                                self.tx.lock().unwrap().retransmit_tcp_ack(dst, src)?;
                             }
 
                             self.tcp_duplicate_map.insert(key, 0);
@@ -1706,18 +1747,19 @@ impl Redirector {
             }
 
             // Trigger sending remaining data
-            self.tx.lock().unwrap().send_tcp_ack(dst, tcp.src())?;
+            self.tx.lock().unwrap().send_tcp_ack(dst, src)?;
         } else {
             // Send RST
-            self.tx.lock().unwrap().send_tcp_rst(dst, tcp.src(), None)?;
+            self.tx.lock().unwrap().send_tcp_rst(dst, src, None)?;
         }
 
         Ok(())
     }
 
     async fn handle_tcp_syn(&mut self, tcp: &Tcp) -> io::Result<()> {
+        let src = SocketAddrV4::new(tcp.src_ip_addr(), tcp.src());
         let dst = SocketAddrV4::new(tcp.dst_ip_addr(), tcp.dst());
-        let key = (tcp.src(), dst);
+        let key = (src, dst);
         let is_exist = self.streams.get(&key).is_some();
 
         // Connect if not connected, drop if established
@@ -1746,40 +1788,40 @@ impl Redirector {
             {
                 let mut tx_locked = self.tx.lock().unwrap();
                 // Clean up
-                tx_locked.remove_tcp(dst, tcp.src());
+                tx_locked.remove_tcp(dst, src);
 
                 let mut rng = rand::thread_rng();
                 let sequence: u32 = rng.gen();
-                tx_locked.set_tcp_sequence(dst, tcp.src(), sequence);
+                tx_locked.set_tcp_sequence(dst, src, sequence);
                 tx_locked.set_tcp_acknowledgement(
                     dst,
-                    tcp.src(),
+                    src,
                     tcp.sequence().checked_add(1).unwrap_or(0),
                 );
                 if let Some(mss) = tcp.mss() {
                     // Pseudo headers
-                    let tcp = Tcp::new_ack(0, 0, 0, 0, 0, None, None);
-                    let ipv4 =
+                    let tcp_header = Tcp::new_ack(0, 0, 0, 0, 0, None, None);
+                    let ipv4_header =
                         Ipv4::new(0, tcp.kind(), Ipv4Addr::UNSPECIFIED, Ipv4Addr::UNSPECIFIED)
                             .unwrap();
 
-                    let mtu = ipv4.len() + tcp.len() + mss as usize;
-                    if tx_locked.set_src_mtu(mtu) {
-                        info!("Update MTU to {}", mtu);
+                    let mtu = ipv4_header.len() + tcp_header.len() + mss as usize;
+                    if tx_locked.set_src_mtu(tcp.src_ip_addr(), mtu) {
+                        info!("Update MTU of {} to {}", tcp.src_ip_addr(), mtu);
                     }
                 }
                 if let Some(wscale) = wscale {
-                    tx_locked.set_tcp_wscale(dst, tcp.src(), wscale);
+                    tx_locked.set_tcp_wscale(dst, src, wscale);
 
-                    tx_locked.set_tcp_send_wscale(dst, tcp.src(), recv_wscale.unwrap());
+                    tx_locked.set_tcp_send_wscale(dst, src, recv_wscale.unwrap());
                 }
                 if sack_perm {
-                    tx_locked.perm_tcp_send_sack(dst, tcp.src());
+                    tx_locked.perm_tcp_send_sack(dst, src);
                 }
             }
 
             // Connect
-            let stream = StreamWorker::connect(self.get_tx(), tcp.src(), dst, self.remote).await;
+            let stream = StreamWorker::connect(self.get_tx(), src, dst, self.remote).await;
 
             let stream = match stream {
                 Ok(stream) => stream,
@@ -1790,15 +1832,15 @@ impl Redirector {
                     let mut tx_locked = self.tx.lock().unwrap();
                     tx_locked.set_tcp_acknowledgement(
                         dst,
-                        tcp.src(),
+                        src,
                         tcp.sequence().checked_add(1).unwrap_or(0),
                     );
 
                     // Send ACK/RST
-                    tx_locked.send_tcp_ack_rst(dst, tcp.src())?;
+                    tx_locked.send_tcp_ack_rst(dst, src)?;
 
                     // Clean up
-                    tx_locked.remove_tcp(dst, tcp.src());
+                    tx_locked.remove_tcp(dst, src);
 
                     return Err(e);
                 }
@@ -1811,20 +1853,22 @@ impl Redirector {
     }
 
     fn handle_tcp_rst(&mut self, tcp: &Tcp) {
+        let src = SocketAddrV4::new(tcp.src_ip_addr(), tcp.src());
         let dst = SocketAddrV4::new(tcp.dst_ip_addr(), tcp.dst());
-        let key = (tcp.src(), dst);
+        let key = (src, dst);
         let is_exist = self.streams.get(&key).is_some();
 
         if is_exist {
             // Clean up
             self.remove_tcp(tcp);
-            self.tx.lock().unwrap().remove_tcp(dst, tcp.src());
+            self.tx.lock().unwrap().remove_tcp(dst, src);
         }
     }
 
     fn handle_tcp_fin(&mut self, tcp: &Tcp, payload: &[u8]) -> io::Result<()> {
+        let src = SocketAddrV4::new(tcp.src_ip_addr(), tcp.src());
         let dst = SocketAddrV4::new(tcp.dst_ip_addr(), tcp.dst());
-        let key = (tcp.src(), dst);
+        let key = (src, dst);
         let is_exist = self.streams.get(&key).is_some();
         let is_readable = match self.streams.get(&key) {
             Some(stream) => !stream.is_read_closed(),
@@ -1851,10 +1895,10 @@ impl Redirector {
 
                     {
                         let mut tx_locked = self.tx.lock().unwrap();
-                        tx_locked.add_tcp_acknowledgement(dst, tcp.src(), 1);
+                        tx_locked.add_tcp_acknowledgement(dst, src, 1);
 
                         // Send ACK0
-                        tx_locked.send_tcp_ack_0(dst, tcp.src())?;
+                        tx_locked.send_tcp_ack_0(dst, src)?;
                     }
                     if is_readable {
                         // Close by local
@@ -1863,34 +1907,35 @@ impl Redirector {
                     } else {
                         // Close by remote
                         // Clean up
-                        self.tx.lock().unwrap().remove_tcp(dst, tcp.src());
+                        self.tx.lock().unwrap().remove_tcp(dst, src);
 
                         self.remove_tcp(tcp);
                     }
                 } else {
                     trace!(
                         "TCP out of order of {} -> {} at {}",
-                        tcp.src(),
+                        src,
                         dst,
                         tcp.sequence()
                     );
 
                     if payload.len() == 0 {
                         // Send ACK0
-                        self.tx.lock().unwrap().send_tcp_ack_0(dst, tcp.src())?;
+                        self.tx.lock().unwrap().send_tcp_ack_0(dst, src)?;
                     }
                 }
             }
         } else {
             // Send RST
-            self.tx.lock().unwrap().send_tcp_rst(dst, tcp.src(), None)?;
+            self.tx.lock().unwrap().send_tcp_rst(dst, src, None)?;
         }
 
         Ok(())
     }
 
     async fn handle_udp(&mut self, udp: &Udp, payload: &[u8]) -> io::Result<()> {
-        let mut port = self.get_local_udp_port(udp.src());
+        let src = SocketAddrV4::new(udp.src_ip_addr(), udp.src());
+        let mut port = self.get_local_udp_port(&src);
 
         // Bind
         let is_create;
@@ -1901,27 +1946,23 @@ impl Redirector {
         } else {
             let worker = self.datagrams.get(&port).unwrap();
             is_create = worker.is_closed();
-            is_set = worker.src_port() != udp.src();
+            is_set = worker.src() != src;
         }
         if is_create {
             // Bind
-            let (worker, bind_port) =
-                DatagramWorker::bind(self.get_tx(), udp.src(), self.remote).await?;
+            let (worker, bind_port) = DatagramWorker::bind(self.get_tx(), src, self.remote).await?;
             self.datagrams.insert(bind_port, worker);
 
             // Update map and LRU
-            self.datagram_map[udp.src() as usize] = bind_port;
-            self.udp_lru.put(bind_port, udp.src());
+            self.datagram_map.insert(src, bind_port);
+            self.udp_lru.put(bind_port, src);
 
             port = bind_port;
 
-            trace!("bind UDP port {} = {}", udp.src(), port);
+            trace!("bind UDP port {} = {}", port, src);
         } else if is_set {
             // Replace
-            self.datagrams
-                .get_mut(&port)
-                .unwrap()
-                .set_src_port(udp.src());
+            self.datagrams.get_mut(&port).unwrap().set_src(&src);
         }
 
         // Send
@@ -1935,60 +1976,55 @@ impl Redirector {
     }
 
     fn set_tcp_recv_next(&mut self, tcp: &Tcp, recv_next: u32) {
+        let src = SocketAddrV4::new(tcp.src_ip_addr(), tcp.src());
         let dst = SocketAddrV4::new(tcp.dst_ip_addr(), tcp.dst());
-        let key = (tcp.src(), dst);
+        let key = (src, dst);
 
         self.tcp_recv_next_map.insert(key, recv_next);
         trace!(
             "set TCP receive next of {} -> {} to {}",
             dst,
-            tcp.src(),
+            src,
             recv_next
         );
     }
 
     fn add_tcp_recv_next(&mut self, tcp: &Tcp, n: u32) {
+        let src = SocketAddrV4::new(tcp.src_ip_addr(), tcp.src());
         let dst = SocketAddrV4::new(tcp.dst_ip_addr(), tcp.dst());
-        let key = (tcp.src(), dst);
+        let key = (src, dst);
 
         let entry = self.tcp_recv_next_map.entry(key).or_insert(0);
         *entry = entry
             .checked_add(n)
             .unwrap_or_else(|| n - (u32::MAX - *entry));
-        trace!(
-            "add TCP receive next of {} -> {} to {}",
-            dst,
-            tcp.src(),
-            entry
-        );
+        trace!("add TCP receive next of {} -> {} to {}", dst, src, entry);
     }
 
     fn set_tcp_wscale(&mut self, tcp: &Tcp, wscale: u8) {
+        let src = SocketAddrV4::new(tcp.src_ip_addr(), tcp.src());
         let dst = SocketAddrV4::new(tcp.dst_ip_addr(), tcp.dst());
-        let key = (tcp.src(), dst);
+        let key = (src, dst);
 
         self.tcp_wscale_map.insert(key, wscale);
 
-        trace!(
-            "set TCP window scale of {} -> {} to {}",
-            dst,
-            tcp.src(),
-            wscale
-        );
+        trace!("set TCP window scale of {} -> {} to {}", dst, src, wscale);
     }
 
     fn perm_tcp_sack(&mut self, tcp: &Tcp) {
+        let src = SocketAddrV4::new(tcp.src_ip_addr(), tcp.src());
         let dst = SocketAddrV4::new(tcp.dst_ip_addr(), tcp.dst());
-        let key = (tcp.src(), dst);
+        let key = (src, dst);
 
         self.tcp_sack_perm_map.insert(key);
 
-        trace!("permit TCP sack of {} -> {}", dst, tcp.src(),);
+        trace!("permit TCP sack of {} -> {}", dst, src);
     }
 
     fn remove_tcp(&mut self, tcp: &Tcp) {
+        let src = SocketAddrV4::new(tcp.src_ip_addr(), tcp.src());
         let dst = SocketAddrV4::new(tcp.dst_ip_addr(), tcp.dst());
-        let key = (tcp.src(), dst);
+        let key = (src, dst);
 
         self.streams.remove(&key);
         self.tcp_recv_next_map.remove(&key);
@@ -2000,60 +2036,48 @@ impl Redirector {
             if !cache.is_empty() {
                 trace!(
                     "TCP cache {} -> {} was removed while the cache is not empty",
-                    tcp.src(),
+                    src,
                     dst
                 );
             }
         }
         self.tcp_cache_map.remove(&key);
-        if self.tcp_fin_sequence_map.contains_key(&key) {
-            trace!(
-                "TCP FIN of {} -> {} was removed while the FIN is not handled",
-                tcp.src(),
-                dst
-            );
-        }
         self.tcp_fin_sequence_map.remove(&key);
-        trace!("remove TCP {} -> {}", tcp.src(), dst);
+        trace!("remove TCP {} -> {}", src, dst);
     }
 
     fn get_tx(&self) -> Arc<Mutex<Forwarder>> {
         Arc::clone(&self.tx)
     }
 
-    fn get_local_udp_port(&mut self, src_port: u16) -> u16 {
-        let local_port = self.datagram_map[src_port as usize];
-        if local_port == 0 {
-            if self.udp_lru.len() < self.udp_lru.cap() {
-                0
-            } else {
-                let pair = self.udp_lru.pop_lru().unwrap();
-                let local_port = pair.0;
-                let prev_src_port = pair.1;
-
-                if prev_src_port != 0 {
-                    // Reuse
-                    self.datagram_map[prev_src_port as usize] = 0;
-                    trace!(
-                        "reuse UDP port {} = {} to {} = {}",
-                        prev_src_port,
-                        local_port,
-                        src_port,
-                        local_port
-                    );
-                }
-                self.datagram_map[src_port as usize] = local_port;
-
+    fn get_local_udp_port(&mut self, src: &SocketAddrV4) -> u16 {
+        let local_port = self.datagram_map.get(&src);
+        match local_port {
+            Some(&local_port) => {
                 // Update LRU
-                self.udp_lru.put(local_port, src_port);
+                self.udp_lru.get(&local_port);
 
                 local_port
             }
-        } else {
-            // Update LRU
-            self.udp_lru.get(&local_port);
+            None => {
+                if self.udp_lru.len() < self.udp_lru.cap() {
+                    0
+                } else {
+                    let pair = self.udp_lru.pop_lru().unwrap();
+                    let local_port = pair.0;
+                    let prev_src = pair.1;
 
-            local_port
+                    // Reuse
+                    self.datagram_map.remove(&prev_src);
+                    trace!("reuse UDP port {} = {} to {}", local_port, prev_src, src);
+                    self.datagram_map.insert(src.clone(), local_port);
+
+                    // Update LRU
+                    self.udp_lru.put(local_port, src.clone());
+
+                    local_port
+                }
+            }
         }
     }
 }

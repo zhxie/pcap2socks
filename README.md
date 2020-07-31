@@ -24,10 +24,10 @@ If you want to build pcap2socks in Windows, you must meet all the three requirem
 ## Usage
 
 ```
-pcap2socks -s <ADDRESS>
+pcap2socks -s <ADDRESS>...
 
 # Or a more general one using proxy ARP (recommended)
-pcap2socks -s <ADDRESS> -p <ADDRESS> -d <ADDRESS>
+pcap2socks -s <ADDRESS>... -p <ADDRESS> -d <ADDRESS>
 ```
 
 ### Flags
@@ -46,7 +46,7 @@ pcap2socks -s <ADDRESS> -p <ADDRESS> -d <ADDRESS>
 
 `-P, --preset <PRESET>`: Preset. You can use preset source and publish of game accelerators in the market. Available values are `t`, `tencent` for [Tencent Online Game Accelerator](https://jiasu.qq.com/) and `n`, `netease`, `u`, `uu` for [Netease UU Game Accelerator](https://uu.163.com/).
 
-`-s, --source <ADDRESS>`: Source.
+`-s, --sources <ADDRESS>...`: Sources.
 
 `-p, --publish <ADDRESS>`: ARP publishing address. If this value is set, pcap2socks will reply ARP request as it owns the specified address which is not on the network, also called proxy ARP.
 
