@@ -439,7 +439,7 @@ impl Fragmentation {
 /// Represents a defragmentation machine.
 #[derive(Debug)]
 pub struct Defraggler {
-    frags: HashMap<(Ipv4Addr, Ipv4Addr, u16), Fragmentation>,
+    frags: HashMap<(Ipv4Addr, Ipv4Addr, LayerKind, u16), Fragmentation>,
 }
 
 impl Defraggler {
@@ -457,7 +457,7 @@ impl Defraggler {
             None => return None,
         };
 
-        let key = (ipv4.src(), ipv4.dst(), ipv4.identification());
+        let key = (ipv4.src(), ipv4.dst(), ipv4.kind(), ipv4.identification());
 
         let is_create = match self.frags.get(&key) {
             Some(frag) => frag.is_expired(),
