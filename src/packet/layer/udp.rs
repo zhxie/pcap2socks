@@ -144,7 +144,7 @@ impl Layer for Udp {
 
         packet.populate(&self.layer);
 
-        // Copies payload
+        // Copy payload
         packet.set_payload(payload);
 
         // Fix length

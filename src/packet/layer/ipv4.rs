@@ -225,7 +225,38 @@ impl Layer for Ipv4 {
         Ok(header_length)
     }
 
-    fn serialize_with_payload(&self, buffer: &mut [u8], _: &[u8], n: usize) -> io::Result<usize> {
-        self.serialize(buffer, n)
+    fn serialize_with_payload(
+        &self,
+        buffer: &mut [u8],
+        payload: &[u8],
+        n: usize,
+    ) -> io::Result<usize> {
+        let mut packet = MutableIpv4Packet::new(buffer)
+            .ok_or(io::Error::new(io::ErrorKind::WriteZero, "buffer too small"))?;
+
+        packet.populate(&self.layer);
+
+        // Fix length
+        let header_length = self.len();
+        if header_length / 4 > u8::MAX as usize {
+            return Err(io::Error::new(io::ErrorKind::Other, "IPv4 too big"));
+        }
+        packet.set_header_length((header_length / 4) as u8);
+        if n > u16::MAX as usize {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "length too big",
+            ));
+        }
+        packet.set_total_length(n as u16);
+
+        // Copy payload
+        packet.set_payload(payload);
+
+        // Compute checksum
+        let checksum = ipv4::checksum(&packet.to_immutable());
+        packet.set_checksum(checksum);
+
+        Ok(header_length)
     }
 }
