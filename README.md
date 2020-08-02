@@ -38,7 +38,7 @@ pcap2socks -s <ADDRESS>... -p <ADDRESS> -d <ADDRESS>
 
 `-V, --version`: Prints version information.
 
-`--force-associate-destination`: Force to associate with the destination instead of the bind address. If this flag is set, pcap2socks will associate with the destination instead of the replied bind address from a SOCKS5 UDP ASSOCIATE. You have to set this flag when your SOCKS5 server is behind a NAT which will translate address `OuterIP:Port` to `InnerIP:Port`.
+`--force-associate-destination`: Force to associate with the destination. If this flag is set, pcap2socks will associate with the destination instead of the replied bind address from a SOCKS5 UDP ASSOCIATE. You have to set this flag when the SOCKS5 server is behind a NAT which will translate address `OuterIP:Port` to `InnerIP:Port`.
 
 ### Options
 
@@ -53,6 +53,10 @@ pcap2socks -s <ADDRESS>... -p <ADDRESS> -d <ADDRESS>
 `-p, --publish <ADDRESS>`: ARP publishing address. If this option is set, pcap2socks will reply ARP request as it owns the specified address which is not on the network, also called proxy ARP.
 
 `-d, --destination <ADDRESS>`: Destination, default as `127.0.0.1:1080`.
+
+`--username <VALUE>`: Username. This value should be set only when the SOCKS5 server requires the username/password authentication.
+
+`--password <VALUE>`: Password. This value should be set only when the SOCKS5 server requires the username/password authentication.
 
 ## Troubleshoot
 

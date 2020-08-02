@@ -11,8 +11,8 @@ use tokio::prelude::*;
 use tokio::time;
 
 mod socks;
-pub use self::socks::SocksOption;
 use self::socks::SocksSendHalf;
+pub use self::socks::{SocksAuth, SocksOption};
 
 /// Trait for forwarding stream.
 pub trait ForwardStream: Send {

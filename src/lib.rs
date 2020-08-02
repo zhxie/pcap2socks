@@ -16,7 +16,9 @@ pub mod packet;
 pub mod pcap;
 pub mod socks;
 
-use self::socks::{DatagramWorker, ForwardDatagram, ForwardStream, SocksOption, StreamWorker};
+use self::socks::{
+    DatagramWorker, ForwardDatagram, ForwardStream, SocksAuth, SocksOption, StreamWorker,
+};
 use cache::{Queue, Window};
 use packet::layer::arp::Arp;
 use packet::layer::ethernet::Ethernet;
@@ -1422,14 +1424,19 @@ impl Redirector {
         local_ip_addr: Option<Ipv4Addr>,
         remote: SocketAddrV4,
         force_associate_dst: bool,
+        auth: Option<(String, String)>,
     ) -> Redirector {
+        let auth = match auth {
+            Some((username, password)) => Some(SocksAuth::new(username, password)),
+            None => None,
+        };
         let redirector = Redirector {
             tx,
             is_tx_src_hardware_addr_set: false,
             src_ip_addrs,
             local_ip_addr,
             remote,
-            options: SocksOption::new(force_associate_dst),
+            options: SocksOption::new(force_associate_dst, auth),
             streams: HashMap::new(),
             tcp_recv_next_map: HashMap::new(),
             tcp_duplicate_map: HashMap::new(),

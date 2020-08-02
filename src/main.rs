@@ -125,19 +125,27 @@ async fn main() {
         }
     };
     let forwarder = Forwarder::new(tx, mtu, inter.hardware_addr, inter.ip_addrs[0]);
+    let auth = match flags.username {
+        Some(ref username) => Some((username.clone(), flags.password.unwrap())),
+        None => None,
+    };
     let mut redirector = Redirector::new(
         Arc::new(Mutex::new(forwarder)),
         srcs_set,
         publish,
         flags.dst,
         flags.force_associate_dst,
+        auth,
     );
     let srcs_str = srcs
         .iter()
         .map(|i| i.to_string())
         .collect::<Vec<String>>()
         .join(", ");
-    info!("Proxy {} to {}", srcs_str, flags.dst);
+    match flags.username {
+        Some(username) => info!("Proxy {} to {}@{}", srcs_str, username, flags.dst),
+        None => info!("Proxy {} to {}", srcs_str, flags.dst),
+    }
     if let Err(ref e) = redirector.open(&mut rx).await {
         error!("{}", e);
     }
@@ -192,36 +200,68 @@ struct Flags {
         long = "interface",
         short,
         help = "Interface for listening",
-        value_name = "INTERFACE"
+        value_name = "INTERFACE",
+        display_order(0)
     )]
     pub inter: Option<String>,
-    #[structopt(long, help = "MTU", value_name = "VALUE")]
+    #[structopt(long, help = "MTU", value_name = "VALUE", display_order(1))]
     pub mtu: Option<usize>,
-    #[structopt(long, short = "P", help = "Preset", value_name = "PRESET")]
+    #[structopt(
+        long,
+        short = "P",
+        help = "Preset",
+        value_name = "PRESET",
+        display_order(2)
+    )]
     pub preset: Option<String>,
-    #[structopt(long, short, help = "ARP publishing address", value_name = "ADDRESS")]
-    pub publish: Option<Ipv4Addr>,
     #[structopt(
         long = "sources",
         short,
         help = "Sources",
         value_name = "ADDRESS",
-        required_unless("preset")
+        required_unless("preset"),
+        display_order(3)
     )]
     pub srcs: Option<Vec<Ipv4Addr>>,
+    #[structopt(
+        long,
+        short,
+        help = "ARP publishing address",
+        value_name = "ADDRESS",
+        display_order(4)
+    )]
+    pub publish: Option<Ipv4Addr>,
     #[structopt(
         long = "destination",
         short,
         help = "Destination",
         value_name = "ADDRESS",
-        default_value = "127.0.0.1:1080"
+        default_value = "127.0.0.1:1080",
+        display_order(5)
     )]
     pub dst: SocketAddrV4,
     #[structopt(
         long = "force-associate-destination",
-        help = "Force to associate with the destination instead of the bind address"
+        help = "Force to associate with the destination",
+        display_order(1000)
     )]
     pub force_associate_dst: bool,
+    #[structopt(
+        long,
+        help = "Username",
+        value_name = "VALUE",
+        requires("password"),
+        display_order(1000)
+    )]
+    pub username: Option<String>,
+    #[structopt(
+        long,
+        help = "Password",
+        value_name = "VALUE",
+        requires("username"),
+        display_order(1001)
+    )]
+    pub password: Option<String>,
 }
 
 /// Represents a logger.

@@ -1,21 +1,44 @@
-use async_socks5::{self, AddrKind};
+use async_socks5::{self, AddrKind, Auth};
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::Arc;
 use tokio::io::{self, BufStream};
 use tokio::net::udp::{RecvHalf, SendHalf};
 use tokio::net::{TcpStream, UdpSocket};
 
+/// Represents the username and the password of the authentication connecting to a SOCKS5 server.
+#[derive(Clone, Debug)]
+pub struct SocksAuth {
+    username: String,
+    password: String,
+}
+
+impl SocksAuth {
+    /// Creates a `SocksAuth`.
+    pub fn new(username: String, password: String) -> SocksAuth {
+        SocksAuth { username, password }
+    }
+}
+
 /// Represents the options connecting to a SOCKS5 server.
 #[derive(Clone, Debug)]
 pub struct SocksOption {
     force_associate_remote: bool,
+    auth: Option<SocksAuth>,
 }
 
 impl SocksOption {
     /// Creates a `SocksOption`.
-    pub fn new(force_associate_remote: bool) -> SocksOption {
+    pub fn new(force_associate_remote: bool, auth: Option<SocksAuth>) -> SocksOption {
         SocksOption {
             force_associate_remote,
+            auth,
+        }
+    }
+
+    fn auth(&self) -> Option<Auth> {
+        match self.auth {
+            Some(ref auth) => Some(Auth::new(auth.username.clone(), auth.password.clone())),
+            None => None,
         }
     }
 }
@@ -24,12 +47,11 @@ impl SocksOption {
 pub async fn connect(
     remote: SocketAddrV4,
     dst: SocketAddrV4,
-    _: &SocksOption,
+    options: &SocksOption,
 ) -> io::Result<BufStream<TcpStream>> {
     let stream = TcpStream::connect(remote).await?;
     let mut stream = BufStream::new(stream);
-    // TODO: support SOCKS5 auth
-    if let Err(e) = async_socks5::connect(&mut stream, dst, None).await {
+    if let Err(e) = async_socks5::connect(&mut stream, dst, options.auth()).await {
         match e {
             async_socks5::Error::Io(e) => return Err(e),
             _ => return Err(io::Error::new(io::ErrorKind::Other, e)),
@@ -135,17 +157,20 @@ pub async fn bind(
     let local = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0);
     let socket = UdpSocket::bind(local).await?;
     let local_port = socket.local_addr().unwrap().port();
-    // TODO: support SOCKS5 auth
-    let datagram =
-        match async_socks5::SocksDatagram::associate::<SocketAddrV4>(stream, socket, None, None)
-            .await
-        {
-            Ok(datagram) => datagram,
-            Err(e) => match e {
-                async_socks5::Error::Io(e) => return Err(e),
-                _ => return Err(io::Error::new(io::ErrorKind::Other, e)),
-            },
-        };
+    let datagram = match async_socks5::SocksDatagram::associate::<SocketAddrV4>(
+        stream,
+        socket,
+        options.auth(),
+        None,
+    )
+    .await
+    {
+        Ok(datagram) => datagram,
+        Err(e) => match e {
+            async_socks5::Error::Io(e) => return Err(e),
+            _ => return Err(io::Error::new(io::ErrorKind::Other, e)),
+        },
+    };
 
     let proxy_addr = match datagram.proxy_addr().clone() {
         AddrKind::Ip(proxy_addr) => proxy_addr,
