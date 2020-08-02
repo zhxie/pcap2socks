@@ -24,9 +24,9 @@ use layer::{Layer, LayerKind, Layers};
 /// Represents a packet indicator.
 #[derive(Clone, Debug)]
 pub struct Indicator {
-    pub link: Layers,
-    pub network: Option<Layers>,
-    pub transport: Option<Layers>,
+    link: Layers,
+    network: Option<Layers>,
+    transport: Option<Layers>,
 }
 
 impl Indicator {

@@ -29,13 +29,13 @@ const BUFFER_SIZE: usize = 256 * 1024;
 /// Represents a network interface and its associated addresses.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct Interface {
-    pub name: String,
-    pub alias: Option<String>,
-    pub hardware_addr: MacAddr,
-    pub ip_addrs: Vec<Ipv4Addr>,
-    pub mtu: usize,
-    pub is_up: bool,
-    pub is_loopback: bool,
+    name: String,
+    alias: Option<String>,
+    hardware_addr: MacAddr,
+    ip_addrs: Vec<Ipv4Addr>,
+    mtu: usize,
+    is_up: bool,
+    is_loopback: bool,
 }
 
 impl Interface {
@@ -74,6 +74,41 @@ impl Interface {
         };
 
         Ok(channel)
+    }
+
+    /// Returns the name of the interface.
+    pub fn name(&self) -> String {
+        self.name.clone()
+    }
+
+    /// Returns the alias of the interface.
+    pub fn alias(&self) -> Option<String> {
+        self.alias.clone()
+    }
+
+    /// Returns the hardware address of the interface.
+    pub fn hardware_addr(&self) -> MacAddr {
+        self.hardware_addr
+    }
+
+    /// Returns the first IPv4 address of the interface.
+    pub fn ip_addr(&self) -> Ipv4Addr {
+        self.ip_addrs[0]
+    }
+
+    /// Returns the MTU of the interface.
+    pub fn mtu(&self) -> usize {
+        self.mtu
+    }
+
+    /// Returns if the interface is up.
+    pub fn is_up(&self) -> bool {
+        self.is_up
+    }
+
+    /// Returns if the interface is a loopback interface.
+    pub fn is_loopback(&self) -> bool {
+        self.is_loopback
     }
 }
 

@@ -1,4 +1,5 @@
 use async_socks5::{self, AddrKind, Auth};
+use log::trace;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::Arc;
 use tokio::io::{self, BufStream};
@@ -179,8 +180,14 @@ pub async fn bind(
     let (stream, socket) = datagram.into_inner();
     // Force to associate with the remote address
     if options.force_associate_remote {
-        let proxy_addr = SocketAddrV4::new(remote.ip().clone(), proxy_addr.port());
-        socket.connect(proxy_addr).await?;
+        let next_proxy_addr = SocketAddrV4::new(remote.ip().clone(), proxy_addr.port());
+        socket.connect(next_proxy_addr).await?;
+
+        trace!(
+            "overwrite ASSOCIATE address {} to {}",
+            proxy_addr,
+            next_proxy_addr
+        );
     }
     let (socket_rx, socket_tx) = socket.split();
 

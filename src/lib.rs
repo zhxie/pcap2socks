@@ -34,7 +34,7 @@ use pcap::{HardwareAddr, Receiver, Sender};
 pub fn interfaces() -> Vec<Interface> {
     pcap::interfaces()
         .into_iter()
-        .filter(|inter| inter.is_up && !inter.is_loopback)
+        .filter(|inter| inter.is_up() && !inter.is_loopback())
         .collect()
 }
 
@@ -43,7 +43,7 @@ pub fn interface(name: Option<String>) -> Option<Interface> {
     let inters = match name {
         Some(ref name) => {
             let mut inters = interfaces();
-            inters.retain(|ref inter| &inter.name == name);
+            inters.retain(|ref inter| &inter.name() == name);
             inters
         }
         None => interfaces(),
