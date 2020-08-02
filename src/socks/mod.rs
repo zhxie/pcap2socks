@@ -11,6 +11,7 @@ use tokio::prelude::*;
 use tokio::time;
 
 mod socks;
+pub use self::socks::SocksOption;
 use self::socks::SocksSendHalf;
 
 /// Trait for forwarding stream.
@@ -54,10 +55,11 @@ impl StreamWorker {
         src: SocketAddrV4,
         dst: SocketAddrV4,
         remote: SocketAddrV4,
+        options: &SocksOption,
     ) -> io::Result<StreamWorker> {
         let tx_cloned = Arc::clone(&tx);
 
-        let stream = socks::connect(remote, dst).await?;
+        let stream = socks::connect(remote, dst, &options).await?;
         let stream = stream.into_inner();
         let (mut stream_rx, stream_tx) = stream.into_split();
 
@@ -223,8 +225,9 @@ impl DatagramWorker {
         tx: Arc<Mutex<dyn ForwardDatagram>>,
         src: SocketAddrV4,
         remote: SocketAddrV4,
+        options: &SocksOption,
     ) -> io::Result<(DatagramWorker, u16)> {
-        let (mut socks_rx, socks_tx, local_port) = socks::bind(remote).await?;
+        let (mut socks_rx, socks_tx, local_port) = socks::bind(remote, &options).await?;
 
         let a_src = Arc::new(AtomicU64::from(socket_addr_v4_to_u64(&src)));
         let a_src_cloned = Arc::clone(&a_src);

@@ -16,7 +16,7 @@ pub mod packet;
 pub mod pcap;
 pub mod socks;
 
-use self::socks::{DatagramWorker, ForwardDatagram, ForwardStream, StreamWorker};
+use self::socks::{DatagramWorker, ForwardDatagram, ForwardStream, SocksOption, StreamWorker};
 use cache::{Queue, Window};
 use packet::layer::arp::Arp;
 use packet::layer::ethernet::Ethernet;
@@ -1397,6 +1397,7 @@ pub struct Redirector {
     src_ip_addrs: HashSet<Ipv4Addr>,
     local_ip_addr: Option<Ipv4Addr>,
     remote: SocketAddrV4,
+    options: SocksOption,
     streams: HashMap<(SocketAddrV4, SocketAddrV4), StreamWorker>,
     tcp_recv_next_map: HashMap<(SocketAddrV4, SocketAddrV4), u32>,
     tcp_duplicate_map: HashMap<(SocketAddrV4, SocketAddrV4), usize>,
@@ -1420,6 +1421,7 @@ impl Redirector {
         src_ip_addrs: HashSet<Ipv4Addr>,
         local_ip_addr: Option<Ipv4Addr>,
         remote: SocketAddrV4,
+        force_associate_dst: bool,
     ) -> Redirector {
         let redirector = Redirector {
             tx,
@@ -1427,6 +1429,7 @@ impl Redirector {
             src_ip_addrs,
             local_ip_addr,
             remote,
+            options: SocksOption::new(force_associate_dst),
             streams: HashMap::new(),
             tcp_recv_next_map: HashMap::new(),
             tcp_duplicate_map: HashMap::new(),
@@ -1821,7 +1824,8 @@ impl Redirector {
             }
 
             // Connect
-            let stream = StreamWorker::connect(self.get_tx(), src, dst, self.remote).await;
+            let stream =
+                StreamWorker::connect(self.get_tx(), src, dst, self.remote, &self.options).await;
 
             let stream = match stream {
                 Ok(stream) => stream,
@@ -1950,7 +1954,8 @@ impl Redirector {
         }
         if is_create {
             // Bind
-            let (worker, bind_port) = DatagramWorker::bind(self.get_tx(), src, self.remote).await?;
+            let (worker, bind_port) =
+                DatagramWorker::bind(self.get_tx(), src, self.remote, &self.options).await?;
             self.datagrams.insert(bind_port, worker);
 
             // Update map and LRU

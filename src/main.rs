@@ -130,6 +130,7 @@ async fn main() {
         srcs_set,
         publish,
         flags.dst,
+        flags.force_associate_dst,
     );
     let srcs_str = srcs
         .iter()
@@ -216,6 +217,11 @@ struct Flags {
         default_value = "127.0.0.1:1080"
     )]
     pub dst: SocketAddrV4,
+    #[structopt(
+        long = "force-associate-destination",
+        help = "Force to associate with the destination instead of the bind address"
+    )]
+    pub force_associate_dst: bool,
 }
 
 /// Represents a logger.

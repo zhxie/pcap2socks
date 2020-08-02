@@ -1,12 +1,31 @@
-use async_socks5;
+use async_socks5::{self, AddrKind};
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::Arc;
 use tokio::io::{self, BufStream};
 use tokio::net::udp::{RecvHalf, SendHalf};
 use tokio::net::{TcpStream, UdpSocket};
 
+/// Represents the options connecting to a SOCKS5 server.
+#[derive(Clone, Debug)]
+pub struct SocksOption {
+    force_associate_remote: bool,
+}
+
+impl SocksOption {
+    /// Creates a `SocksOption`.
+    pub fn new(force_associate_remote: bool) -> SocksOption {
+        SocksOption {
+            force_associate_remote,
+        }
+    }
+}
+
 /// Connects to a target server through a SOCKS5 proxy.
-pub async fn connect(remote: SocketAddrV4, dst: SocketAddrV4) -> io::Result<BufStream<TcpStream>> {
+pub async fn connect(
+    remote: SocketAddrV4,
+    dst: SocketAddrV4,
+    _: &SocksOption,
+) -> io::Result<BufStream<TcpStream>> {
     let stream = TcpStream::connect(remote).await?;
     let mut stream = BufStream::new(stream);
     // TODO: support SOCKS5 auth
@@ -105,7 +124,10 @@ impl SocksRecvHalf {
 }
 
 /// Bind a local address to a target server through a SOCKS5 proxy.
-pub async fn bind(remote: SocketAddrV4) -> io::Result<(SocksRecvHalf, SocksSendHalf, u16)> {
+pub async fn bind(
+    remote: SocketAddrV4,
+    options: &SocksOption,
+) -> io::Result<(SocksRecvHalf, SocksSendHalf, u16)> {
     // Connect
     let stream = TcpStream::connect(remote).await?;
     let stream = BufStream::new(stream);
@@ -125,7 +147,16 @@ pub async fn bind(remote: SocketAddrV4) -> io::Result<(SocksRecvHalf, SocksSendH
             },
         };
 
+    let proxy_addr = match datagram.proxy_addr().clone() {
+        AddrKind::Ip(proxy_addr) => proxy_addr,
+        _ => unimplemented!(),
+    };
     let (stream, socket) = datagram.into_inner();
+    // Force to associate with the remote address
+    if options.force_associate_remote {
+        let proxy_addr = SocketAddrV4::new(remote.ip().clone(), proxy_addr.port());
+        socket.connect(proxy_addr).await?;
+    }
     let (socket_rx, socket_tx) = socket.split();
 
     let a_stream = Arc::new(stream);
