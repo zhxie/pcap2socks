@@ -220,7 +220,6 @@ struct Flags {
 
 /// Represents a logger.
 pub struct Logger {
-    crate_name: &'static str,
     stderr_logger: env_logger::Logger,
     stdout_logger: env_logger::Logger,
 }
@@ -255,7 +254,6 @@ impl Logger {
             .build();
 
         let logger = Logger {
-            crate_name: env!("CARGO_PKG_NAME"),
             stderr_logger,
             stdout_logger,
         };
@@ -270,9 +268,6 @@ impl Logger {
 
 impl Log for Logger {
     fn enabled(&self, metadata: &Metadata) -> bool {
-        if metadata.target() != self.crate_name {
-            return false;
-        }
         match metadata.level() {
             Level::Error => self.stderr_logger.enabled(metadata),
             _ => self.stdout_logger.enabled(metadata),
@@ -280,9 +275,6 @@ impl Log for Logger {
     }
 
     fn log(&self, record: &Record) {
-        if record.metadata().target() != self.crate_name {
-            return;
-        }
         match record.metadata().level() {
             Level::Error => self.stderr_logger.log(record),
             _ => self.stdout_logger.log(record),

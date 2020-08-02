@@ -282,7 +282,7 @@ impl DatagramWorker {
                 src: a_src,
                 local_port,
                 socks_tx,
-                is_closed: is_closed,
+                is_closed,
             },
             local_port,
         ))

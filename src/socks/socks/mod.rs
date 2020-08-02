@@ -9,6 +9,7 @@ use tokio::net::{TcpStream, UdpSocket};
 pub async fn connect(remote: SocketAddrV4, dst: SocketAddrV4) -> io::Result<BufStream<TcpStream>> {
     let stream = TcpStream::connect(remote).await?;
     let mut stream = BufStream::new(stream);
+    // TODO: support SOCKS5 auth
     if let Err(e) = async_socks5::connect(&mut stream, dst, None).await {
         match e {
             async_socks5::Error::Io(e) => return Err(e),
@@ -112,6 +113,7 @@ pub async fn bind(remote: SocketAddrV4) -> io::Result<(SocksRecvHalf, SocksSendH
     let local = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0);
     let socket = UdpSocket::bind(local).await?;
     let local_port = socket.local_addr().unwrap().port();
+    // TODO: support SOCKS5 auth
     let datagram =
         match async_socks5::SocksDatagram::associate::<SocketAddrV4>(stream, socket, None, None)
             .await
