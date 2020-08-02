@@ -1027,67 +1027,61 @@ impl Forwarder {
         // Fragmentation
         let ipv4_header_size = ipv4.len();
         let udp_header_size = udp.len();
-
         let size = udp_header_size + payload.len();
-        let mut n = 0;
-        while n < size {
-            let mut length = min(
-                size - n,
-                self.src_mtu.get(src.ip()).unwrap_or(&self.local_mtu) - ipv4_header_size,
-            );
-            let mut remain = size - n - length;
-
-            // Alignment
-            if remain > 0 {
-                length = length / 8 * 8;
-                remain = size - n - length;
-            }
-
-            // Leave at least 8 Bytes for last fragment
-            if remain > 0 && remain < 8 {
-                length = length - 8;
-            }
-
+        let mss = *self.src_mtu.get(src.ip()).unwrap_or(&self.local_mtu) - ipv4_header_size;
+        if size <= mss {
             // Send
-            if n == 0 {
-                if remain > 0 {
-                    // UDP
-                    // TODO: fix length & checksum
-                    let udp = Udp::new(dst.port(), src.port());
+            self.send_udp_raw(dst, src, payload)?;
+        } else {
+            // Fragmentation required
+            // UDP
+            let mut udp = Udp::new(dst.port(), src.port());
+            let ipv4 = Ipv4::new(0, udp.kind(), dst.ip().clone(), src.ip().clone()).unwrap();
+            udp.set_ipv4_layer(&ipv4);
+            let udp = udp;
 
-                    self.send_ipv4_more_fragment(
-                        dst.ip().clone(),
-                        src.ip().clone(),
-                        udp.kind(),
-                        (n / 8) as u16,
-                        Some(Layers::Udp(udp)),
-                        &payload[..length - udp_header_size],
-                    )?;
-                } else {
-                    self.send_udp_raw(dst, src, payload)?;
-                }
-            } else {
+            // Payload
+            let mut buffer = vec![0u8; udp.len() + payload.len()];
+            udp.serialize_with_payload(buffer.as_mut_slice(), payload, udp.len() + payload.len())?;
+            let buffer = buffer;
+
+            let mut n = 0;
+            while n < size {
+                let mut length = min(size - n, mss);
+                let mut remain = size - n - length;
+
+                // Alignment
                 if remain > 0 {
-                    self.send_ipv4_more_fragment(
+                    length = length / 8 * 8;
+                    remain = size - n - length;
+                }
+
+                // Leave at least 8 Bytes for last fragment
+                if remain > 0 && remain < 8 {
+                    length = length - 8;
+                }
+
+                // Send
+                if remain > 0 {
+                    self.send_ipv4_with_fragment(
                         dst.ip().clone(),
                         src.ip().clone(),
                         udp.kind(),
                         (n / 8) as u16,
-                        None,
-                        &payload[n - udp_header_size..n + length - udp_header_size],
+                        &buffer[n..n + length],
                     )?;
                 } else {
-                    self.send_ipv4_last_fragment(
+                    self.send_ipv4_with_last_fragment(
                         dst.ip().clone(),
                         src.ip().clone(),
                         udp.kind(),
                         (n / 8) as u16,
-                        &payload[n - udp_header_size..n + length - udp_header_size],
+                        &buffer[n..n + length],
                     )?;
                 }
+
+                n = n + length;
             }
-
-            n = n + length;
         }
 
         Ok(())
@@ -1110,13 +1104,12 @@ impl Forwarder {
         )
     }
 
-    fn send_ipv4_more_fragment(
+    fn send_ipv4_with_fragment(
         &mut self,
         dst_ip_addr: Ipv4Addr,
         src_ip_addr: Ipv4Addr,
         t: LayerKind,
         fragment_offset: u16,
-        mut transport: Option<Layers>,
         payload: &[u8],
     ) -> io::Result<()> {
         // IPv4
@@ -1132,15 +1125,6 @@ impl Forwarder {
         )
         .unwrap();
 
-        // Set IPv4 layer for checksum
-        if let Some(ref mut transport) = transport {
-            match transport {
-                Layers::Tcp(ref mut tcp) => tcp.set_ipv4_layer(&ipv4),
-                Layers::Udp(ref mut udp) => udp.set_ipv4_layer(&ipv4),
-                _ => {}
-            }
-        };
-
         // Send
         self.send_ethernet(
             *self
@@ -1148,12 +1132,12 @@ impl Forwarder {
                 .get(&src_ip_addr)
                 .unwrap_or(&pcap::HARDWARE_ADDR_UNSPECIFIED),
             Layers::Ipv4(ipv4),
-            transport,
+            None,
             Some(payload),
         )
     }
 
-    fn send_ipv4_last_fragment(
+    fn send_ipv4_with_last_fragment(
         &mut self,
         dst_ip_addr: Ipv4Addr,
         src_ip_addr: Ipv4Addr,
