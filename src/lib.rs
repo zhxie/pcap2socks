@@ -197,7 +197,7 @@ impl Forwarder {
     fn increase_ipv4_identification(&mut self, dst_ip_addr: Ipv4Addr, src_ip_addr: Ipv4Addr) {
         let entry = self
             .ipv4_identification_map
-            .entry((dst_ip_addr, src_ip_addr))
+            .entry((src_ip_addr, dst_ip_addr))
             .or_insert(0);
         *entry = entry.checked_add(1).unwrap_or(0);
         trace!(
