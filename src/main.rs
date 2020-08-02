@@ -55,7 +55,7 @@ async fn main() {
             "n" | "netease" | "u" | "uu" => {
                 let mut srcs = Vec::new();
 
-                let mut ip_octets = inter.ip_addr().octets();
+                let mut ip_octets = inter.ip_addr().unwrap().octets();
                 ip_octets[0] = 172;
                 ip_octets[1] = 24;
                 ip_octets[2] = ip_octets[2].checked_add(1).unwrap_or(0);
@@ -76,7 +76,7 @@ async fn main() {
         Some(ref preset) => match preset.as_str() {
             "t" | "tencent" => Some(Ipv4Addr::new(10, 6, 0, 2)),
             "n" | "netease" | "u" | "uu" => {
-                let mut ip_octets = inter.ip_addr().octets();
+                let mut ip_octets = inter.ip_addr().unwrap().octets();
                 ip_octets[0] = 172;
                 ip_octets[1] = 24;
 
@@ -98,7 +98,7 @@ async fn main() {
             }
         }
         None => {
-            if srcs.contains(&inter.ip_addr()) {
+            if srcs.contains(&inter.ip_addr().unwrap()) {
                 error!("The sources cannot contain the local address");
                 return;
             }
@@ -113,7 +113,7 @@ async fn main() {
     // Instructions
     info!("Please set the network of your device which is going to be proxied with the following parameters:");
     for src in &srcs {
-        show_info(src, &publish.unwrap_or(inter.ip_addr()), mtu);
+        show_info(src, &publish.unwrap_or(inter.ip_addr().unwrap()), mtu);
     }
 
     // Proxy
@@ -124,7 +124,7 @@ async fn main() {
             return;
         }
     };
-    let forwarder = Forwarder::new(tx, mtu, inter.hardware_addr(), inter.ip_addr());
+    let forwarder = Forwarder::new(tx, mtu, inter.hardware_addr(), inter.ip_addr().unwrap());
     let auth = match flags.username {
         Some(ref username) => Some((username.clone(), flags.password.unwrap())),
         None => None,

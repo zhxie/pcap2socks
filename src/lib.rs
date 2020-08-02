@@ -40,10 +40,11 @@ pub fn interfaces() -> Vec<Interface> {
 
 /// Gets an available network interface.
 pub fn interface(name: Option<String>) -> Option<Interface> {
-    let inters = match name {
+    let mut inters = match name {
         Some(ref name) => {
             let mut inters = interfaces();
-            inters.retain(|ref inter| &inter.name() == name);
+            inters.retain(|ref inter| inter.name() == name);
+
             inters
         }
         None => interfaces(),
@@ -52,7 +53,7 @@ pub fn interface(name: Option<String>) -> Option<Interface> {
     if inters.len() != 1 {
         None
     } else {
-        Some(inters[0].clone())
+        Some(inters.pop().unwrap())
     }
 }
 

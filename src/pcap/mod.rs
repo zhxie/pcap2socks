@@ -77,13 +77,13 @@ impl Interface {
     }
 
     /// Returns the name of the interface.
-    pub fn name(&self) -> String {
-        self.name.clone()
+    pub fn name(&self) -> &String {
+        &self.name
     }
 
     /// Returns the alias of the interface.
-    pub fn alias(&self) -> Option<String> {
-        self.alias.clone()
+    pub fn alias(&self) -> &Option<String> {
+        &self.alias
     }
 
     /// Returns the hardware address of the interface.
@@ -92,8 +92,12 @@ impl Interface {
     }
 
     /// Returns the first IPv4 address of the interface.
-    pub fn ip_addr(&self) -> Ipv4Addr {
-        self.ip_addrs[0]
+    pub fn ip_addr(&self) -> Option<Ipv4Addr> {
+        if self.ip_addrs.len() > 0 {
+            Some(self.ip_addrs[0])
+        } else {
+            None
+        }
     }
 
     /// Returns the MTU of the interface.
@@ -114,14 +118,10 @@ impl Interface {
 
 impl Display for Interface {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        let name;
-        if let Some(alias) = &self.alias {
-            name = format!("{} ({})", self.name, alias);
-        } else {
-            name = self.name.clone();
-        }
-
-        let hardware_addr = format!(" [{}]", self.hardware_addr);
+        let name = match &self.alias {
+            Some(alias) => format!("{} ({})", self.name, alias),
+            None => self.name.clone(),
+        };
 
         let ip_addrs = format!(
             "{}",
@@ -137,7 +137,11 @@ impl Display for Interface {
             flags = String::from(" (Loopback)");
         }
 
-        write!(f, "{}{}{}: {}", name, hardware_addr, flags, ip_addrs)
+        write!(
+            f,
+            "{} [{}]{}: {}",
+            name, self.hardware_addr, flags, ip_addrs
+        )
     }
 }
 
