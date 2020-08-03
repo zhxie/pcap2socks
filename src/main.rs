@@ -2,7 +2,7 @@ use env_logger::fmt::{Color, Formatter, Target};
 use log::{error, info, warn, Level, LevelFilter, Log, Metadata, Record};
 use std::clone::Clone;
 use std::fmt::Display;
-use std::io::Write;
+use std::io::{self, Write};
 use std::net::{AddrParseError, IpAddr, Ipv4Addr, SocketAddrV4};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
@@ -144,7 +144,7 @@ async fn main() {
         .map(|i| i.to_string())
         .collect::<Vec<String>>()
         .join(", ");
-    match &flags.username {
+    match flags.username {
         Some(username) => info!("Proxy {} to {}@{}", srcs_str, username, flags.dst),
         None => info!("Proxy {} to {}", srcs_str, flags.dst),
     }
@@ -341,6 +341,33 @@ fn set_logger(verbose: usize) {
     Logger::init(level);
 }
 
+#[derive(Debug)]
+enum ResolvableAddrParseError {
+    AddrParseError(AddrParseError),
+    ResolveError(io::Error),
+}
+
+impl Display for ResolvableAddrParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ResolvableAddrParseError::AddrParseError(e) => write!(f, "{}", e),
+            ResolvableAddrParseError::ResolveError(e) => write!(f, "{}", e),
+        }
+    }
+}
+
+impl From<AddrParseError> for ResolvableAddrParseError {
+    fn from(s: AddrParseError) -> Self {
+        ResolvableAddrParseError::AddrParseError(s)
+    }
+}
+
+impl From<io::Error> for ResolvableAddrParseError {
+    fn from(s: io::Error) -> Self {
+        ResolvableAddrParseError::ResolveError(s)
+    }
+}
+
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct ResolvableSocketAddrV4 {
     addr: SocketAddrV4,
@@ -363,7 +390,7 @@ impl Display for ResolvableSocketAddrV4 {
 }
 
 impl FromStr for ResolvableSocketAddrV4 {
-    type Err = AddrParseError;
+    type Err = ResolvableAddrParseError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let has_alias;
         let addr = match s.parse() {
@@ -377,12 +404,12 @@ impl FromStr for ResolvableSocketAddrV4 {
 
                 let v: Vec<_> = s.split(":").collect();
                 if v.len() != 2 {
-                    return Err(e);
+                    return Err(ResolvableAddrParseError::from(e));
                 }
 
                 let port = match v[1].parse() {
                     Ok(port) => port,
-                    Err(_) => return Err(e),
+                    Err(_) => return Err(ResolvableAddrParseError::from(e)),
                 };
                 let ip = match dns_lookup::lookup_host(v[0]) {
                     Ok(addrs) => {
@@ -397,10 +424,10 @@ impl FromStr for ResolvableSocketAddrV4 {
 
                         match ip {
                             Some(ip) => ip,
-                            None => return Err(e),
+                            None => return Err(ResolvableAddrParseError::from(e)),
                         }
                     }
-                    Err(_) => return Err(e),
+                    Err(e) => return Err(ResolvableAddrParseError::from(e)),
                 };
 
                 SocketAddrV4::new(ip, port)
