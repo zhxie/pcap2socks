@@ -1,8 +1,10 @@
 use env_logger::fmt::{Color, Formatter, Target};
 use log::{error, info, warn, Level, LevelFilter, Log, Metadata, Record};
 use std::clone::Clone;
+use std::fmt::Display;
 use std::io::Write;
-use std::net::{Ipv4Addr, SocketAddrV4};
+use std::net::{AddrParseError, IpAddr, Ipv4Addr, SocketAddrV4};
+use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use structopt::StructOpt;
 
@@ -133,7 +135,7 @@ async fn main() {
         Arc::new(Mutex::new(forwarder)),
         srcs_set,
         publish,
-        flags.dst,
+        flags.dst.addr(),
         flags.force_associate_dst,
         auth,
     );
@@ -142,7 +144,7 @@ async fn main() {
         .map(|i| i.to_string())
         .collect::<Vec<String>>()
         .join(", ");
-    match flags.username {
+    match &flags.username {
         Some(username) => info!("Proxy {} to {}@{}", srcs_str, username, flags.dst),
         None => info!("Proxy {} to {}", srcs_str, flags.dst),
     }
@@ -239,7 +241,7 @@ struct Flags {
         default_value = "127.0.0.1:1080",
         display_order(5)
     )]
-    pub dst: SocketAddrV4,
+    pub dst: ResolvableSocketAddrV4,
     #[structopt(
         long = "force-associate-destination",
         help = "Force to associate with the destination",
@@ -265,7 +267,7 @@ struct Flags {
 }
 
 /// Represents a logger.
-pub struct Logger {
+struct Logger {
     stderr_logger: env_logger::Logger,
     stdout_logger: env_logger::Logger,
 }
@@ -337,4 +339,78 @@ fn set_logger(verbose: usize) {
         _ => LevelFilter::Trace,
     };
     Logger::init(level);
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct ResolvableSocketAddrV4 {
+    addr: SocketAddrV4,
+    alias: Option<String>,
+}
+
+impl ResolvableSocketAddrV4 {
+    fn addr(&self) -> SocketAddrV4 {
+        self.addr
+    }
+}
+
+impl Display for ResolvableSocketAddrV4 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.alias {
+            Some(alias) => write!(f, "{} ({})", alias, self.addr),
+            None => write!(f, "{}", self.addr),
+        }
+    }
+}
+
+impl FromStr for ResolvableSocketAddrV4 {
+    type Err = AddrParseError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let has_alias;
+        let addr = match s.parse() {
+            Ok(addr) => {
+                has_alias = false;
+
+                addr
+            }
+            Err(e) => {
+                has_alias = true;
+
+                let v: Vec<_> = s.split(":").collect();
+                if v.len() != 2 {
+                    return Err(e);
+                }
+
+                let port = match v[1].parse() {
+                    Ok(port) => port,
+                    Err(_) => return Err(e),
+                };
+                let ip = match dns_lookup::lookup_host(v[0]) {
+                    Ok(addrs) => {
+                        let mut ip = None;
+
+                        for addr in addrs {
+                            if let IpAddr::V4(addr) = addr {
+                                ip = Some(addr);
+                                break;
+                            }
+                        }
+
+                        match ip {
+                            Some(ip) => ip,
+                            None => return Err(e),
+                        }
+                    }
+                    Err(_) => return Err(e),
+                };
+
+                SocketAddrV4::new(ip, port)
+            }
+        };
+
+        let alias = match has_alias {
+            true => Some(String::from_str(s).unwrap()),
+            false => None,
+        };
+        Ok(ResolvableSocketAddrV4 { addr, alias })
+    }
 }

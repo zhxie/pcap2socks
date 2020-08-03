@@ -293,7 +293,7 @@ impl Forwarder {
                 .insert((src, dst), Vec::from(&sacks[..size]));
             let mut desc = format!("[{}, {}]", sacks[0].0, sacks[0].1);
             if sacks.len() > 1 {
-                desc += format!(" and {} more", sacks.len() - 1).as_str();
+                desc.push_str(format!(" and {} more", sacks.len() - 1).as_str());
             }
             trace!("set TCP sack of {} -> {} to {}", dst, src, desc);
         }

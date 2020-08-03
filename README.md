@@ -60,17 +60,17 @@ pcap2socks -s <ADDRESS>... -p <ADDRESS> -d <ADDRESS>
 
 ## Troubleshoot
 
-1. Because the packet sent from the source should be handled by pcap2socks only, you have to disable IP forward or configure the firewall with the following command statement. For more information, please refer to the troubleshoot paragraph in [IkaGo](https://github.com/zhxie/ikago#troubleshoot).
+1. Because the packet sent from sources should only be handled by pcap2socks, you have to disable IP forward or configure the firewall with the following command statement. For more information, please refer to the troubleshoot paragraph in [IkaGo](https://github.com/zhxie/ikago#troubleshoot).
 
    ```
-   // Linux (use pcap2socks with proxy ARP)
+   // Linux
    sysctl -w net.ipv4.ip_forward=0
 
-   // macOS (use pcap2socks with proxy ARP)
+   // macOS
    sysctl -w net.inet.ip.forwarding=0
    ```
 
-2. pcap2socks requires root permission in some OS by default. But you can run pcap2socks in non-root by running the following command statement before opening pcap2socks.
+2. pcap2socks requires root permission in some OS by default. But you can run pcap2socks in non-root by executing the following command before opening pcap2socks.
    ```
    // Linux
    setcap cap_net_raw+ep path_to_pcap2socks
