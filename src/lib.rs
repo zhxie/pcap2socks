@@ -1516,7 +1516,6 @@ impl Redirector {
 
     async fn handle_ipv4(&mut self, indicator: &Indicator, frame: &[u8]) -> io::Result<()> {
         if let Some(ipv4) = indicator.ipv4() {
-            let frame_without_padding = &frame[..indicator.content_len()];
             if self.src_ip_addrs.contains(&ipv4.src()) {
                 debug!(
                     "receive from pcap: {} ({} + {} Bytes)",
@@ -1537,6 +1536,7 @@ impl Redirector {
                     );
                 }
 
+                let frame_without_padding = &frame[..indicator.content_len()];
                 if ipv4.is_fragment() {
                     // Fragmentation
                     let frag = match self.defrag.add(indicator, frame_without_padding) {

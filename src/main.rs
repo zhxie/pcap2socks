@@ -165,7 +165,9 @@ fn show_info(ip_addr: &Ipv4Addr, gateway: &Ipv4Addr, mtu: usize) {
 
     let mut prefix: u8 = 0;
     for p in 0u8..32 {
-        if mask_value % 2 == 0 {
+        // [RFC 3021](https://tools.ietf.org/html/rfc3021) defines the CIDR prefix /31 is used for
+        // P2P link only
+        if mask_value % 2 == 0 || p == 1 {
             prefix = p + 1;
         }
         mask_value >>= 1;

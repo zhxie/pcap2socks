@@ -16,7 +16,9 @@ This is the development documentation of pcap2socks.
 
 - pcap2socks does not realize the timestamp ([RFC 7323](https://www.iana.org/go/rfc7323)) option. Since only the source and destination know the full information of the traffic, pcap2socks may not trace any packet and report its timestamp correctly.
 
-- pcap2socks sends all TCP data in `TCP_NODELAY` since pcap2socks owns no timers.
+- pcap2socks sends all TCP data in `TCP_NODELAY` since pcap2socks owns no timers in its transmitters.
+
+- pcap2socks does not handle broadcasts.
 
 ## Hard-Coded Options
 
