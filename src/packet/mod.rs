@@ -348,86 +348,79 @@ const EXPIRE_TIME: u128 = 10000;
 pub struct Fragmentation {
     ethernet: Ethernet,
     ipv4: Ipv4,
-    transport: Option<Layers>,
     buffer: Vec<u8>,
-    last_seen: Instant,
     length: usize,
+    total_length: Option<usize>,
+    last_seen: Instant,
 }
 
 impl Fragmentation {
     /// Creates a `Fragmentation`.
     pub fn new(indicator: &Indicator) -> Option<Fragmentation> {
-        let new_ipv4 = match indicator.ipv4() {
-            Some(ref ipv4) => Ipv4::defrag(ipv4),
-            None => return None,
-        };
         let ethernet = match indicator.ethernet() {
             Some(ethernet) => ethernet,
             None => return None,
         };
-
-        let mut frag = Fragmentation {
-            ethernet: ethernet.clone(),
-            ipv4: new_ipv4.clone(),
-            transport: None,
-            buffer: vec![0; u16::MAX as usize],
-            last_seen: Instant::now(),
-            length: 0,
+        let ipv4 = match indicator.ipv4() {
+            Some(ipv4) => ipv4,
+            None => return None,
         };
 
-        // Indicator
-        let new_indicator = Indicator::new(
-            Layers::Ethernet(ethernet.clone()),
-            Some(Layers::Ipv4(new_ipv4)),
-            None,
-        );
-
-        // Serialize
-        if let Err(_) = new_indicator.serialize(&mut frag.buffer[0..]) {
-            return None;
-        }
+        let frag = Fragmentation {
+            ethernet: ethernet.clone(),
+            ipv4: ipv4.clone(),
+            buffer: vec![0; u16::MAX as usize],
+            length: 0,
+            total_length: None,
+            last_seen: Instant::now(),
+        };
 
         Some(frag)
     }
 
     /// Adds a fragmentation.
     pub fn add(&mut self, indicator: &Indicator, payload: &[u8]) {
-        // Transport
-        if let None = self.transport {
-            if let Some(transport) = indicator.transport() {
-                self.transport = Some(transport.clone());
-            }
-        }
-
         // Payload
         let ipv4 = match indicator.ipv4() {
             Some(ipv4) => ipv4,
             None => return,
         };
         let offset = (ipv4.fragment_offset() as usize) * 8;
-        let header_size = self.ethernet.len() + self.ipv4.len();
+        if !ipv4.is_more_fragment() {
+            self.total_length = Some(offset + payload.len());
+        }
 
-        self.buffer[header_size + offset..header_size + offset + payload.len()]
-            .copy_from_slice(payload);
+        self.buffer[offset..offset + payload.len()].copy_from_slice(payload);
         self.length += payload.len();
     }
 
-    /// Concatenates fragmentations and returns an indicator of the frame and the frame itself.
-    pub fn concatenate(&self) -> (Indicator, &[u8]) {
-        let new_indicator = Indicator::new(
-            Layers::Ethernet(self.ethernet.clone()),
-            Some(Layers::Ipv4(self.ipv4.clone())),
-            self.transport.clone(),
-        );
+    /// Concatenates fragmentations and returns the transport layer and the payload.
+    pub fn concatenate(&self) -> (Option<Layers>, &[u8]) {
+        let transport = match self.ipv4.next_level_protocol() {
+            IpNextHeaderProtocols::Tcp => match TcpPacket::new(&self.buffer[..self.length]) {
+                Some(ref tcp_packet) => Some(Layers::Tcp(Tcp::parse(tcp_packet, &self.ipv4))),
+                None => None,
+            },
+            IpNextHeaderProtocols::Udp => match UdpPacket::new(&self.buffer[..self.length]) {
+                Some(ref udp_packet) => Some(Layers::Udp(Udp::parse(udp_packet, &self.ipv4))),
+                None => None,
+            },
+            _ => None,
+        };
 
-        let header_size = self.ethernet.len() + self.ipv4.len();
-
-        (new_indicator, &self.buffer[0..header_size + self.length])
+        let header_size = match &transport {
+            Some(transport) => transport.len(),
+            None => 0,
+        };
+        (transport, &self.buffer[header_size..self.length])
     }
 
     /// Returns if the fragmentation is completed.
     pub fn is_completed(&self) -> bool {
-        self.length == self.ipv4.total_length() as usize - self.ipv4.len()
+        match self.total_length {
+            Some(total_length) => self.length == total_length,
+            None => false,
+        }
     }
 
     /// Returns if the fragmentation is expired.

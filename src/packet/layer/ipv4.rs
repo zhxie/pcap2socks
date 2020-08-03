@@ -1,7 +1,7 @@
 //! Support for serializing and deserializing the IPv4 layer.
 
 use super::{Layer, LayerKind, LayerKinds};
-use pnet::packet::ip::IpNextHeaderProtocols;
+use pnet::packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
 use pnet::packet::ipv4::{self, Ipv4Flags, Ipv4OptionPacket, Ipv4Packet, MutableIpv4Packet};
 use std::clone::Clone;
 use std::fmt::{self, Display, Formatter};
@@ -104,29 +104,6 @@ impl Ipv4 {
         Ipv4::from(d_ipv4)
     }
 
-    /// Creates an `Ipv4` without fragmentation according to an `Ipv4`.
-    pub fn defrag(ipv4: &Ipv4) -> Ipv4 {
-        Ipv4 {
-            layer: ipv4::Ipv4 {
-                version: ipv4.layer.version,
-                header_length: ipv4.layer.header_length,
-                dscp: ipv4.layer.dscp,
-                ecn: ipv4.layer.ecn,
-                total_length: ipv4.layer.total_length,
-                identification: ipv4.identification(),
-                flags: 0,
-                fragment_offset: 0,
-                ttl: ipv4.layer.ttl,
-                next_level_protocol: ipv4.layer.next_level_protocol,
-                checksum: 0,
-                source: ipv4.src(),
-                destination: ipv4.dst(),
-                options: ipv4.layer.options.clone(),
-                payload: vec![],
-            },
-        }
-    }
-
     /// Get the total length of the layer.
     pub fn total_length(&self) -> u16 {
         self.layer.total_length
@@ -150,6 +127,11 @@ impl Ipv4 {
     /// Returns if the layer is a IPv4 fragment.
     pub fn is_fragment(&self) -> bool {
         self.is_more_fragment() || self.fragment_offset() > 0
+    }
+
+    /// Returns the next level protocol of the layer.
+    pub fn next_level_protocol(&self) -> IpNextHeaderProtocol {
+        self.layer.next_level_protocol
     }
 
     /// Get the source of the layer.

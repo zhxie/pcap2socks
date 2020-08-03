@@ -1543,18 +1543,12 @@ impl Redirector {
                         Some(frag) => frag,
                         None => return Ok(()),
                     };
-                    let (indicator, frame_without_padding) = frag.concatenate();
+                    let (transport, payload) = frag.concatenate();
 
-                    if let Some(transport) = indicator.transport() {
+                    if let Some(transport) = transport {
                         match transport {
-                            Layers::Tcp(tcp) => {
-                                self.handle_tcp(&tcp, &frame_without_padding[indicator.len()..])
-                                    .await?
-                            }
-                            Layers::Udp(udp) => {
-                                self.handle_udp(&udp, &frame_without_padding[indicator.len()..])
-                                    .await?
-                            }
+                            Layers::Tcp(tcp) => self.handle_tcp(&tcp, &payload).await?,
+                            Layers::Udp(udp) => self.handle_udp(&udp, &payload).await?,
                             _ => unreachable!(),
                         }
                     }
@@ -1579,17 +1573,17 @@ impl Redirector {
         Ok(())
     }
 
-    async fn handle_tcp(&mut self, tcp: &Tcp, frame: &[u8]) -> io::Result<()> {
+    async fn handle_tcp(&mut self, tcp: &Tcp, payload: &[u8]) -> io::Result<()> {
         if tcp.is_rst() {
             self.handle_tcp_rst(tcp);
         } else if tcp.is_ack() {
-            self.handle_tcp_ack(tcp, frame).await?;
+            self.handle_tcp_ack(tcp, payload).await?;
         } else if tcp.is_syn() {
             // Pure TCP SYN
             self.handle_tcp_syn(tcp).await?;
         } else if tcp.is_fin() {
             // Pure TCP FIN
-            self.handle_tcp_fin(tcp, frame)?;
+            self.handle_tcp_fin(tcp, payload)?;
         } else {
             unreachable!();
         }
