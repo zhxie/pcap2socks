@@ -1927,36 +1927,9 @@ impl Redirector {
 
     async fn handle_udp(&mut self, udp: &Udp, payload: &[u8]) -> io::Result<()> {
         let src = SocketAddrV4::new(udp.src_ip_addr(), udp.src());
-        let mut port = self.get_local_udp_port(&src);
 
         // Bind
-        let is_create;
-        let is_set;
-        if port == 0 {
-            is_create = true;
-            is_set = false;
-        } else {
-            let worker = self.datagrams.get(&port).unwrap();
-            is_create = worker.is_closed();
-            is_set = worker.src() != src;
-        }
-        if is_create {
-            // Bind
-            let (worker, bind_port) =
-                DatagramWorker::bind(self.get_tx(), src, self.remote, &self.options).await?;
-            self.datagrams.insert(bind_port, worker);
-
-            // Update map and LRU
-            self.datagram_map.insert(src, bind_port);
-            self.udp_lru.put(bind_port, src);
-
-            port = bind_port;
-
-            trace!("bind UDP port {} = {}", port, src);
-        } else if is_set {
-            // Replace
-            self.datagrams.get_mut(&port).unwrap().set_src(&src);
-        }
+        let port = self.bind_local_udp_port(src).await?;
 
         // Send
         self.datagrams
@@ -2043,32 +2016,57 @@ impl Redirector {
         Arc::clone(&self.tx)
     }
 
-    fn get_local_udp_port(&mut self, src: &SocketAddrV4) -> u16 {
+    async fn bind_local_udp_port(&mut self, src: SocketAddrV4) -> io::Result<u16> {
         let local_port = self.datagram_map.get(&src);
         match local_port {
             Some(&local_port) => {
                 // Update LRU
                 self.udp_lru.get(&local_port);
 
-                local_port
+                Ok(local_port)
             }
             None => {
-                if self.udp_lru.len() < self.udp_lru.cap() {
-                    0
+                let bind_port = if self.udp_lru.len() < self.udp_lru.cap() {
+                    match DatagramWorker::bind(self.get_tx(), src, self.remote, &self.options).await
+                    {
+                        Ok((worker, port)) => {
+                            self.datagrams.insert(port, worker);
+
+                            // Update map and LRU
+                            self.datagram_map.insert(src, port);
+                            self.udp_lru.put(port, src);
+
+                            trace!("bind UDP port {} = {}", port, src);
+
+                            Ok(port)
+                        }
+                        Err(e) => Err(e),
+                    }
                 } else {
-                    let pair = self.udp_lru.pop_lru().unwrap();
-                    let local_port = pair.0;
-                    let prev_src = pair.1;
+                    Err(io::Error::new(io::ErrorKind::Other, "cannot bind UDP port"))
+                };
 
-                    // Reuse
-                    self.datagram_map.remove(&prev_src);
-                    trace!("reuse UDP port {} = {} to {}", local_port, prev_src, src);
-                    self.datagram_map.insert(src.clone(), local_port);
+                match bind_port {
+                    Ok(port) => Ok(port),
+                    Err(e) => {
+                        if self.udp_lru.is_empty() {
+                            Err(e)
+                        } else {
+                            let pair = self.udp_lru.pop_lru().unwrap();
+                            let port = pair.0;
+                            let prev_src = pair.1;
 
-                    // Update LRU
-                    self.udp_lru.put(local_port, src.clone());
+                            // Reuse
+                            self.datagram_map.remove(&prev_src);
+                            trace!("reuse UDP port {} = {} to {}", port, prev_src, src);
+                            self.datagram_map.insert(src.clone(), port);
 
-                    local_port
+                            // Update LRU
+                            self.udp_lru.put(port, src.clone());
+
+                            Ok(port)
+                        }
+                    }
                 }
             }
         }
