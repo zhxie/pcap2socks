@@ -38,9 +38,7 @@ pcap2socks -s <ADDRESS>... -p <ADDRESS> -d <ADDRESS>
 
 `-V, --version`: Prints version information.
 
-`--force-associate-destination`: Force to associate with the destination. If this flag is set, pcap2socks will associate with the destination instead of the replied bind address from a SOCKS5 UDP ASSOCIATE. You are supposed to set this flag when the SOCKS5 server is behind a NAT which will translate address `OuterIP:Port` to `InnerIP:Port`.
-
-`--force-associate-bind-address`: Force to associate with the replied bind address. If this flag is set, pcap2socks will associate with the replied bind address from a SOCKS5 UDP ASSOCIATE. By default, pcap2socks will automatically bind the destination instead if the replied bind address is in a private network ([RFC 1918](https://tools.ietf.org/html/rfc1918)).
+`--force-associate-destination`, `--force-associate-bind-address`: Force to associate with the destination/replied bind address. pcap2socks will associate with the destination instead of the replied bind address in UDP ASSOCIATE if the replied bind address is in the private network by default. If this flag is set, pcap2socks will force to associate with the destination/replied bind address. If both flags are set, the `--force-associate-destination` will take effect.
 
 ### Options
 

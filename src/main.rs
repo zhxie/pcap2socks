@@ -248,6 +248,7 @@ struct Flags {
     #[structopt(
         long = "force-associate-destination",
         help = "Force to associate with the destination",
+        conflicts_with("force_associate_bind_addr"),
         display_order(1000)
     )]
     pub force_associate_dst: bool,

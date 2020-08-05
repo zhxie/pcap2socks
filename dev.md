@@ -24,7 +24,7 @@ This is the development documentation of pcap2socks.
 
 ### Differences with the Standard [RFC 1928](https://tools.ietf.org/html/rfc1928) and Its Updates
 
-- pcap2socks will connect using destination instead of the replied bind address in UDP ASSOCIATE if the replied bind address is in the private network ([RFC 1918](https://tools.ietf.org/html/rfc1918)) by default.
+- pcap2socks will associate with the destination instead of the replied bind address in UDP ASSOCIATE if the replied bind address is in the private network ([RFC 1918](https://tools.ietf.org/html/rfc1918)) by default.
 
 - pcap2socks only supports SOCKS5 authentication methods no authentication and username/password authentication.
 
