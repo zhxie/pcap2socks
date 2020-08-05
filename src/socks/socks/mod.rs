@@ -1,6 +1,6 @@
 use async_socks5::{self, AddrKind, Auth};
 use log::trace;
-use std::net::{Ipv4Addr, SocketAddrV4};
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::Arc;
 use tokio::io::{self, BufStream};
 use tokio::net::udp::{RecvHalf, SendHalf};
@@ -24,14 +24,20 @@ impl SocksAuth {
 #[derive(Clone, Debug)]
 pub struct SocksOption {
     force_associate_remote: bool,
+    force_associate_bind_addr: bool,
     auth: Option<SocksAuth>,
 }
 
 impl SocksOption {
     /// Creates a `SocksOption`.
-    pub fn new(force_associate_remote: bool, auth: Option<SocksAuth>) -> SocksOption {
+    pub fn new(
+        force_associate_remote: bool,
+        force_associate_bind_addr: bool,
+        auth: Option<SocksAuth>,
+    ) -> SocksOption {
         SocksOption {
             force_associate_remote,
+            force_associate_bind_addr: force_associate_bind_addr,
             auth,
         }
     }
@@ -178,17 +184,30 @@ pub async fn bind(
         _ => unimplemented!(),
     };
     let (stream, socket) = datagram.into_inner();
-    // Force to associate with the remote address
-    if options.force_associate_remote {
+
+    // Rewrite ASSOCIATE address
+    let is_rewrite = options.force_associate_remote
+        || match proxy_addr {
+            SocketAddr::V4(proxy_addr) => match options.force_associate_bind_addr {
+                true => false,
+                false => proxy_addr.ip().is_private(),
+            },
+            SocketAddr::V6(_) => match options.force_associate_bind_addr {
+                true => panic!("IPv6 is not supported yet"),
+                false => true,
+            },
+        };
+    if is_rewrite {
         let next_proxy_addr = SocketAddrV4::new(remote.ip().clone(), proxy_addr.port());
         socket.connect(next_proxy_addr).await?;
 
         trace!(
-            "overwrite ASSOCIATE address {} to {}",
+            "rewrite ASSOCIATE address {} to {}",
             proxy_addr,
             next_proxy_addr
         );
     }
+
     let (socket_rx, socket_tx) = socket.split();
 
     let a_stream = Arc::new(stream);

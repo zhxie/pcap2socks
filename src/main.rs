@@ -137,6 +137,7 @@ async fn main() {
         publish,
         flags.dst.addr(),
         flags.force_associate_dst,
+        flags.force_associate_bind_addr,
         auth,
     );
     let srcs_str = srcs
@@ -250,6 +251,12 @@ struct Flags {
         display_order(1000)
     )]
     pub force_associate_dst: bool,
+    #[structopt(
+        long = "force-associate-bind-address",
+        help = "Force to associate with the replied bind address",
+        display_order(1001)
+    )]
+    pub force_associate_bind_addr: bool,
     #[structopt(
         long,
         help = "Username",

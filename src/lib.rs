@@ -1410,6 +1410,7 @@ impl Redirector {
         local_ip_addr: Option<Ipv4Addr>,
         remote: SocketAddrV4,
         force_associate_dst: bool,
+        force_associate_bind_addr: bool,
         auth: Option<(String, String)>,
     ) -> Redirector {
         let auth = match auth {
@@ -1422,7 +1423,7 @@ impl Redirector {
             src_ip_addrs,
             local_ip_addr,
             remote,
-            options: SocksOption::new(force_associate_dst, auth),
+            options: SocksOption::new(force_associate_dst, force_associate_bind_addr, auth),
             streams: HashMap::new(),
             tcp_recv_next_map: HashMap::new(),
             tcp_duplicate_map: HashMap::new(),
