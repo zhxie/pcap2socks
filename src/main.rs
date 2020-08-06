@@ -157,26 +157,22 @@ async fn main() {
 fn show_info(ip_addr: &Ipv4Addr, gateway: &Ipv4Addr, mtu: usize) {
     let ip_addr_octets = ip_addr.octets();
     let gateway_octets = gateway.octets();
-    let mut mask_value = u32::from_be_bytes([
+
+    // Mask, align to 8 bytes
+    let mut mask_octets = [
         !(ip_addr_octets[0] ^ gateway_octets[0]),
         !(ip_addr_octets[1] ^ gateway_octets[1]),
         !(ip_addr_octets[2] ^ gateway_octets[2]),
         !(ip_addr_octets[3] ^ gateway_octets[3]),
-    ]);
-
-    let mut prefix: u8 = 0;
-    for p in 0u8..32 {
-        // [RFC 3021](https://tools.ietf.org/html/rfc3021) defines the CIDR prefix /31 is used for
-        // P2P link only
-        if mask_value % 2 == 0 || p == 1 {
-            prefix = p + 1;
+    ];
+    let mut is_zero = false;
+    mask_octets.iter_mut().for_each(|b| {
+        if is_zero || *b != u8::MAX {
+            *b = 0;
+            is_zero = true;
         }
-        mask_value >>= 1;
-    }
-    let mask_value = match prefix {
-        32 => 0,
-        _ => u32::MAX << prefix,
-    };
+    });
+    let mask_value = u32::from_be_bytes(mask_octets);
     let mask = Ipv4Addr::from(mask_value);
 
     info!("    ┌─{:─<10}─{:─>15}─┐", "", "");
