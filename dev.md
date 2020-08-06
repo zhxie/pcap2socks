@@ -10,7 +10,7 @@ This is the development documentation of pcap2socks.
 
 - pcap2socks dost not support broadcasting.
 
-- pcap2socks will send packets with a TTL of 128 regardless of the TTL from the received packets.
+- pcap2socks will send packets with a TTL of `128` regardless of the TTL from the received packets.
 
 ## TCP Implementation
 
@@ -102,6 +102,6 @@ pcap2socks has some defects in the view of engineering.
 
 - pcap2socks works like a router but will redirect all traffic including local traffic, so local connections through pcap2socks and broadcasts will not work properly.
 
-- The structure of the `Redirector`, the `SocksStream` & `SocksDatagram` and the `Forwarder` looks like a chaos. Caches and states should be located in the `SocksStream` & `SocksDatagram` instead of the `Redirector` and the `Forwarder`.
+- The structure of the `Redirector`, the `StreamWorker` & `DatagramWorker` and the `Forwarder` looks like a chaos. Caches and states should be located in the `StreamWorker` & `DatagramWorker` instead of the `Redirector` and the `Forwarder`.
 
 - pcap2socks cannot close gracefully, all the data in the receive and send cache will be dropped. The connections will be closed (or shutdown, depending on the kernel or the OS) immediately.
