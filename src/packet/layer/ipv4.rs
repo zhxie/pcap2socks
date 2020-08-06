@@ -8,6 +8,8 @@ use std::fmt::{self, Display, Formatter};
 use std::io;
 use std::net::Ipv4Addr;
 
+const TTL: u8 = 128;
+
 /// Represents an IPv4 layer.
 #[derive(Clone, Debug)]
 pub struct Ipv4 {
@@ -31,7 +33,7 @@ impl Ipv4 {
             identification,
             flags: 0,
             fragment_offset: 0,
-            ttl: 128,
+            ttl: TTL,
             next_level_protocol,
             checksum: 0,
             source: src,

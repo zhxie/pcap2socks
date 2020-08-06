@@ -2,6 +2,16 @@
 
 This is the development documentation of pcap2socks.
 
+## IPv4 Implementation
+
+### Differences with the Standard [RFC 791](https://tools.ietf.org/html/rfc791) and Its Updates
+
+- pcap2socks does not support ICMPv4.
+
+- pcap2socks dost not support broadcasting.
+
+- pcap2socks will send packets with a TTL of 128 regardless of the TTL from the received packets.
+
 ## TCP Implementation
 
 ### Differences with the Standard [RFC 793](https://tools.ietf.org/html/rfc793) and Its Updates
@@ -17,8 +27,6 @@ This is the development documentation of pcap2socks.
 - pcap2socks does not realize the timestamp ([RFC 7323](https://www.iana.org/go/rfc7323)) option. Since only the source and destination know the full information of the traffic, pcap2socks may not trace any packet and report its timestamp correctly.
 
 - pcap2socks sends all TCP data in `TCP_NODELAY` since pcap2socks owns no timers in its transmitters.
-
-- pcap2socks does not handle broadcasts.
 
 ## SOCKS5 Implementation
 
