@@ -26,8 +26,6 @@ This is the development documentation of pcap2socks.
 
 - pcap2socks does not realize the timestamp ([RFC 7323](https://www.iana.org/go/rfc7323)) option. Since only the source and destination know the full information of the traffic, pcap2socks may not trace any packet and report its timestamp correctly.
 
-- pcap2socks sends all TCP data in `TCP_NODELAY` since pcap2socks owns no timers in its transmitters.
-
 ## SOCKS5 Implementation
 
 ### Differences with the Standard [RFC 1928](https://tools.ietf.org/html/rfc1928) and Its Updates
@@ -64,7 +62,7 @@ This is the development documentation of pcap2socks.
 
 `MAX_U32_WINDOW_SIZE`: Represents the max distance of u32 values between packets in an u32 window. Data with sequence `1000` and sequence `101000` may be recognized as increment but discontinuous, but data with sequence `101000` and `1000` may be recognized as expired or out of order. The former example's seconds data will be pushed into the cache, while the latter's will be dropped. Default as `16777216` Bytes, or 16 MB.
 
-`INITIAL_SIZE` Represents the initial size of cache. Default as `65536` Bytes, or 64 kB.
+`INITIAL_SIZE`: Represents the initial size of cache. Default as `65536` Bytes, or 64 kB.
 
 `EXPANSION_FACTOR`: Represents the expansion factor of the cache. The cache will be expanded by the factor if it is full. An expansion factor between 1 and 2 is reasonable. Default as `1.5`.
 
@@ -76,9 +74,11 @@ This is the development documentation of pcap2socks.
 
 `RECV_WINDOW`: Represents the receive window size. The actual window will be multiplied by `wscale`. Default as `65535` Bytes.
 
-`ENABLE_RECV_SWS_AVOID`: Represents if the receive-side silly window syndrome ([RFC 1122](https://tools.ietf.org/html/rfc1122)) avoidance is enabled. Default as `true`.
+`ENABLE_RECV_SWS_AVOID`: Represents if the receive-side silly window syndrome avoidance ([RFC 1122](https://tools.ietf.org/html/rfc1122)) is enabled. Default as `true`.
 
-`ENABLE_SEND_SWS_AVOID`: Represents if the send-side silly window syndrome ([RFC 896](https://tools.ietf.org/html/rfc896)) avoidance is enabled. Default as `true`.
+`ENABLE_SEND_SWS_AVOID`: Represents if the send-side silly window syndrome avoidance ([RFC 896](https://tools.ietf.org/html/rfc896)) is enabled. Default as `true`.
+
+`ENABLE_RTO_COMPUTE`: Represents if the RTO computation ([RFC 6298](https://tools.ietf.org/html/rfc6298)) is enabled. Default as `true`.
 
 `INITIAL_RTO`: Represents the initial timeout for a retransmission in a TCP connection. Default as `1000` ms.
 
@@ -103,8 +103,6 @@ This is the development documentation of pcap2socks.
 ## Defects
 
 pcap2socks has some defects in the view of engineering.
-
-- The RTO computation method implemented in pcap2socks is based on [RFC 6298](https://tools.ietf.org/html/rfc6298), which is outdated at the moment.
 
 - Because pcap2socks does not implement the TCP congestion control, the traffic transmission performance may be lost. However, since pcap2socks is mainly used in LANs, the actual impact may be minimal.
 

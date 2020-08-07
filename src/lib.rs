@@ -97,6 +97,8 @@ const ENABLE_RECV_SWS_AVOID: bool = true;
 /// Represents if the send-side silly window syndrome avoidance is enabled.
 const ENABLE_SEND_SWS_AVOID: bool = true;
 
+/// Represents if the RTO computation is enabled.
+const ENABLE_RTO_COMPUTE: bool = true;
 /// Represents the initial timeout for a retransmission in a TCP connection.
 const INITIAL_RTO: u64 = 1000;
 /// Represents the minimum timeout for a retransmission in a TCP connection.
@@ -391,10 +393,12 @@ impl Forwarder {
     }
 
     fn set_tcp_rto(&mut self, dst: SocketAddrV4, src: SocketAddrV4, rto: u64) {
-        let rto = min(MAX_RTO, max(MIN_RTO, rto));
+        if ENABLE_RTO_COMPUTE {
+            let rto = min(MAX_RTO, max(MIN_RTO, rto));
 
-        self.tcp_rto_map.insert((src, dst), rto);
-        trace!("set TCP RTO of {} -> {} to {}", dst, src, rto);
+            self.tcp_rto_map.insert((src, dst), rto);
+            trace!("set TCP RTO of {} -> {} to {}", dst, src, rto);
+        }
     }
 
     fn double_tcp_rto(&mut self, dst: SocketAddrV4, src: SocketAddrV4) {
