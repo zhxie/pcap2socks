@@ -1,4 +1,5 @@
 use env_logger::fmt::{Color, Formatter, Target};
+use ipnetwork::Ipv4Network;
 use log::{error, info, warn, Level, LevelFilter, Log, Metadata, Record};
 use std::clone::Clone;
 use std::fmt::Display;
@@ -46,34 +47,24 @@ async fn main() {
     info!("Use MTU {}", mtu);
 
     // Route
-    let mut srcs = match flags.preset {
+    let src = match flags.preset {
         Some(ref preset) => match preset.as_str() {
-            "t" | "tencent" => {
-                let mut srcs = Vec::new();
-                srcs.push(Ipv4Addr::new(10, 6, 0, 1));
-
-                srcs
-            }
+            "t" | "tencent" => Ipv4Network::new(Ipv4Addr::new(10, 6, 0, 1), 32).unwrap(),
             "n" | "netease" | "u" | "uu" => {
-                let mut srcs = Vec::new();
-
                 let mut ip_octets = inter.ip_addr().unwrap().octets();
                 ip_octets[0] = 172;
                 ip_octets[1] = 24;
                 ip_octets[2] = ip_octets[2].checked_add(1).unwrap_or(0);
 
-                srcs.push(Ipv4Addr::from(ip_octets));
-
-                srcs
+                Ipv4Network::new(Ipv4Addr::from(ip_octets), 32).unwrap()
             }
             _ => {
                 error!("The preset {} is not available", preset);
                 return;
             }
         },
-        None => flags.srcs.unwrap(),
+        None => flags.src.unwrap(),
     };
-    srcs.dedup();
     let publish = match flags.preset {
         Some(ref preset) => match preset.as_str() {
             "t" | "tencent" => Some(Ipv4Addr::new(10, 6, 0, 2)),
@@ -91,21 +82,6 @@ async fn main() {
         },
         None => flags.publish,
     };
-    let srcs_set = srcs.iter().map(|i| i.clone()).collect();
-    match publish {
-        Some(publish) => {
-            if srcs.contains(&publish) {
-                error!("The sources cannot contain the publish");
-                return;
-            }
-        }
-        None => {
-            if srcs.contains(&inter.ip_addr().unwrap()) {
-                error!("The sources cannot contain the local address");
-                return;
-            }
-        }
-    }
 
     // Publish
     if let Some(publish) = publish {
@@ -113,10 +89,7 @@ async fn main() {
     }
 
     // Instructions
-    info!("Please set the network of your device which is going to be proxied with the following parameters:");
-    for src in &srcs {
-        show_info(src, &publish.unwrap_or(inter.ip_addr().unwrap()), mtu);
-    }
+    show_info(&src, &publish.unwrap_or(inter.ip_addr().unwrap()), mtu);
 
     // Proxy
     let (tx, mut rx) = match inter.open() {
@@ -133,37 +106,44 @@ async fn main() {
     };
     let mut redirector = Redirector::new(
         Arc::new(Mutex::new(forwarder)),
-        srcs_set,
+        src,
+        publish.unwrap_or(inter.ip_addr().unwrap()),
         publish,
         flags.dst.addr(),
         flags.force_associate_dst,
         flags.force_associate_bind_addr,
         auth,
     );
-    let srcs_str = srcs
-        .iter()
-        .map(|i| i.to_string())
-        .collect::<Vec<String>>()
-        .join(", ");
     match flags.username {
-        Some(username) => info!("Proxy {} to {}@{}", srcs_str, username, flags.dst),
-        None => info!("Proxy {} to {}", srcs_str, flags.dst),
+        Some(username) => info!("Proxy {} to {}@{}", src, username, flags.dst),
+        None => info!("Proxy {} to {}", src, flags.dst),
     }
     if let Err(ref e) = redirector.open(&mut rx).await {
         error!("{}", e);
     }
 }
 
-fn show_info(ip_addr: &Ipv4Addr, gateway: &Ipv4Addr, mtu: usize) {
-    let ip_addr_octets = ip_addr.octets();
-    let gateway_octets = gateway.octets();
+fn show_info(src: &Ipv4Network, gw: &Ipv4Addr, mtu: usize) {
+    macro_rules! max {
+        ($x: expr) => ($x);
+        ($x: expr, $($z: expr),+) => (::std::cmp::max($x, max!($($z),*)));
+    }
+
+    let src_str = match src.size() {
+        1 => src.network().to_string(),
+        _ => format!("{} - {}", src.network(), src.nth(src.size() - 1).unwrap()),
+    };
+    let mtu_str = format!("<={}", mtu);
+    let src_octets = src.network().octets();
+    let mask_octets = src.mask().octets();
+    let gw_octets = gw.octets();
 
     // Mask, align to 8 bytes
     let mut mask_octets = [
-        !(ip_addr_octets[0] ^ gateway_octets[0]),
-        !(ip_addr_octets[1] ^ gateway_octets[1]),
-        !(ip_addr_octets[2] ^ gateway_octets[2]),
-        !(ip_addr_octets[3] ^ gateway_octets[3]),
+        !(src_octets[0] ^ gw_octets[0]) & mask_octets[0],
+        !(src_octets[1] ^ gw_octets[1]) & mask_octets[1],
+        !(src_octets[2] ^ gw_octets[2]) & mask_octets[2],
+        !(src_octets[3] ^ gw_octets[3]) & mask_octets[3],
     ];
     let mut is_zero = false;
     mask_octets.iter_mut().for_each(|b| {
@@ -175,13 +155,20 @@ fn show_info(ip_addr: &Ipv4Addr, gateway: &Ipv4Addr, mtu: usize) {
     let mask_value = u32::from_be_bytes(mask_octets);
     let mask = Ipv4Addr::from(mask_value);
 
-    info!("    ┌─{:─<10}─{:─>15}─┐", "", "");
-    info!("    │ {:<10} {:>15} │", "IP Address", ip_addr);
-    info!("    │ {:<10} {:>15} │", "Mask", mask);
-    info!("    │ {:<10} {:>15} │", "Gateway", gateway);
-    info!("    │─{:─<10}─{:─>15}─│", "", "");
-    info!("    │ {:<10} {:>15} │", "MTU", format!("<={}", mtu));
-    info!("    └─{:─<10}─{:─>15}─┘", "", "");
+    let width = max!(
+        src_str.len(),
+        mask.to_string().len(),
+        gw.to_string().len(),
+        mtu_str.len()
+    );
+    info!("Please set the network of your device which is going to be proxied with the following parameters:");
+    info!("    ┌─────────────{:─>w$}─┐", "", w = width);
+    info!("    │ IP Address  {:>w$} │", src_str, w = width);
+    info!("    │ Mask        {:>w$} │", mask, w = width);
+    info!("    │ Gateway     {:>w$} │", gw, w = width);
+    info!("    │─────────────{:─>w$}─│", "", w = width);
+    info!("    │ MTU         {:>w$} │", mtu_str, w = width);
+    info!("    └─────────────{:─>w$}─┘", "", w = width);
     if mask == Ipv4Addr::UNSPECIFIED {
         warn!("The mask is all zeros, which may cause potential problems");
     }
@@ -216,14 +203,14 @@ struct Flags {
     )]
     pub preset: Option<String>,
     #[structopt(
-        long = "sources",
+        long = "source",
         short,
-        help = "Sources",
+        help = "Source",
         value_name = "ADDRESS",
         required_unless("preset"),
         display_order(3)
     )]
-    pub srcs: Option<Vec<Ipv4Addr>>,
+    pub src: Option<Ipv4Network>,
     #[structopt(
         long,
         short,

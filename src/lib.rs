@@ -1,5 +1,6 @@
 //! Redirect traffic to a SOCKS proxy with pcap.
 
+use ipnetwork::Ipv4Network;
 use log::{debug, info, trace, warn};
 use lru::LruCache;
 use rand::{self, Rng};
@@ -1382,8 +1383,9 @@ const MAX_UDP_PORT: usize = 256;
 pub struct Redirector {
     tx: Arc<Mutex<Forwarder>>,
     is_tx_src_hardware_addr_set: bool,
-    src_ip_addrs: HashSet<Ipv4Addr>,
-    local_ip_addr: Option<Ipv4Addr>,
+    src_ip_addr: Ipv4Network,
+    local_ip_addr: Ipv4Addr,
+    gw_ip_addr: Option<Ipv4Addr>,
     remote: SocketAddrV4,
     options: SocksOption,
     streams: HashMap<(SocketAddrV4, SocketAddrV4), StreamWorker>,
@@ -1406,8 +1408,9 @@ impl Redirector {
     /// Creates a new `Redirector`.
     pub fn new(
         tx: Arc<Mutex<Forwarder>>,
-        src_ip_addrs: HashSet<Ipv4Addr>,
-        local_ip_addr: Option<Ipv4Addr>,
+        src_ip_addr: Ipv4Network,
+        local_ip_addr: Ipv4Addr,
+        gw_ip_addr: Option<Ipv4Addr>,
         remote: SocketAddrV4,
         force_associate_dst: bool,
         force_associate_bind_addr: bool,
@@ -1420,8 +1423,9 @@ impl Redirector {
         let redirector = Redirector {
             tx,
             is_tx_src_hardware_addr_set: false,
-            src_ip_addrs,
+            src_ip_addr,
             local_ip_addr,
+            gw_ip_addr,
             remote,
             options: SocksOption::new(force_associate_dst, force_associate_bind_addr, auth),
             streams: HashMap::new(),
@@ -1437,12 +1441,8 @@ impl Redirector {
             udp_lru: LruCache::new(MAX_UDP_PORT),
             defrag: Defraggler::new(),
         };
-        if let Some(local_ip_addr) = local_ip_addr {
-            redirector
-                .tx
-                .lock()
-                .unwrap()
-                .set_local_ip_addr(local_ip_addr);
+        if let Some(gw_ip_addr) = gw_ip_addr {
+            redirector.tx.lock().unwrap().set_local_ip_addr(gw_ip_addr);
         }
 
         redirector
@@ -1483,9 +1483,13 @@ impl Redirector {
     }
 
     fn handle_arp(&mut self, indicator: &Indicator) -> io::Result<()> {
-        if let Some(local_ip_addr) = self.local_ip_addr {
+        if let Some(gw_ip_addr) = self.gw_ip_addr {
             if let Some(arp) = indicator.arp() {
-                if self.src_ip_addrs.contains(&arp.src()) && arp.dst() == local_ip_addr {
+                let src = arp.src();
+                if src != self.local_ip_addr
+                    && self.src_ip_addr.contains(src)
+                    && arp.dst() == gw_ip_addr
+                {
                     debug!(
                         "receive from pcap: {} ({} Bytes)",
                         indicator.brief(),
@@ -1497,17 +1501,17 @@ impl Redirector {
                         self.tx
                             .lock()
                             .unwrap()
-                            .set_src_hardware_addr(arp.src(), arp.src_hardware_addr());
+                            .set_src_hardware_addr(src, arp.src_hardware_addr());
                         self.is_tx_src_hardware_addr_set = true;
                         info!(
                             "Device {} ({}) joined the network",
-                            arp.src(),
+                            src,
                             arp.src_hardware_addr()
                         );
                     }
 
                     // Send
-                    self.tx.lock().unwrap().send_arp_reply(arp.src())?
+                    self.tx.lock().unwrap().send_arp_reply(src)?
                 }
             }
         }
@@ -1517,7 +1521,8 @@ impl Redirector {
 
     async fn handle_ipv4(&mut self, indicator: &Indicator, frame: &[u8]) -> io::Result<()> {
         if let Some(ipv4) = indicator.ipv4() {
-            if self.src_ip_addrs.contains(&ipv4.src()) {
+            let src = ipv4.src();
+            if src != self.local_ip_addr && self.src_ip_addr.contains(src) {
                 debug!(
                     "receive from pcap: {} ({} + {} Bytes)",
                     indicator.brief(),
@@ -1529,7 +1534,7 @@ impl Redirector {
                     self.tx
                         .lock()
                         .unwrap()
-                        .set_src_hardware_addr(ipv4.src(), indicator.ethernet().unwrap().src());
+                        .set_src_hardware_addr(src, indicator.ethernet().unwrap().src());
                     self.is_tx_src_hardware_addr_set = true;
                     info!(
                         "Device {} joined the network",
