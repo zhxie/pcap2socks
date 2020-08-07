@@ -84,11 +84,16 @@ impl Timer {
     }
 }
 
+/// Represents the max distance of `u32` values between packets in an `u32` window.
+const MAX_U32_WINDOW_SIZE: usize = 16 * 1024 * 1024;
+
 /// Represents the wait time after a `TimedOut` `IoError`.
 const TIMEDOUT_WAIT: u64 = 20;
 
-/// Represents the max distance of `u32` values between packets in an `u32` window.
-const MAX_U32_WINDOW_SIZE: usize = 16 * 1024 * 1024;
+/// Represents the receive window size.
+const RECV_WINDOW: u16 = u16::MAX;
+/// Represents if the receive-side silly window syndrome avoidance is enabled.
+const ENABLE_RECV_SWS_AVOID: bool = true;
 
 /// Represents the initial timeout for a retransmission in a TCP connection.
 const INITIAL_RTO: u64 = 1000;
@@ -275,6 +280,23 @@ impl Forwarder {
     pub fn set_tcp_window(&mut self, dst: SocketAddrV4, src: SocketAddrV4, window: u16) {
         self.tcp_window_map.insert((src, dst), window);
         trace!("set TCP window of {} -> {} to {}", dst, src, window);
+    }
+
+    fn get_tcp_window(&self, dst: SocketAddrV4, src: SocketAddrV4) -> u16 {
+        // Receive-side silly window avoidance by [RFC 1122](https://tools.ietf.org/html/rfc1122)
+        let window = *self.tcp_window_map.get(&(src, dst)).unwrap_or(&RECV_WINDOW);
+
+        if ENABLE_RECV_SWS_AVOID {
+            let thresh = min((RECV_WINDOW / 2) as usize, self.local_mtu);
+
+            if (window as usize) < thresh {
+                0
+            } else {
+                window
+            }
+        } else {
+            window
+        }
     }
 
     /// Sets the window scale of a TCP connection.
@@ -852,7 +874,7 @@ impl Forwarder {
                     src.port(),
                     sequence,
                     *self.tcp_acknowledgement_map.get(&key).unwrap_or(&0),
-                    *self.tcp_window_map.get(&key).unwrap_or(&65535),
+                    self.get_tcp_window(dst, src),
                     None,
                 );
                 recv_next = recv_next.checked_add(1).unwrap_or(0);
@@ -863,7 +885,7 @@ impl Forwarder {
                     src.port(),
                     sequence,
                     *self.tcp_acknowledgement_map.get(&key).unwrap_or(&0),
-                    *self.tcp_window_map.get(&key).unwrap_or(&65535),
+                    self.get_tcp_window(dst, src),
                     None,
                     None,
                 );
@@ -902,7 +924,7 @@ impl Forwarder {
             src.port(),
             *self.tcp_sequence_map.get(&key).unwrap_or(&0),
             *self.tcp_acknowledgement_map.get(&key).unwrap_or(&0),
-            *self.tcp_window_map.get(&key).unwrap_or(&65535),
+            self.get_tcp_window(dst, src),
             self.tcp_sacks_map.get(&key),
             None,
         );
@@ -939,7 +961,7 @@ impl Forwarder {
             src.port(),
             *self.tcp_sequence_map.get(&key).unwrap_or(&0),
             *self.tcp_acknowledgement_map.get(&key).unwrap_or(&0),
-            *self.tcp_window_map.get(&key).unwrap_or(&65535),
+            self.get_tcp_window(dst, src),
             mss,
             self.tcp_send_wscale_map.get(&key).cloned(),
             *self.tcp_send_sack_perm_map.get(&key).unwrap_or(&false),
@@ -962,7 +984,7 @@ impl Forwarder {
             src.port(),
             *self.tcp_sequence_map.get(&key).unwrap_or(&0),
             *self.tcp_acknowledgement_map.get(&key).unwrap_or(&0),
-            *self.tcp_window_map.get(&key).unwrap_or(&65535),
+            self.get_tcp_window(dst, src),
             None,
         );
 
@@ -989,7 +1011,7 @@ impl Forwarder {
             src.port(),
             *self.tcp_sequence_map.get(&key).unwrap_or(&0),
             0,
-            *self.tcp_window_map.get(&key).unwrap_or(&65535),
+            self.get_tcp_window(dst, src),
             ts,
         );
 
@@ -1006,7 +1028,7 @@ impl Forwarder {
             src.port(),
             *self.tcp_sequence_map.get(&key).unwrap_or(&0),
             *self.tcp_acknowledgement_map.get(&key).unwrap_or(&0),
-            *self.tcp_window_map.get(&key).unwrap_or(&65535),
+            self.get_tcp_window(dst, src),
             None,
         );
 
@@ -1628,7 +1650,7 @@ impl Redirector {
                 // ACK
                 // Append to cache
                 let cache = self.tcp_cache_map.entry(key).or_insert_with(|| {
-                    Window::with_capacity((u16::MAX as usize) << wscale as usize, tcp.sequence())
+                    Window::with_capacity((RECV_WINDOW as usize) << wscale as usize, tcp.sequence())
                 });
                 let cont_payload = cache.append(tcp.sequence(), payload)?;
                 let cache = self.tcp_cache_map.get(&key).unwrap();

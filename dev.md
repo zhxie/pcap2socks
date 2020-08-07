@@ -10,7 +10,7 @@ This is the development documentation of pcap2socks.
 
 - pcap2socks dost not support broadcasting.
 
-- pcap2socks will send packets with a TTL of `128` regardless of the TTL from the received packets.
+- pcap2socks will send packets with a TTL of `TTL` regardless of the TTL from the received packets.
 
 ## TCP Implementation
 
@@ -38,6 +38,10 @@ This is the development documentation of pcap2socks.
 
 ## Hard-Coded Options
 
+### IPv4
+
+`TTL`: Represents the TTL in the sent packets. Default as `128`.
+
 ### Defragmentation
 
 `EXPIRE_TIME`: Represents the expire time of each group of fragments. The timer will be updated when a new fragment arrived, and all the fragments in the group will be dropped if it reaches the expire time. Default as `10000` ms.
@@ -58,17 +62,21 @@ This is the development documentation of pcap2socks.
 
 ### Cache
 
+`MAX_U32_WINDOW_SIZE`: Represents the max distance of u32 values between packets in an u32 window. Data with sequence `1000` and sequence `101000` may be recognized as increment but discontinuous, but data with sequence `101000` and `1000` may be recognized as expired or out of order. The former example's seconds data will be pushed into the cache, while the latter's will be dropped. Default as `16777216` Bytes, or 16 MB.
+
 `INITIAL_SIZE` Represents the initial size of cache. Default as `65536` Bytes, or 64 kB.
 
 `EXPANSION_FACTOR`: Represents the expansion factor of the cache. The cache will be expanded by the factor if it is full. An expansion factor between 1 and 2 is reasonable. Default as `1.5`.
 
-`MAX_U32_WINDOW_SIZE`: Represents the max distance of u32 values between packets in an u32 window. Data with sequence `1000` and sequence `101000` may be recognized as increment but discontinuous, but data with sequence `101000` and `1000` may be recognized as expired or out of order. The former example's seconds data will be pushed into the cache, while the latter's will be dropped. Default as `16777216` Bytes, or 16 MB.
-
 ### Forwarder & Redirector
+
+`MAX_U32_WINDOW_SIZE`: Same as above. Default as `16777216` Bytes, or 16 MB.
 
 `TIMEOUT_WAIT`: Same as above. Default as `20` ms.
 
-`MAX_U32_WINDOW_SIZE`: Same as above. Default as `16777216` Bytes, or 16 MB.
+`RECV_WINDOW`: Represents the receive window size. The actual window will be multiplied by `wscale`. Default as `65535` Bytes.
+
+`ENABLE_RECV_SWS_AVOID`: Represents if the receive-side silly window syndrome ([RFC 1122](https://tools.ietf.org/html/rfc1122)) avoidance is enabled. Default as `true`.
 
 `INITIAL_RTO`: Represents the initial timeout for a retransmission in a TCP connection. Default as `1000` ms.
 

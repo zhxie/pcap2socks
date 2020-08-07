@@ -8,13 +8,13 @@ use std::time::Duration;
 
 use super::Timer;
 
+/// Represents the max distance of u32 values between packets in an u32 window.
+const MAX_U32_WINDOW_SIZE: usize = 16 * 1024 * 1024;
+
 /// Represents the initial size of cache.
 const INITIAL_SIZE: usize = u16::MAX as usize;
 /// Represents the expansion factor of the cache. The cache will be expanded by the factor.
 const EXPANSION_FACTOR: f64 = 1.5;
-
-/// Represents the max distance of u32 values between packets in an u32 window.
-const MAX_U32_WINDOW_SIZE: usize = 16 * 1024 * 1024;
 
 /// Represents a queue cache. The `Queue` can hold continuos bytes constantly unless they are
 /// invalidated. The `Queue` can be used as a send window of a TCP connection.

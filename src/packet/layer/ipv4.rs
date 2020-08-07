@@ -8,6 +8,7 @@ use std::fmt::{self, Display, Formatter};
 use std::io;
 use std::net::Ipv4Addr;
 
+/// Represents the TTL in the sent packets.
 const TTL: u8 = 128;
 
 /// Represents an IPv4 layer.

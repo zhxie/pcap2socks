@@ -48,7 +48,7 @@ pcap2socks -s <ADDRESS> -p <ADDRESS> -d <ADDRESS>
 
 `-P, --preset <PRESET>`: Preset. You can use preset source and publish of game accelerators in the market. Available values are `t`, `tencent` for [Tencent Online Game Accelerator](https://jiasu.qq.com/) and `n`, `netease`, `u`, `uu` for [Netease UU Game Accelerator](https://uu.163.com/).
 
-`-s, --source <ADDRESS>`: Source. The source can be a single IPv4 address like `192.168.1.2`, or a IPv4 CIDR network like `10.10.0.1/24`.
+`-s, --source <ADDRESS>`: Source. The source can be a single IPv4 address like `192.168.1.2`, or an IPv4 CIDR network like `10.10.0.1/24`.
 
 `-p, --publish <ADDRESS>`: ARP publishing address. If this option is set, pcap2socks will reply ARP request as it owns the specified address which is not on the network, also called proxy ARP.
 
