@@ -1728,12 +1728,11 @@ impl Redirector {
                     None => {
                         // Retransmission or unordered
                         // Update window size
+                        let cache_remaining_size =
+                            (cache.remaining_size() >> wscale as usize) as u16;
+
                         let mut tx_locked = self.tx.lock().unwrap();
-                        tx_locked.set_tcp_window(
-                            dst,
-                            src,
-                            (cache.remaining_size() << wscale as usize) as u16,
-                        );
+                        tx_locked.set_tcp_window(dst, src, cache_remaining_size);
 
                         // Send ACK0
                         tx_locked.send_tcp_ack_0(dst, src)?;
