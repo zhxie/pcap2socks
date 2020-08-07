@@ -446,7 +446,9 @@ impl Forwarder {
         trace!("set TCP RTTVAR of {} -> {} to {}", dst, src, rttvar);
 
         // RTO
-        let rto = srtt.checked_add(max(1, 4 * rttvar)).unwrap_or(u64::MAX);
+        let rto = srtt
+            .checked_add(max(1, rttvar.checked_mul(4).unwrap_or(u64::MAX)))
+            .unwrap_or(u64::MAX);
         self.set_tcp_rto(dst, src, rto);
     }
 
