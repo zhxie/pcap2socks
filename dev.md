@@ -78,6 +78,8 @@ This is the development documentation of pcap2socks.
 
 `ENABLE_RECV_SWS_AVOID`: Represents if the receive-side silly window syndrome ([RFC 1122](https://tools.ietf.org/html/rfc1122)) avoidance is enabled. Default as `true`.
 
+`ENABLE_SEND_SWS_AVOID`: Represents if the send-side silly window syndrome ([RFC 896](https://tools.ietf.org/html/rfc896)) avoidance is enabled. Default as `true`.
+
 `INITIAL_RTO`: Represents the initial timeout for a retransmission in a TCP connection. Default as `1000` ms.
 
 `MIN_RTO`: Represents the minimum timeout for a retransmission in a TCP connection. Default as `1000` ms.

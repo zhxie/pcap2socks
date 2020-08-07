@@ -94,6 +94,8 @@ const TIMEDOUT_WAIT: u64 = 20;
 const RECV_WINDOW: u16 = u16::MAX;
 /// Represents if the receive-side silly window syndrome avoidance is enabled.
 const ENABLE_RECV_SWS_AVOID: bool = true;
+/// Represents if the send-side silly window syndrome avoidance is enabled.
+const ENABLE_SEND_SWS_AVOID: bool = true;
 
 /// Represents the initial timeout for a retransmission in a TCP connection.
 const INITIAL_RTO: u64 = 1000;
@@ -283,9 +285,9 @@ impl Forwarder {
     }
 
     fn get_tcp_window(&self, dst: SocketAddrV4, src: SocketAddrV4) -> u16 {
-        // Receive-side silly window avoidance by [RFC 1122](https://tools.ietf.org/html/rfc1122)
         let window = *self.tcp_window_map.get(&(src, dst)).unwrap_or(&RECV_WINDOW);
 
+        // Avoid SWS
         if ENABLE_RECV_SWS_AVOID {
             let thresh = min((RECV_WINDOW / 2) as usize, self.local_mtu);
 
@@ -784,7 +786,23 @@ impl Forwarder {
                 let remain_size = window.checked_sub(sent_size).unwrap_or(0);
                 let remain_size = min(remain_size, u16::MAX as usize) as u16;
 
-                let size = min(remain_size as usize, queue.len());
+                let mut size = min(remain_size as usize, queue.len());
+                // Avoid SWS
+                if ENABLE_SEND_SWS_AVOID {
+                    // Pseudo headers
+                    let tcp = Tcp::new_ack(0, 0, 0, 0, 0, None, None);
+                    let ipv4 =
+                        Ipv4::new(0, tcp.kind(), Ipv4Addr::UNSPECIFIED, Ipv4Addr::UNSPECIFIED)
+                            .unwrap();
+
+                    let mtu = *self.src_mtu.get(src.ip()).unwrap_or(&self.local_mtu);
+                    let mss = mtu - (ipv4.len() + tcp.len());
+
+                    if size < mss && !cache.is_empty() {
+                        size = 0;
+                    }
+                }
+                let size = size;
                 if size > 0 {
                     let payload: Vec<u8> = queue.drain(..size).collect();
 
