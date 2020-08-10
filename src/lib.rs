@@ -7,7 +7,7 @@ use rand::{self, Rng};
 use std::cmp::{max, min};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::{self, Display};
-use std::net::{Ipv4Addr, SocketAddrV4};
+use std::net::{Ipv4Addr, Shutdown, SocketAddrV4};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -2047,7 +2047,7 @@ impl Redirector {
                     if is_readable {
                         // Close by local
                         let stream = self.streams.get_mut(&key).unwrap();
-                        stream.close();
+                        stream.shutdown(Shutdown::Write);
                     } else {
                         // Close by remote
                         // Clean up

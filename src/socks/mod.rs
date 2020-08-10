@@ -1,7 +1,7 @@
 //! Support for handling SOCKS proxies.
 
 use log::{debug, trace, warn};
-use std::net::{Ipv4Addr, SocketAddrV4};
+use std::net::{Ipv4Addr, Shutdown, SocketAddrV4};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -172,18 +172,23 @@ impl StreamWorker {
         }
     }
 
-    /// Shutdowns the write half of the worker and sends a TCP FIN to the other side.
-    pub fn shutdown_write(&mut self) {
-        if !self.is_write_closed.load(Ordering::Relaxed) {
-            self.stream_tx.take().unwrap().forget();
-            self.is_write_closed.store(true, Ordering::Relaxed);
-            trace!("close stream write {} -> {}", 0, self.dst);
+    /// Shuts down the read, write, or both halves of this connection.
+    pub fn shutdown(&mut self, how: Shutdown) {
+        match how {
+            Shutdown::Write => {
+                if !self.is_write_closed.load(Ordering::Relaxed) {
+                    self.stream_tx.take().unwrap().forget();
+                    self.is_write_closed.store(true, Ordering::Relaxed);
+                    trace!("close stream write {} -> {}", 0, self.dst);
+                }
+            }
+            _ => unreachable!(),
         }
     }
 
     /// Closes the worker.
     pub fn close(&mut self) {
-        self.shutdown_write();
+        self.shutdown(Shutdown::Write);
         self.is_read_closed.store(true, Ordering::Relaxed);
     }
 
