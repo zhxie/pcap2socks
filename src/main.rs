@@ -88,8 +88,15 @@ async fn main() {
         info!("Publish for {}", publish);
     }
 
+    // Gateway
+    let gw = publish.unwrap_or(inter.ip_addr().unwrap());
+    if src.size() == 1 && src.network() == gw {
+        error!("The source cannot be the same with the gateway (publish)");
+        return;
+    }
+
     // Instructions
-    show_info(&src, &publish.unwrap_or(inter.ip_addr().unwrap()), mtu);
+    show_info(src, gw, mtu);
 
     // Proxy
     let (tx, mut rx) = match inter.open() {
@@ -107,7 +114,7 @@ async fn main() {
     let mut redirector = Redirector::new(
         Arc::new(Mutex::new(forwarder)),
         src,
-        publish.unwrap_or(inter.ip_addr().unwrap()),
+        gw,
         publish,
         flags.dst.addr(),
         flags.force_associate_dst,
@@ -123,7 +130,7 @@ async fn main() {
     }
 }
 
-fn show_info(src: &Ipv4Network, gw: &Ipv4Addr, mtu: usize) {
+fn show_info(src: Ipv4Network, gw: Ipv4Addr, mtu: usize) {
     macro_rules! max {
         ($x: expr) => ($x);
         ($x: expr, $($z: expr),+) => (::std::cmp::max($x, max!($($z),*)));

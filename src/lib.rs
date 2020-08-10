@@ -6,6 +6,7 @@ use lru::LruCache;
 use rand::{self, Rng};
 use std::cmp::{max, min};
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::fmt::{self, Display};
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -473,7 +474,7 @@ impl Forwarder {
         if let Some(cache) = self.tcp_cache_map.get(&key) {
             if !cache.is_empty() {
                 trace!(
-                    "TCP cache {} -> {} was removed while the cache is not empty",
+                    "TCP cache {} -> {} was removed while the cache was not empty",
                     dst,
                     src
                 );
@@ -555,7 +556,7 @@ impl Forwarder {
             .or_insert_with(|| VecDeque::new());
         queue.extend(payload);
         trace!(
-            "append {} Bytes to TCP queue {} -> {}",
+            "append {} Bytes to TCP queue of {} -> {}",
             payload.len(),
             dst,
             src
@@ -1409,6 +1410,117 @@ fn disjoint_u32_range(main: (u32, u32), sub: (u32, u32)) -> Vec<(u32, u32)> {
     vector
 }
 
+struct TcpRxState {
+    src: SocketAddrV4,
+    dst: SocketAddrV4,
+    recv_next: u32,
+    duplicate: usize,
+    last_retrans: Option<Instant>,
+    wscale: u8,
+    sack_perm: bool,
+    cache: Window,
+    fin_sequence: Option<u32>,
+}
+
+impl TcpRxState {
+    /// Creates a new `TcpRxState`, the sequence is the sequence in the TCP SYN segment.
+    fn new(
+        src: SocketAddrV4,
+        dst: SocketAddrV4,
+        sequence: u32,
+        wscale: u8,
+        sack_perm: bool,
+    ) -> TcpRxState {
+        let recv_next = sequence.checked_add(1).unwrap_or(0);
+
+        trace!("admit TCP SYN of {} -> {}", src, dst);
+
+        TcpRxState {
+            src,
+            dst,
+            recv_next,
+            duplicate: 0,
+            last_retrans: None,
+            wscale,
+            sack_perm,
+            cache: Window::with_capacity((RECV_WINDOW as usize) << wscale as usize, recv_next),
+            fin_sequence: None,
+        }
+    }
+
+    fn add_recv_next(&mut self, n: u32) {
+        self.recv_next = self
+            .recv_next
+            .checked_add(n)
+            .unwrap_or_else(|| n - (u32::MAX - self.recv_next));
+        trace!(
+            "add TCP receive next of {} -> {} to {}",
+            self.src,
+            self.dst,
+            self.recv_next
+        );
+    }
+
+    fn increase_duplicate(&mut self) {
+        self.duplicate = self.duplicate.checked_add(1).unwrap_or(usize::MAX);
+        trace!(
+            "increase TCP duplicate of {} -> {} to {}",
+            self.src,
+            self.dst,
+            self.duplicate
+        );
+    }
+
+    fn clear_duplicate(&mut self) {
+        self.duplicate = 0;
+        trace!("clear TCP duplicate of {} -> {}", self.src, self.dst);
+    }
+
+    fn set_last_retrans(&mut self) {
+        self.last_retrans = Some(Instant::now());
+        trace!(
+            "set TCP last retransmission of {} -> {}",
+            self.src,
+            self.dst,
+        );
+    }
+
+    fn append_cache(&mut self, sequence: u32, payload: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        trace!(
+            "append {} Bytes to TCP cache of {} -> {}",
+            payload.len(),
+            self.src,
+            self.dst
+        );
+        self.cache.append(sequence, payload)
+    }
+
+    fn set_fin_sequence(&mut self, sequence: u32) {
+        self.fin_sequence = Some(sequence);
+        trace!(
+            "set TCP FIN sequence of {} -> {} to {}",
+            self.src,
+            self.dst,
+            sequence
+        );
+    }
+
+    fn admit_fin(&mut self) {
+        self.fin_sequence = None;
+        trace!("admit TCP FIN of {} -> {}", self.src, self.dst);
+    }
+}
+
+impl Display for TcpRxState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "TCP Rx State: {} -> {} Recv_Next = {} WS = {} SACK_PERM = {}",
+            self.src, self.dst, self.recv_next, self.wscale, self.sack_perm
+        )
+    }
+}
+
 /// Represents the threshold of TCP ACK duplicates before trigger a fast retransmission.
 const DUPLICATES_THRESHOLD: usize = 3;
 /// Represents the cool down time between 2 retransmissions.
@@ -1435,13 +1547,7 @@ pub struct Redirector {
     remote: SocketAddrV4,
     options: SocksOption,
     streams: HashMap<(SocketAddrV4, SocketAddrV4), StreamWorker>,
-    tcp_recv_next_map: HashMap<(SocketAddrV4, SocketAddrV4), u32>,
-    tcp_duplicate_map: HashMap<(SocketAddrV4, SocketAddrV4), usize>,
-    tcp_last_retrans_map: HashMap<(SocketAddrV4, SocketAddrV4), Instant>,
-    tcp_wscale_map: HashMap<(SocketAddrV4, SocketAddrV4), u8>,
-    tcp_sack_perm_map: HashSet<(SocketAddrV4, SocketAddrV4)>,
-    tcp_cache_map: HashMap<(SocketAddrV4, SocketAddrV4), Window>,
-    tcp_fin_sequence_map: HashMap<(SocketAddrV4, SocketAddrV4), u32>,
+    states: HashMap<(SocketAddrV4, SocketAddrV4), TcpRxState>,
     datagrams: HashMap<u16, DatagramWorker>,
     /// Represents the map mapping a source port to a local port.
     datagram_map: HashMap<SocketAddrV4, u16>,
@@ -1475,13 +1581,7 @@ impl Redirector {
             remote,
             options: SocksOption::new(force_associate_dst, force_associate_bind_addr, auth),
             streams: HashMap::new(),
-            tcp_recv_next_map: HashMap::new(),
-            tcp_duplicate_map: HashMap::new(),
-            tcp_last_retrans_map: HashMap::new(),
-            tcp_wscale_map: HashMap::new(),
-            tcp_sack_perm_map: HashSet::new(),
-            tcp_cache_map: HashMap::new(),
-            tcp_fin_sequence_map: HashMap::new(),
+            states: HashMap::new(),
             datagrams: HashMap::new(),
             datagram_map: HashMap::new(),
             udp_lru: LruCache::new(MAX_UDP_PORT),
@@ -1655,7 +1755,8 @@ impl Redirector {
 
         if is_exist {
             // ACK
-            if tcp.sequence() != *self.tcp_recv_next_map.get(&key).unwrap_or(&0) {
+            let state = self.states.get_mut(&key).unwrap();
+            if tcp.sequence() != state.recv_next {
                 trace!(
                     "TCP out of order of {} -> {} at {}",
                     src,
@@ -1663,28 +1764,24 @@ impl Redirector {
                     tcp.sequence()
                 );
             }
-            let wscale = *self.tcp_wscale_map.get(&key).unwrap_or(&0);
             {
                 let mut tx_locked = self.tx.lock().unwrap();
                 tx_locked.acknowledge(dst, src, tcp.acknowledgement());
-                tx_locked.set_tcp_send_window(dst, src, (tcp.window() as usize) << wscale as usize);
+                tx_locked.set_tcp_send_window(
+                    dst,
+                    src,
+                    (tcp.window() as usize) << state.wscale as usize,
+                );
             }
 
             if payload.len() > 0 {
                 // ACK
                 // Append to cache
-                let cache = self.tcp_cache_map.entry(key).or_insert_with(|| {
-                    Window::with_capacity((RECV_WINDOW as usize) << wscale as usize, tcp.sequence())
-                });
-                let cont_payload = cache.append(tcp.sequence(), payload)?;
-                let cache = self.tcp_cache_map.get(&key).unwrap();
-
-                // Window scale
-                let wscale = *self.tcp_wscale_map.get(&key).unwrap_or(&0);
+                let cont_payload = state.append_cache(tcp.sequence(), payload)?;
 
                 // SACK
-                if self.tcp_sack_perm_map.contains(&key) {
-                    let sacks = cache.filled();
+                if state.sack_perm {
+                    let sacks = state.cache.filled();
                     self.tx.lock().unwrap().set_tcp_sacks(dst, src, &sacks);
                 }
 
@@ -1695,9 +1792,9 @@ impl Redirector {
                         match stream.send(payload.as_slice()).await {
                             Ok(_) => {
                                 let cache_remaining_size =
-                                    (cache.remaining_size() >> wscale as usize) as u16;
+                                    (state.cache.remaining_size() >> state.wscale as usize) as u16;
 
-                                self.add_tcp_recv_next(tcp, payload.len() as u32);
+                                state.add_recv_next(payload.len() as u32);
 
                                 // Update window size
                                 let mut tx_locked = self.tx.lock().unwrap();
@@ -1712,7 +1809,8 @@ impl Redirector {
                             }
                             Err(e) => {
                                 // Clean up
-                                self.remove_tcp(tcp);
+                                self.streams.remove(&key);
+                                self.states.remove(&key);
 
                                 // Send ACK/RST
                                 let mut tx_locked = self.tx.lock().unwrap();
@@ -1729,7 +1827,7 @@ impl Redirector {
                         // Retransmission or unordered
                         // Update window size
                         let cache_remaining_size =
-                            (cache.remaining_size() >> wscale as usize) as u16;
+                            (state.cache.remaining_size() >> state.wscale as usize) as u16;
 
                         let mut tx_locked = self.tx.lock().unwrap();
                         tx_locked.set_tcp_window(dst, src, cache_remaining_size);
@@ -1743,47 +1841,53 @@ impl Redirector {
                 if !is_writable && self.tx.lock().unwrap().get_cache_size(dst, src) == 0 {
                     // LAST_ACK
                     // Clean up
-                    self.remove_tcp(tcp);
+                    self.streams.remove(&key);
+                    self.states.remove(&key);
                     self.tx.lock().unwrap().remove_tcp(dst, src);
 
                     return Ok(());
-                } else if *self.tcp_duplicate_map.get(&key).unwrap_or(&0) >= DUPLICATES_THRESHOLD {
-                    // Duplicate ACK
-                    if !tcp.is_zero_window() {
-                        let is_cooled_down = match self.tcp_last_retrans_map.get(&key) {
-                            Some(ref instant) => instant.elapsed().as_millis() < RETRANS_COOL_DOWN,
-                            None => false,
-                        };
-                        if !is_cooled_down {
-                            // Fast retransmit
-                            let mut is_sr = false;
-                            if self.tcp_sack_perm_map.contains(&key) {
-                                if let Some(sacks) = tcp.sack() {
-                                    if sacks.len() > 0 {
-                                        // Selective retransmission
-                                        self.tx
-                                            .lock()
-                                            .unwrap()
-                                            .retransmit_tcp_ack_without(dst, src, sacks)?;
-                                        is_sr = true;
+                } else {
+                    state.increase_duplicate();
+                    if state.duplicate >= DUPLICATES_THRESHOLD {
+                        // Duplicate ACK
+                        if !tcp.is_zero_window() {
+                            let is_cooled_down = match state.last_retrans {
+                                Some(ref instant) => {
+                                    instant.elapsed().as_millis() < RETRANS_COOL_DOWN
+                                }
+                                None => false,
+                            };
+                            if !is_cooled_down {
+                                // Fast retransmit
+                                let mut is_sr = false;
+                                if state.sack_perm {
+                                    if let Some(sacks) = tcp.sack() {
+                                        if sacks.len() > 0 {
+                                            // Selective retransmission
+                                            self.tx
+                                                .lock()
+                                                .unwrap()
+                                                .retransmit_tcp_ack_without(dst, src, sacks)?;
+                                            is_sr = true;
+                                        }
                                     }
                                 }
-                            }
 
-                            if !is_sr {
-                                // Back N
-                                self.tx.lock().unwrap().retransmit_tcp_ack(dst, src)?;
-                            }
+                                if !is_sr {
+                                    // Back N
+                                    self.tx.lock().unwrap().retransmit_tcp_ack(dst, src)?;
+                                }
 
-                            self.tcp_duplicate_map.insert(key, 0);
-                            self.tcp_last_retrans_map.insert(key, Instant::now());
+                                state.clear_duplicate();
+                                state.set_last_retrans();
+                            }
                         }
                     }
                 }
             }
 
             // FIN
-            if tcp.is_fin() || self.tcp_fin_sequence_map.contains_key(&key) {
+            if tcp.is_fin() || state.fin_sequence.is_some() {
                 self.handle_tcp_fin(tcp, payload)?;
             }
 
@@ -1806,10 +1910,10 @@ impl Redirector {
         // Connect if not connected, drop if established
         if !is_exist {
             // Clean up
-            self.remove_tcp(tcp);
+            self.streams.remove(&key);
+            self.states.remove(&key);
 
             // Admit SYN
-            self.set_tcp_recv_next(tcp, tcp.sequence().checked_add(1).unwrap_or(0));
             let wscale = match ENABLE_WSCALE {
                 true => tcp.wscale(),
                 false => None,
@@ -1818,13 +1922,8 @@ impl Redirector {
                 Some(wscale) => Some(min(wscale, MAX_RECV_WSCALE)),
                 None => None,
             };
-            if let Some(wscale) = recv_wscale {
-                self.set_tcp_wscale(tcp, wscale);
-            }
             let sack_perm = ENABLE_SACK && tcp.is_sack_perm();
-            if sack_perm {
-                self.perm_tcp_sack(tcp);
-            }
+            let state = TcpRxState::new(src, dst, tcp.sequence(), wscale.unwrap_or(0), sack_perm);
 
             {
                 let mut tx_locked = self.tx.lock().unwrap();
@@ -1869,7 +1968,8 @@ impl Redirector {
                 Ok(stream) => stream,
                 Err(e) => {
                     // Clean up
-                    self.remove_tcp(tcp);
+                    self.streams.remove(&key);
+                    self.states.remove(&key);
 
                     let mut tx_locked = self.tx.lock().unwrap();
                     tx_locked.set_tcp_acknowledgement(
@@ -1888,6 +1988,7 @@ impl Redirector {
                 }
             };
 
+            self.states.insert(key, state);
             self.streams.insert(key, stream);
         }
 
@@ -1902,7 +2003,8 @@ impl Redirector {
 
         if is_exist {
             // Clean up
-            self.remove_tcp(tcp);
+            self.streams.remove(&key);
+            self.states.remove(&key);
             self.tx.lock().unwrap().remove_tcp(dst, src);
         }
     }
@@ -1918,10 +2020,10 @@ impl Redirector {
         };
 
         if is_exist {
+            let state = self.states.get_mut(&key).unwrap();
             if tcp.is_fin() {
                 // Update FIN sequence
-                self.tcp_fin_sequence_map.insert(
-                    key,
+                state.set_fin_sequence(
                     tcp.sequence()
                         .checked_add(payload.len() as u32)
                         .unwrap_or_else(|| payload.len() as u32 - (u32::MAX - tcp.sequence())),
@@ -1929,11 +2031,11 @@ impl Redirector {
             }
 
             // If the receive next is the same as the FIN sequence, the FIN should be popped
-            if let Some(&fin_sequence) = self.tcp_fin_sequence_map.get(&key) {
-                if fin_sequence == *self.tcp_recv_next_map.get(&key).unwrap_or(&0) {
+            if let Some(fin_sequence) = state.fin_sequence {
+                if fin_sequence == state.recv_next {
                     // Admit FIN
-                    self.tcp_fin_sequence_map.remove(&key);
-                    self.add_tcp_recv_next(tcp, 1);
+                    state.admit_fin();
+                    state.add_recv_next(1);
 
                     {
                         let mut tx_locked = self.tx.lock().unwrap();
@@ -1951,7 +2053,8 @@ impl Redirector {
                         // Clean up
                         self.tx.lock().unwrap().remove_tcp(dst, src);
 
-                        self.remove_tcp(tcp);
+                        self.streams.remove(&key);
+                        self.states.remove(&key);
                     }
                 } else {
                     trace!(
@@ -1989,77 +2092,6 @@ impl Redirector {
             .await?;
 
         Ok(())
-    }
-
-    fn set_tcp_recv_next(&mut self, tcp: &Tcp, recv_next: u32) {
-        let src = SocketAddrV4::new(tcp.src_ip_addr(), tcp.src());
-        let dst = SocketAddrV4::new(tcp.dst_ip_addr(), tcp.dst());
-        let key = (src, dst);
-
-        self.tcp_recv_next_map.insert(key, recv_next);
-        trace!(
-            "set TCP receive next of {} -> {} to {}",
-            dst,
-            src,
-            recv_next
-        );
-    }
-
-    fn add_tcp_recv_next(&mut self, tcp: &Tcp, n: u32) {
-        let src = SocketAddrV4::new(tcp.src_ip_addr(), tcp.src());
-        let dst = SocketAddrV4::new(tcp.dst_ip_addr(), tcp.dst());
-        let key = (src, dst);
-
-        let entry = self.tcp_recv_next_map.entry(key).or_insert(0);
-        *entry = entry
-            .checked_add(n)
-            .unwrap_or_else(|| n - (u32::MAX - *entry));
-        trace!("add TCP receive next of {} -> {} to {}", dst, src, entry);
-    }
-
-    fn set_tcp_wscale(&mut self, tcp: &Tcp, wscale: u8) {
-        let src = SocketAddrV4::new(tcp.src_ip_addr(), tcp.src());
-        let dst = SocketAddrV4::new(tcp.dst_ip_addr(), tcp.dst());
-        let key = (src, dst);
-
-        self.tcp_wscale_map.insert(key, wscale);
-
-        trace!("set TCP window scale of {} -> {} to {}", dst, src, wscale);
-    }
-
-    fn perm_tcp_sack(&mut self, tcp: &Tcp) {
-        let src = SocketAddrV4::new(tcp.src_ip_addr(), tcp.src());
-        let dst = SocketAddrV4::new(tcp.dst_ip_addr(), tcp.dst());
-        let key = (src, dst);
-
-        self.tcp_sack_perm_map.insert(key);
-
-        trace!("permit TCP sack of {} -> {}", dst, src);
-    }
-
-    fn remove_tcp(&mut self, tcp: &Tcp) {
-        let src = SocketAddrV4::new(tcp.src_ip_addr(), tcp.src());
-        let dst = SocketAddrV4::new(tcp.dst_ip_addr(), tcp.dst());
-        let key = (src, dst);
-
-        self.streams.remove(&key);
-        self.tcp_recv_next_map.remove(&key);
-        self.tcp_duplicate_map.remove(&key);
-        self.tcp_last_retrans_map.remove(&key);
-        self.tcp_wscale_map.remove(&key);
-        self.tcp_sack_perm_map.remove(&key);
-        if let Some(cache) = self.tcp_cache_map.get(&key) {
-            if !cache.is_empty() {
-                trace!(
-                    "TCP cache {} -> {} was removed while the cache is not empty",
-                    src,
-                    dst
-                );
-            }
-        }
-        self.tcp_cache_map.remove(&key);
-        self.tcp_fin_sequence_map.remove(&key);
-        trace!("remove TCP {} -> {}", src, dst);
     }
 
     fn get_tx(&self) -> Arc<Mutex<Forwarder>> {
