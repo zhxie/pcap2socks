@@ -110,10 +110,10 @@ const MAX_RTO: u64 = 60000;
 /// Represents if the TCP MSS option is enabled.
 const ENABLE_MSS: bool = true;
 
-/// Represents the minimum packet size.
+/// Represents the minimum frame size.
 /// Because all traffic is in Ethernet, and the 802.3 specifies the minimum is 64 Bytes.
-/// Exclude the 4 bytes used in FCS, the minimum packet size in pcap2socks is 60 Bytes.
-const MINIMUM_PACKET_SIZE: usize = 60;
+/// Exclude the 4 bytes used in FCS, the minimum frame size in pcap2socks is 60 Bytes.
+const MINIMUM_FRAME_SIZE: usize = 60;
 
 /// Represents a channel forward traffic to the source in pcap.
 pub struct Forwarder {
@@ -794,14 +794,8 @@ impl Forwarder {
                 let mut size = min(remain_size as usize, queue.len());
                 // Avoid SWS
                 if ENABLE_SEND_SWS_AVOID {
-                    // Pseudo headers
-                    let tcp = Tcp::new_ack(0, 0, 0, 0, 0, None, None);
-                    let ipv4 =
-                        Ipv4::new(0, tcp.kind(), Ipv4Addr::UNSPECIFIED, Ipv4Addr::UNSPECIFIED)
-                            .unwrap();
-
                     let mtu = *self.src_mtu.get(src.ip()).unwrap_or(&self.local_mtu);
-                    let mss = mtu - (ipv4.len() + tcp.len());
+                    let mss = mtu - (Ipv4::minimum_len() + Tcp::minimum_len());
 
                     if size < mss && !cache.is_empty() {
                         size = 0;
@@ -872,27 +866,23 @@ impl Forwarder {
     ) -> io::Result<()> {
         let key = (src, dst);
 
-        // Pseudo headers
-        let tcp = Tcp::new_ack(0, 0, 0, 0, 0, None, None);
-        let ipv4 = Ipv4::new(0, tcp.kind(), Ipv4Addr::UNSPECIFIED, Ipv4Addr::UNSPECIFIED).unwrap();
-
         // Segmentation
-        let header_size = ipv4.len() + tcp.len();
-        let max_payload_size = *self.src_mtu.get(src.ip()).unwrap_or(&self.local_mtu) - header_size;
+        let mss = *self.src_mtu.get(src.ip()).unwrap_or(&self.local_mtu)
+            - (Ipv4::minimum_len() + Tcp::minimum_len());
         let mut i = 0;
-        while max_payload_size * i < payload.len() {
-            let size = min(max_payload_size, payload.len() - i * max_payload_size);
-            let payload = &payload[i * max_payload_size..i * max_payload_size + size];
+        while mss * i < payload.len() {
+            let size = min(mss, payload.len() - i * mss);
+            let payload = &payload[i * mss..i * mss + size];
             let sequence = sequence
-                .checked_add((i * max_payload_size) as u32)
-                .unwrap_or_else(|| (i * max_payload_size) as u32 - (u32::MAX - sequence));
+                .checked_add((i * mss) as u32)
+                .unwrap_or_else(|| (i * mss) as u32 - (u32::MAX - sequence));
             let mut recv_next = sequence
                 .checked_add(size as u32)
                 .unwrap_or_else(|| size as u32 - (u32::MAX - sequence));
 
             // TCP
             let tcp;
-            if is_fin && max_payload_size * (i + 1) >= payload.len() {
+            if is_fin && mss * (i + 1) >= payload.len() {
                 // ACK/FIN
                 tcp = Tcp::new_ack_fin(
                     dst.port(),
@@ -963,12 +953,7 @@ impl Forwarder {
 
         let mss = match ENABLE_MSS {
             true => {
-                // Pseudo headers
-                let tcp = Tcp::new_ack(0, 0, 0, 0, 0, None, None);
-                let ipv4 =
-                    Ipv4::new(0, tcp.kind(), Ipv4Addr::UNSPECIFIED, Ipv4Addr::UNSPECIFIED).unwrap();
-
-                let mss = self.local_mtu - (ipv4.len() + tcp.len());
+                let mss = self.local_mtu - (Ipv4::minimum_len() + Tcp::minimum_len());
                 let mss = if mss > u16::MAX as usize {
                     u16::MAX
                 } else {
@@ -1068,15 +1053,9 @@ impl Forwarder {
         src: SocketAddrV4,
         payload: &[u8],
     ) -> io::Result<()> {
-        // Pseudo headers
-        let udp = Udp::new(0, 0);
-        let ipv4 = Ipv4::new(0, udp.kind(), Ipv4Addr::UNSPECIFIED, Ipv4Addr::UNSPECIFIED).unwrap();
-
         // Fragmentation
-        let ipv4_header_size = ipv4.len();
-        let udp_header_size = udp.len();
-        let size = udp_header_size + payload.len();
-        let mss = *self.src_mtu.get(src.ip()).unwrap_or(&self.local_mtu) - ipv4_header_size;
+        let size = Udp::minimum_len() + payload.len();
+        let mss = *self.src_mtu.get(src.ip()).unwrap_or(&self.local_mtu) - Ipv4::minimum_len();
         if size <= mss {
             // Send
             self.send_udp_raw(dst, src, payload)?;
@@ -1290,7 +1269,7 @@ impl Forwarder {
     fn send(&mut self, indicator: &Indicator) -> io::Result<()> {
         // Serialize
         let size = indicator.len();
-        let buffer_size = max(size, MINIMUM_PACKET_SIZE);
+        let buffer_size = max(size, MINIMUM_FRAME_SIZE);
         let mut buffer = vec![0u8; buffer_size];
         indicator.serialize(&mut buffer[..size])?;
 
@@ -1304,7 +1283,7 @@ impl Forwarder {
     fn send_with_payload(&mut self, indicator: &Indicator, payload: &[u8]) -> io::Result<()> {
         // Serialize
         let size = indicator.len();
-        let buffer_size = max(size + payload.len(), MINIMUM_PACKET_SIZE);
+        let buffer_size = max(size + payload.len(), MINIMUM_FRAME_SIZE);
         let mut buffer = vec![0u8; buffer_size];
         indicator.serialize_with_payload(&mut buffer[..size + payload.len()], payload)?;
 
@@ -1934,13 +1913,7 @@ impl Redirector {
                     tcp.sequence().checked_add(1).unwrap_or(0),
                 );
                 if let Some(mss) = tcp.mss() {
-                    // Pseudo headers
-                    let tcp_header = Tcp::new_ack(0, 0, 0, 0, 0, None, None);
-                    let ipv4_header =
-                        Ipv4::new(0, tcp.kind(), Ipv4Addr::UNSPECIFIED, Ipv4Addr::UNSPECIFIED)
-                            .unwrap();
-
-                    let mtu = ipv4_header.len() + tcp_header.len() + mss as usize;
+                    let mtu = Ipv4::minimum_len() + Tcp::minimum_len() + mss as usize;
                     if tx_locked.set_src_mtu(tcp.src_ip_addr(), mtu) {
                         info!("Update MTU of {} to {}", tcp.src_ip_addr(), mtu);
                     }

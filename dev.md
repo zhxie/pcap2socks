@@ -16,7 +16,7 @@ This is the development documentation of pcap2socks.
 
 ### Differences with the Standard [RFC 793](https://tools.ietf.org/html/rfc793) and Its Updates
 
-- pcap2socks does not retransmit the ACK/SYN packet in handshaking since if this packet is dropped accidentally, the source will attempt to re-establish the connection.
+- pcap2socks does not retransmit the ACK/SYN segments in handshaking since if these segments are dropped accidentally, the source will attempt to re-establish the connection.
 
 - pcap2socks does not maintain the congestion window ([RFC 5681](https://tools.ietf.org/html/rfc5681)). The congestion control will be implemented in the future release, and the algorithm CUBIC ([RFC 8312](https://tools.ietf.org/html/rfc8312)), PRR ([RFC 6973](https://tools.ietf.org/html/rfc6937)) or [BBR](https://github.com/google/bbr) may be considered.
 
@@ -24,7 +24,7 @@ This is the development documentation of pcap2socks.
 
 - pcap2socks does not calculate for the window scale ([RFC 7323](https://tools.ietf.org/html/rfc7323)) option and will open a same-size receive window as the source by default.
 
-- pcap2socks does not realize the timestamp ([RFC 7323](https://www.iana.org/go/rfc7323)) option. Since only the source and destination know the full information of the traffic, pcap2socks may not trace any packet and report its timestamp correctly.
+- pcap2socks does not realize the timestamp ([RFC 7323](https://www.iana.org/go/rfc7323)) option. Since only the source and destination know the full information of the traffic, pcap2socks may not trace any segments and report their timestamp correctly.
 
 ## SOCKS5 Implementation
 
@@ -46,7 +46,7 @@ This is the development documentation of pcap2socks.
 
 ### pcap
 
-`BUFFER_SIZE`: Represents the buffer size of pcap channels. If the buffer size is too small, some packets may arrive out of order or may be dropped, if the buffer size is too big, it may lead to a [bufferbloat](https://en.wikipedia.org/wiki/Bufferbloat), so set with a reasonable value. Default as `262144` Bytes, or 256 kB.
+`BUFFER_SIZE`: Represents the buffer size of pcap channels. If the buffer size is too small, some frames may arrive out of order or may be dropped, if the buffer size is too big, it may lead to a [bufferbloat](https://en.wikipedia.org/wiki/Bufferbloat), so set with a reasonable value. Default as `262144` Bytes, or 256 kB.
 
 ### SOCKS
 
@@ -60,7 +60,7 @@ This is the development documentation of pcap2socks.
 
 ### Cache
 
-`MAX_U32_WINDOW_SIZE`: Represents the max distance of u32 values between packets in an u32 window. Data with sequence `1000` and sequence `101000` may be recognized as increment but discontinuous, but data with sequence `101000` and `1000` may be recognized as expired or out of order. The former example's seconds data will be pushed into the cache, while the latter's will be dropped. Default as `16777216` Bytes, or 16 MB.
+`MAX_U32_WINDOW_SIZE`: Represents the max distance of u32 values between segments in an u32 window. Data with sequence `1000` and sequence `101000` may be recognized as increment but discontinuous, but data with sequence `101000` and `1000` may be recognized as expired or out of order. The former example's seconds data will be pushed into the cache, while the latter's will be dropped. Default as `16777216` Bytes, or 16 MB.
 
 `INITIAL_SIZE`: Represents the initial size of cache. Default as `65536` Bytes, or 64 kB.
 

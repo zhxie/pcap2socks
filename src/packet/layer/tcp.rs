@@ -232,6 +232,11 @@ impl Tcp {
         tcp
     }
 
+    /// Get the minimum of the layer when converted into a byte-array.
+    pub fn minimum_len() -> usize {
+        20
+    }
+
     /// Sets the source and destination IP address for the layer with the given `Ipv4`.
     pub fn set_ipv4_layer(&mut self, ipv4: &Ipv4) {
         self.src = ipv4.src();

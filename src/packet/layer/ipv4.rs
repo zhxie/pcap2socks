@@ -107,6 +107,11 @@ impl Ipv4 {
         Ipv4::from(d_ipv4)
     }
 
+    /// Get the minimum of the layer when converted into a byte-array.
+    pub fn minimum_len() -> usize {
+        20
+    }
+
     /// Get the total length of the layer.
     pub fn total_length(&self) -> u16 {
         self.layer.total_length
