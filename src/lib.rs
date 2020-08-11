@@ -1808,16 +1808,14 @@ impl Redirector {
                                 tx_locked.send_tcp_ack_0(dst, src)?;
                             }
                             Err(e) => {
-                                // Clean up
-                                self.streams.remove(&key);
-                                self.states.remove(&key);
-
-                                // Send ACK/RST
-                                let mut tx_locked = self.tx.lock().unwrap();
-                                tx_locked.send_tcp_ack_rst(dst, src)?;
+                                {
+                                    // Send ACK/RST
+                                    let mut tx_locked = self.tx.lock().unwrap();
+                                    tx_locked.send_tcp_ack_rst(dst, src)?;
+                                }
 
                                 // Clean up
-                                tx_locked.remove_tcp(dst, src);
+                                self.clean_up(src, dst);
 
                                 return Err(e);
                             }
@@ -1910,8 +1908,7 @@ impl Redirector {
         // Connect if not connected, drop if established
         if !is_exist {
             // Clean up
-            self.streams.remove(&key);
-            self.states.remove(&key);
+            self.clean_up(src, dst);
 
             // Admit SYN
             let wscale = match ENABLE_WSCALE {
@@ -1927,8 +1924,6 @@ impl Redirector {
 
             {
                 let mut tx_locked = self.tx.lock().unwrap();
-                // Clean up
-                tx_locked.remove_tcp(dst, src);
 
                 let mut rng = rand::thread_rng();
                 let sequence: u32 = rng.gen();
@@ -1967,22 +1962,20 @@ impl Redirector {
             let stream = match stream {
                 Ok(stream) => stream,
                 Err(e) => {
-                    // Clean up
-                    self.streams.remove(&key);
-                    self.states.remove(&key);
+                    {
+                        let mut tx_locked = self.tx.lock().unwrap();
+                        tx_locked.set_tcp_acknowledgement(
+                            dst,
+                            src,
+                            tcp.sequence().checked_add(1).unwrap_or(0),
+                        );
 
-                    let mut tx_locked = self.tx.lock().unwrap();
-                    tx_locked.set_tcp_acknowledgement(
-                        dst,
-                        src,
-                        tcp.sequence().checked_add(1).unwrap_or(0),
-                    );
-
-                    // Send ACK/RST
-                    tx_locked.send_tcp_ack_rst(dst, src)?;
+                        // Send ACK/RST
+                        tx_locked.send_tcp_ack_rst(dst, src)?;
+                    }
 
                     // Clean up
-                    tx_locked.remove_tcp(dst, src);
+                    self.clean_up(src, dst);
 
                     return Err(e);
                 }
@@ -1998,15 +1991,9 @@ impl Redirector {
     fn handle_tcp_rst(&mut self, tcp: &Tcp) {
         let src = SocketAddrV4::new(tcp.src_ip_addr(), tcp.src());
         let dst = SocketAddrV4::new(tcp.dst_ip_addr(), tcp.dst());
-        let key = (src, dst);
-        let is_exist = self.streams.get(&key).is_some();
 
-        if is_exist {
-            // Clean up
-            self.streams.remove(&key);
-            self.states.remove(&key);
-            self.tx.lock().unwrap().remove_tcp(dst, src);
-        }
+        // Clean up
+        self.clean_up(src, dst);
     }
 
     fn handle_tcp_fin(&mut self, tcp: &Tcp, payload: &[u8]) -> io::Result<()> {
@@ -2051,10 +2038,7 @@ impl Redirector {
                     } else {
                         // Close by remote
                         // Clean up
-                        self.tx.lock().unwrap().remove_tcp(dst, src);
-
-                        self.streams.remove(&key);
-                        self.states.remove(&key);
+                        self.clean_up(src, dst);
                     }
                 } else {
                     trace!(
@@ -2076,6 +2060,15 @@ impl Redirector {
         }
 
         Ok(())
+    }
+
+    fn clean_up(&mut self, src: SocketAddrV4, dst: SocketAddrV4) {
+        let key = (src, dst);
+
+        self.streams.remove(&key);
+        self.states.remove(&key);
+
+        self.tx.lock().unwrap().remove_tcp(dst, src);
     }
 
     async fn handle_udp(&mut self, udp: &Udp, payload: &[u8]) -> io::Result<()> {
