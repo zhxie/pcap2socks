@@ -53,10 +53,10 @@ pub mod LayerKinds {
 
 /// Represents a layer.
 pub trait Layer: Display {
-    /// Get the kind of the layer.
+    /// Returns the kind of the layer.
     fn kind(&self) -> LayerKind;
 
-    /// Get The length of the layer when converted into a byte-array.
+    /// Returns The length of the layer when converted into a byte-array.
     fn len(&self) -> usize;
 
     /// Serialize the layer into a byte-array.

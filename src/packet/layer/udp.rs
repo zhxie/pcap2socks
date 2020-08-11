@@ -53,7 +53,7 @@ impl Udp {
         udp
     }
 
-    /// Get the minimum of the layer when converted into a byte-array.
+    /// Returns the minimum of the layer when converted into a byte-array.
     pub fn minimum_len() -> usize {
         8
     }
@@ -64,27 +64,27 @@ impl Udp {
         self.dst = ipv4.dst();
     }
 
-    /// Get the source IP address of the layer.
+    /// Returns the source IP address of the layer.
     pub fn src_ip_addr(&self) -> Ipv4Addr {
         self.src
     }
 
-    /// Get the destination IP address of the layer.
+    /// Returns the destination IP address of the layer.
     pub fn dst_ip_addr(&self) -> Ipv4Addr {
         self.dst
     }
 
-    /// Get the source of the layer.
+    /// Returns the source of the layer.
     pub fn src(&self) -> u16 {
         self.layer.source
     }
 
-    /// Get the destination of the layer.
+    /// Returns the destination of the layer.
     pub fn dst(&self) -> u16 {
         self.layer.destination
     }
 
-    /// Get the length of the layer.
+    /// Returns the length of the layer.
     pub fn length(&self) -> u16 {
         self.layer.length
     }

@@ -99,7 +99,7 @@ impl Indicator {
         }
     }
 
-    /// Get the brief of the indicator.
+    /// Returns the brief of the indicator.
     pub fn brief(&self) -> String {
         match self.network() {
             Some(network) => match network {
@@ -137,7 +137,7 @@ impl Indicator {
         }
     }
 
-    /// Get The length of the indicator when converted into a byte-array.
+    /// Returns The length of the indicator when converted into a byte-array.
     pub fn len(&self) -> usize {
         let mut size = 0;
 
@@ -155,7 +155,7 @@ impl Indicator {
         size
     }
 
-    /// Get the content length of the indicator when converted into a byte-array.
+    /// Returns the content length of the indicator when converted into a byte-array.
     pub fn content_len(&self) -> usize {
         match self.link() {
             Layers::Ethernet(ethernet) => match self.network() {
@@ -220,17 +220,17 @@ impl Indicator {
         Ok(begin)
     }
 
-    /// Get the link layer.
+    /// Returns the link layer.
     pub fn link(&self) -> &Layers {
         &self.link
     }
 
-    /// Get the link layer kind.
+    /// Returns the link layer kind.
     pub fn link_kind(&self) -> LayerKind {
         self.link().kind()
     }
 
-    /// Get the Ethernet layer.
+    /// Returns the Ethernet layer.
     pub fn ethernet(&self) -> Option<&Ethernet> {
         if let Layers::Ethernet(layer) = &self.link() {
             return Some(layer);
@@ -239,7 +239,7 @@ impl Indicator {
         None
     }
 
-    /// Get the network layer.
+    /// Returns the network layer.
     pub fn network(&self) -> Option<&Layers> {
         if let Some(layer) = &self.network {
             return Some(layer);
@@ -248,7 +248,7 @@ impl Indicator {
         None
     }
 
-    /// Get the network layer kind.
+    /// Returns the network layer kind.
     pub fn network_kind(&self) -> Option<LayerKind> {
         if let Some(layer) = self.network() {
             return Some(layer.kind());
@@ -257,7 +257,7 @@ impl Indicator {
         None
     }
 
-    /// Get the ARP layer.
+    /// Returns the ARP layer.
     pub fn arp(&self) -> Option<&Arp> {
         if let Some(layer) = self.network() {
             if let Layers::Arp(layer) = layer {
@@ -268,7 +268,7 @@ impl Indicator {
         None
     }
 
-    /// Get the IPv4 layer.
+    /// Returns the IPv4 layer.
     pub fn ipv4(&self) -> Option<&Ipv4> {
         if let Some(layer) = self.network() {
             if let Layers::Ipv4(layer) = layer {
@@ -279,7 +279,7 @@ impl Indicator {
         None
     }
 
-    /// Get the transport layer.
+    /// Returns the transport layer.
     pub fn transport(&self) -> Option<&Layers> {
         if let Some(layer) = &self.transport {
             return Some(layer);
@@ -288,7 +288,7 @@ impl Indicator {
         None
     }
 
-    /// Get the transport layer kind.
+    /// Returns the transport layer kind.
     pub fn transport_kind(&self) -> Option<LayerKind> {
         if let Some(layer) = self.transport() {
             return Some(layer.kind());
@@ -297,7 +297,7 @@ impl Indicator {
         None
     }
 
-    /// Get the TCP layer.
+    /// Returns the TCP layer.
     pub fn tcp(&self) -> Option<&Tcp> {
         if let Some(layer) = self.transport() {
             if let Layers::Tcp(layer) = layer {
@@ -308,7 +308,7 @@ impl Indicator {
         None
     }
 
-    /// Get the UDP layer.
+    /// Returns the UDP layer.
     pub fn udp(&self) -> Option<&Udp> {
         if let Some(layer) = self.transport() {
             if let Layers::Udp(layer) = layer {

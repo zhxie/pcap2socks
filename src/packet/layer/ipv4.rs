@@ -107,17 +107,17 @@ impl Ipv4 {
         Ipv4::from(d_ipv4)
     }
 
-    /// Get the minimum of the layer when converted into a byte-array.
+    /// Returns the minimum of the layer when converted into a byte-array.
     pub fn minimum_len() -> usize {
         20
     }
 
-    /// Get the total length of the layer.
+    /// Returns the total length of the layer.
     pub fn total_length(&self) -> u16 {
         self.layer.total_length
     }
 
-    /// Get the identification of the layer.
+    /// Returns the identification of the layer.
     pub fn identification(&self) -> u16 {
         self.layer.identification
     }
@@ -127,7 +127,7 @@ impl Ipv4 {
         self.layer.flags & Ipv4Flags::MoreFragments != 0
     }
 
-    /// Get the fragment offset of the layer.
+    /// Returns the fragment offset of the layer.
     pub fn fragment_offset(&self) -> u16 {
         self.layer.fragment_offset
     }
@@ -142,12 +142,12 @@ impl Ipv4 {
         self.layer.next_level_protocol
     }
 
-    /// Get the source of the layer.
+    /// Returns the source of the layer.
     pub fn src(&self) -> Ipv4Addr {
         self.layer.source
     }
 
-    /// Get the destination of the layer.
+    /// Returns the destination of the layer.
     pub fn dst(&self) -> Ipv4Addr {
         self.layer.destination
     }

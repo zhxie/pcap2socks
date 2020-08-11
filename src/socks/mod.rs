@@ -317,7 +317,7 @@ impl DatagramWorker {
         trace!("set datagram {} = {}", src, self.local_port);
     }
 
-    /// Get the source of the `DatagramWorker`.
+    /// Returns the source of the `DatagramWorker`.
     pub fn src(&self) -> SocketAddrV4 {
         u64_to_socket_addr_v4(self.src.load(Ordering::Relaxed))
     }

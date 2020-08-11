@@ -196,7 +196,7 @@ impl Queue {
         None
     }
 
-    /// Get the payload from the certain sequence of the queue in the given size.
+    /// Returns the payload from the certain sequence of the queue in the given size.
     pub fn get(&self, sequence: u32, size: usize) -> io::Result<Vec<u8>> {
         if size == 0 {
             return Ok(Vec::new());
@@ -235,12 +235,12 @@ impl Queue {
         Ok(payload)
     }
 
-    /// Get all the payload of the queue.
+    /// Returns all the payload of the queue.
     pub fn get_all(&self) -> Vec<u8> {
         self.get(self.sequence, self.size).unwrap()
     }
 
-    /// Get the payload which is timed out from the begin to the first byte which is not timed out.
+    /// Returns the payload which is timed out from the begin to the first byte which is not timed out.
     #[deprecated = "use get_timed_out_and_update instead"]
     pub fn get_timed_out(&self) -> Vec<u8> {
         let mut recv_next = None;
@@ -265,7 +265,7 @@ impl Queue {
         }
     }
 
-    /// Get the payload which is timed out from the begin to the first byte which is not timed out
+    /// Returns the payload which is timed out from the begin to the first byte which is not timed out
     /// and update their timeout timer.
     pub fn get_timed_out_and_update(&mut self, rto: u64) -> Vec<u8> {
         let mut recv_next = None;
@@ -315,17 +315,17 @@ impl Queue {
         }
     }
 
-    /// Get the sequence of the queue.
+    /// Returns the sequence of the queue.
     pub fn sequence(&self) -> u32 {
         self.sequence
     }
 
-    /// Get the length of the queue.
+    /// Returns the length of the queue.
     pub fn len(&self) -> usize {
         self.size
     }
 
-    /// Get the receive next of the queue.
+    /// Returns the receive next of the queue.
     pub fn recv_next(&self) -> u32 {
         self.sequence
             .checked_add(self.size as u32)
@@ -563,29 +563,29 @@ impl Window {
         Ok(None)
     }
 
-    /// Get the sequence of the window.
+    /// Returns the sequence of the window.
     pub fn sequence(&self) -> u32 {
         self.sequence
     }
 
-    /// Get the length of the window. Not all bytes in [sequence, sequence + len) are filled.
+    /// Returns the length of the window. Not all bytes in [sequence, sequence + len) are filled.
     pub fn len(&self) -> usize {
         self.size
     }
 
-    /// Get the receive next of the window.
+    /// Returns the receive next of the window.
     pub fn recv_next(&self) -> u32 {
         self.sequence
             .checked_add(self.size as u32)
             .unwrap_or_else(|| self.size as u32 - (u32::MAX - self.sequence))
     }
 
-    /// Get the remaining size of the window.
+    /// Returns the remaining size of the window.
     pub fn remaining_size(&self) -> usize {
         self.buffer.len() - self.size
     }
 
-    /// Get the filled edges of the window.
+    /// Returns the filled edges of the window.
     pub fn filled(&self) -> Vec<(u32, u32)> {
         let mut v = Vec::new();
         for (&sequence, &size) in &self.edges {

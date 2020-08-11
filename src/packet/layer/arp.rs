@@ -97,22 +97,22 @@ impl Arp {
         }
     }
 
-    /// Get the source hardware address of the layer.
+    /// Returns the source hardware address of the layer.
     pub fn src_hardware_addr(&self) -> MacAddr {
         self.layer.sender_hw_addr
     }
 
-    /// Get the destination hardware address of the layer.
+    /// Returns the destination hardware address of the layer.
     pub fn dst_hardware_addr(&self) -> MacAddr {
         self.layer.target_hw_addr
     }
 
-    /// Get the source of the layer.
+    /// Returns the source of the layer.
     pub fn src(&self) -> Ipv4Addr {
         self.layer.sender_proto_addr
     }
 
-    /// Get the destination of the layer.
+    /// Returns the destination of the layer.
     pub fn dst(&self) -> Ipv4Addr {
         self.layer.target_proto_addr
     }

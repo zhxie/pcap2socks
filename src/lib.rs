@@ -420,13 +420,13 @@ impl TcpTxState {
         self.set_rto(rto);
     }
 
-    /// Get the send window of the TCP connection.The send window represents the received window
-    /// from the source and indicates how much payload it can receive next.
+    /// Returns the send window of the TCP connection. The send window represents the received
+    /// window from the source and indicates how much payload it can receive next.
     pub fn send_window(&self) -> usize {
         self.send_window
     }
 
-    /// Get the send window scale of the TCP connection.
+    /// Returns the send window scale of the TCP connection.
     pub fn send_wscale(&self) -> Option<u8> {
         self.send_wscale
     }
@@ -436,47 +436,47 @@ impl TcpTxState {
         self.sack_perm
     }
 
-    /// Get the sequence of the TCP connection.
+    /// Returns the sequence of the TCP connection.
     pub fn sequence(&self) -> u32 {
         self.sequence
     }
 
-    /// Get the acknowledgement of the TCP connection.
+    /// Returns the acknowledgement of the TCP connection.
     pub fn acknowledgement(&self) -> u32 {
         self.acknowledgement
     }
 
-    /// Get the window of the TCP connection.
+    /// Returns the window of the TCP connection.
     pub fn window(&self) -> u16 {
         self.window
     }
 
-    /// Get the SACKs of the TCP connection.
+    /// Returns the SACKs of the TCP connection.
     pub fn sacks(&self) -> &Option<Vec<(u32, u32)>> {
         &self.sacks
     }
 
-    /// Get the cache of the TCP connection.
+    /// Returns the cache of the TCP connection.
     pub fn cache(&self) -> &Queue {
         &self.cache
     }
 
-    /// Get the mutable cache of the TCP connection.
+    /// Returns the mutable cache of the TCP connection.
     pub fn cache_mut(&mut self) -> &mut Queue {
         &mut self.cache
     }
 
-    /// Get the TCP SYN in the cache of the TCP connection.
+    /// Returns the TCP SYN in the cache of the TCP connection.
     pub fn cache_syn(&self) -> Option<Instant> {
         self.cache_syn
     }
 
-    /// Get the TCP FIN in the cache of the TCP connection.
+    /// Returns the TCP FIN in the cache of the TCP connection.
     pub fn cache_fin(&self) -> Option<Timer> {
         self.cache_fin
     }
 
-    /// Get the queue of the TCP connection.
+    /// Returns the queue of the TCP connection.
     pub fn queue(&self) -> &VecDeque<u8> {
         &self.queue
     }
@@ -486,7 +486,7 @@ impl TcpTxState {
         self.queue_fin
     }
 
-    /// Get the RTO if the TCP connection.
+    /// Returns the RTO if the TCP connection.
     pub fn rto(&self) -> u64 {
         self.rto
     }
@@ -587,7 +587,7 @@ impl Forwarder {
         self.states.insert(key, state);
     }
 
-    /// Get the state of a TCP connection.
+    /// Returns the state of a TCP connection.
     pub fn get_state(&mut self, dst: SocketAddrV4, src: SocketAddrV4) -> Option<&mut TcpTxState> {
         let key = (src, dst);
 
@@ -620,7 +620,7 @@ impl Forwarder {
         self.states.remove(&key);
     }
 
-    /// Get the size of the cache and the queue of a TCP connection.
+    /// Returns the size of the cache and the queue of a TCP connection.
     pub fn get_cache_size(&mut self, dst: SocketAddrV4, src: SocketAddrV4) -> usize {
         let key = (src, dst);
 

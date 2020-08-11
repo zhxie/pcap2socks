@@ -46,12 +46,12 @@ impl Ethernet {
         Ethernet::from(ethernet)
     }
 
-    /// Get the source of the layer.
+    /// Returns the source of the layer.
     pub fn src(&self) -> MacAddr {
         self.layer.source
     }
 
-    /// Get the destination of the layer.
+    /// Returns the destination of the layer.
     pub fn dst(&self) -> MacAddr {
         self.layer.destination
     }

@@ -232,7 +232,7 @@ impl Tcp {
         tcp
     }
 
-    /// Get the minimum of the layer when converted into a byte-array.
+    /// Returns the minimum of the layer when converted into a byte-array.
     pub fn minimum_len() -> usize {
         20
     }
@@ -243,37 +243,37 @@ impl Tcp {
         self.dst = ipv4.dst();
     }
 
-    /// Get the source IP address of the layer.
+    /// Returns the source IP address of the layer.
     pub fn src_ip_addr(&self) -> Ipv4Addr {
         self.src
     }
 
-    /// Get the destination IP address of the layer.
+    /// Returns the destination IP address of the layer.
     pub fn dst_ip_addr(&self) -> Ipv4Addr {
         self.dst
     }
 
-    /// Get the source of the layer.
+    /// Returns the source of the layer.
     pub fn src(&self) -> u16 {
         self.layer.source
     }
 
-    /// Get the destination of the layer.
+    /// Returns the destination of the layer.
     pub fn dst(&self) -> u16 {
         self.layer.destination
     }
 
-    /// Get the sequence of the layer.
+    /// Returns the sequence of the layer.
     pub fn sequence(&self) -> u32 {
         self.layer.sequence
     }
 
-    /// Get the acknowledgement of the layer.
+    /// Returns the acknowledgement of the layer.
     pub fn acknowledgement(&self) -> u32 {
         self.layer.acknowledgement
     }
 
-    /// Get the string represents the flags of the layer.
+    /// Returns the string represents the flags of the layer.
     pub fn flag_string(&self) -> String {
         let mut flags = String::from("[");
         if self.is_syn() {
@@ -293,12 +293,12 @@ impl Tcp {
         flags
     }
 
-    /// Get the window size of the layer.
+    /// Returns the window size of the layer.
     pub fn window(&self) -> u16 {
         self.layer.window
     }
 
-    /// Get the MSS of the layer. This function allocates space for serializing options.
+    /// Returns the MSS of the layer. This function allocates space for serializing options.
     pub fn mss(&self) -> Option<u16> {
         let mut buffer = vec![0u8; 40];
         let mut packet = MutableTcpOptionPacket::new(buffer.as_mut_slice()).unwrap();
@@ -317,7 +317,7 @@ impl Tcp {
         None
     }
 
-    /// Get the window scale of the layer. This function allocates space for serializing options.
+    /// Returns the window scale of the layer. This function allocates space for serializing options.
     pub fn wscale(&self) -> Option<u8> {
         let mut buffer = vec![0u8; 40];
         let mut packet = MutableTcpOptionPacket::new(buffer.as_mut_slice()).unwrap();
@@ -336,7 +336,7 @@ impl Tcp {
         None
     }
 
-    /// Get the selective acknowledgements of the layer. This function allocates space for
+    /// Returns the selective acknowledgements of the layer. This function allocates space for
     /// serializing options.
     pub fn sack(&self) -> Option<Vec<(u32, u32)>> {
         let mut buffer = vec![0u8; 40];
@@ -363,7 +363,7 @@ impl Tcp {
         None
     }
 
-    /// Get the timestamp of the layer. This function allocates space for serializing options.
+    /// Returns the timestamp of the layer. This function allocates space for serializing options.
     pub fn ts(&self) -> Option<u32> {
         let mut buffer = vec![0u8; 40];
         let mut packet = MutableTcpOptionPacket::new(buffer.as_mut_slice()).unwrap();
@@ -382,7 +382,7 @@ impl Tcp {
         None
     }
 
-    /// Get the timestamp echo reply of the layer. This function allocates space for serializing
+    /// Returns the timestamp echo reply of the layer. This function allocates space for serializing
     /// options.
     pub fn ts_ecr(&self) -> Option<u32> {
         let mut buffer = vec![0u8; 40];
