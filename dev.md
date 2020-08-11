@@ -70,13 +70,7 @@ This is the development documentation of pcap2socks.
 
 `MAX_U32_WINDOW_SIZE`: Same as above. Default as `16777216` Bytes, or 16 MB.
 
-`TIMEOUT_WAIT`: Same as above. Default as `20` ms.
-
 `RECV_WINDOW`: Represents the receive window size. The actual window will be multiplied by `wscale`. Default as `65535` Bytes.
-
-`ENABLE_RECV_SWS_AVOID`: Represents if the receive-side silly window syndrome avoidance ([RFC 1122](https://tools.ietf.org/html/rfc1122)) is enabled. Default as `true`.
-
-`ENABLE_SEND_SWS_AVOID`: Represents if the send-side silly window syndrome avoidance ([RFC 896](https://tools.ietf.org/html/rfc896)) is enabled. Default as `true`.
 
 `ENABLE_RTO_COMPUTE`: Represents if the RTO computation ([RFC 6298](https://tools.ietf.org/html/rfc6298)) is enabled. Default as `true`.
 
@@ -85,6 +79,12 @@ This is the development documentation of pcap2socks.
 `MIN_RTO`: Represents the minimum timeout for a retransmission in a TCP connection. Default as `1000` ms.
 
 `MAX_RTO`: Represents the maximum timeout for a retransmission in a TCP connection. Default as `60000` ms.
+
+`TIMEOUT_WAIT`: Same as above. Default as `20` ms.
+
+`ENABLE_RECV_SWS_AVOID`: Represents if the receive-side silly window syndrome avoidance ([RFC 1122](https://tools.ietf.org/html/rfc1122)) is enabled. Default as `true`.
+
+`ENABLE_SEND_SWS_AVOID`: Represents if the send-side silly window syndrome avoidance ([RFC 896](https://tools.ietf.org/html/rfc896)) is enabled. Default as `true`.
 
 `ENABLE_MSS`: Represents if the TCP MSS ([RFC 793](https://www.iana.org/go/rfc793)) option is enabled. Default as `true`.
 

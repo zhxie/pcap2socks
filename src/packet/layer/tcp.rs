@@ -28,7 +28,7 @@ impl Tcp {
         sequence: u32,
         acknowledgement: u32,
         window: u16,
-        sacks: Option<&Vec<(u32, u32)>>,
+        sacks: Option<Vec<(u32, u32)>>,
         ts: Option<(u32, u32)>,
     ) -> Tcp {
         let mut d_tcp = tcp::Tcp {
@@ -48,7 +48,7 @@ impl Tcp {
         // TCP options
         let is_ts = ts.is_some();
         let is_sacks = match sacks {
-            Some(sacks) => sacks.len() > 0,
+            Some(ref sacks) => sacks.len() > 0,
             None => false,
         };
 
