@@ -402,7 +402,7 @@ impl FromStr for ResolvableSocketAddrV4 {
             Err(e) => {
                 has_alias = true;
 
-                let v: Vec<_> = s.split(":").collect();
+                let v = s.split(":").collect::<Vec<_>>();
                 if v.len() != 2 {
                     return Err(ResolvableAddrParseError::from(e));
                 }

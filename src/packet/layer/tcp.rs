@@ -538,7 +538,7 @@ impl Layer for Tcp {
 }
 
 fn bytes_to_u16(bytes: &[u8]) -> u16 {
-    let mut result: u16 = 0;
+    let mut result = 0;
     let size = bytes.len();
 
     for i in 0..min(2, size) {
@@ -548,7 +548,7 @@ fn bytes_to_u16(bytes: &[u8]) -> u16 {
 }
 
 fn bytes_to_u32(bytes: &[u8]) -> u32 {
-    let mut result: u32 = 0;
+    let mut result = 0;
     let size = bytes.len();
 
     for i in 0..min(4, size) {

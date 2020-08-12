@@ -303,7 +303,7 @@ impl TcpTxState {
 
     /// Appends the payload from the queue to the cache of the TCP connection.
     pub fn append_cache(&mut self, size: usize) -> io::Result<Vec<u8>> {
-        let payload = self.queue.drain(..size).collect::<Vec<u8>>();
+        let payload = self.queue.drain(..size).collect::<Vec<_>>();
 
         // Append to cache
         trace!(
@@ -801,7 +801,7 @@ impl Forwarder {
             .cache_mut()
             .get_timed_out_and_update(max(MAX_RTO, min(MIN_RTO, next_rto)));
         let sequence = state.cache().sequence();
-        let size: usize = state.cache().len();
+        let size = state.cache().len();
 
         if size > 0 {
             // Double RTO
@@ -1980,7 +1980,7 @@ impl Redirector {
                 let mut tx_locked = self.tx.lock().unwrap();
 
                 let mut rng = rand::thread_rng();
-                let sequence: u32 = rng.gen();
+                let sequence = rng.gen::<u32>();
                 let acknowledgement = tcp.sequence().checked_add(1).unwrap_or(0);
                 if let Some(mss) = tcp.mss() {
                     let mtu = Ipv4::minimum_len() + Tcp::minimum_len() + mss as usize;

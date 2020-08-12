@@ -529,7 +529,7 @@ impl Window {
 
             // Shrink range sequence is possible
             if ((u32::MAX - self.sequence) as usize) < size {
-                let keys: Vec<_> = self.edges.keys().map(|x| *x).collect();
+                let keys = self.edges.keys().map(|x| *x).collect::<Vec<_>>();
 
                 for key in keys {
                     let value = self.edges.remove(&key).unwrap();

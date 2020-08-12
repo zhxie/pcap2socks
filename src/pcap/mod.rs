@@ -128,7 +128,7 @@ impl Display for Interface {
             self.ip_addrs
                 .iter()
                 .map(|ip_addr| { ip_addr.to_string() })
-                .collect::<Vec<String>>()
+                .collect::<Vec<_>>()
                 .join(", ")
         );
 
@@ -149,7 +149,7 @@ impl Display for Interface {
 pub fn interfaces() -> Vec<Interface> {
     let inters = datalink::interfaces();
 
-    let ifs: Vec<Interface> = inters
+    let ifs = inters
         .iter()
         .map(|inter| {
             /* Cannot get flags using WinPcap in Windows
@@ -185,7 +185,7 @@ pub fn interfaces() -> Vec<Interface> {
             Ok(i)
         })
         .filter_map(Result::ok)
-        .collect();
+        .collect::<Vec<_>>();
 
     let ifs = mark_interfaces(ifs);
 
