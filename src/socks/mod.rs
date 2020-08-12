@@ -137,9 +137,6 @@ impl StreamWorker {
                 if let Err(ref e) = tx_cloned.lock().unwrap().tick(dst, src) {
                     warn!("handle {}: {}", "TCP", e);
                 }
-                if is_read_closed_cloned2.load(Ordering::Relaxed) {
-                    break;
-                }
 
                 time::delay_for(Duration::from_millis(TICK_INTERVAL)).await;
             }
@@ -177,8 +174,8 @@ impl StreamWorker {
         match how {
             Shutdown::Write => {
                 if !self.is_write_closed.load(Ordering::Relaxed) {
-                    self.stream_tx.take().unwrap().forget();
                     self.is_write_closed.store(true, Ordering::Relaxed);
+                    self.stream_tx.take().unwrap().forget();
                     trace!("close stream write {} -> {}", 0, self.dst);
                 }
             }

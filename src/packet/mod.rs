@@ -456,7 +456,6 @@ impl Defraggler {
             Some(frag) => frag.is_expired(),
             None => true,
         };
-
         if is_create {
             let frag = match Fragmentation::new(indicator) {
                 Some(frag) => frag,
@@ -466,9 +465,8 @@ impl Defraggler {
             self.frags.insert(key, frag);
         }
 
-        let frag = self.frags.get_mut(&key).unwrap();
-
         // Add fragmentation
+        let frag = self.frags.get_mut(&key).unwrap();
         let header_size = indicator.ethernet().unwrap().len() + ipv4.len();
         frag.add(indicator, &frame[header_size..]);
         if frag.is_completed() {

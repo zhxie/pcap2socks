@@ -1449,6 +1449,7 @@ struct TcpRxState {
     src: SocketAddrV4,
     dst: SocketAddrV4,
     recv_next: u32,
+    last_acknowledgement: u32,
     duplicate: usize,
     last_retrans: Option<Instant>,
     wscale: u8,
@@ -1474,6 +1475,7 @@ impl TcpRxState {
             src,
             dst,
             recv_next,
+            last_acknowledgement: 0,
             duplicate: 0,
             last_retrans: None,
             wscale,
@@ -1498,22 +1500,28 @@ impl TcpRxState {
 
     /// Increases the duplication counter of the TCP connection and returns if a fast
     /// retransmission should be performed.
-    fn increase_duplicate(&mut self) -> bool {
-        self.duplicate = self.duplicate.checked_add(1).unwrap_or(usize::MAX);
-        trace!(
-            "increase TCP duplicate of {} -> {} to {}",
-            self.src,
-            self.dst,
-            self.duplicate
-        );
+    fn increase_duplicate(&mut self, acknowledgement: u32) -> bool {
+        if self.last_acknowledgement == acknowledgement {
+            self.duplicate = self.duplicate.checked_add(1).unwrap_or(usize::MAX);
+            trace!(
+                "increase TCP duplicate of {} -> {} at {} to {}",
+                self.src,
+                self.dst,
+                acknowledgement,
+                self.duplicate
+            );
 
-        if self.duplicate >= DUPLICATES_THRESHOLD {
-            let is_cooled_down = match self.last_retrans {
-                Some(ref instant) => instant.elapsed().as_millis() < RETRANS_COOL_DOWN,
-                None => false,
-            };
+            if self.duplicate >= DUPLICATES_THRESHOLD {
+                let is_cooled_down = match self.last_retrans {
+                    Some(ref instant) => instant.elapsed().as_millis() < RETRANS_COOL_DOWN,
+                    None => false,
+                };
 
-            return !is_cooled_down;
+                return !is_cooled_down;
+            }
+        } else {
+            self.clear_duplicate();
+            self.last_acknowledgement = acknowledgement;
         }
 
         false
@@ -1521,7 +1529,12 @@ impl TcpRxState {
 
     fn clear_duplicate(&mut self) {
         self.duplicate = 0;
-        trace!("clear TCP duplicate of {} -> {}", self.src, self.dst);
+        trace!(
+            "clear TCP duplicate of {} -> {} at {}",
+            self.src,
+            self.dst,
+            self.last_acknowledgement
+        );
     }
 
     fn set_last_retrans(&mut self) {
@@ -1896,7 +1909,7 @@ impl Redirector {
 
                     return Ok(());
                 } else {
-                    let is_retrans = state.increase_duplicate();
+                    let is_retrans = state.increase_duplicate(tcp.acknowledgement());
                     // Duplicate ACK
                     if is_retrans && !tcp.is_zero_window() {
                         // Fast retransmit
