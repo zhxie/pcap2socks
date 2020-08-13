@@ -21,6 +21,7 @@ impl Ipv4 {
     /// Creates an `Ipv4`.
     pub fn new(identification: u16, t: LayerKind, src: Ipv4Addr, dst: Ipv4Addr) -> Option<Ipv4> {
         let next_level_protocol = match t {
+            LayerKinds::Icmpv4 => IpNextHeaderProtocols::Icmp,
             LayerKinds::Tcp => IpNextHeaderProtocols::Tcp,
             LayerKinds::Udp => IpNextHeaderProtocols::Udp,
             _ => return None,
@@ -140,6 +141,16 @@ impl Ipv4 {
     /// Returns the next level protocol of the layer.
     pub fn next_level_protocol(&self) -> IpNextHeaderProtocol {
         self.layer.next_level_protocol
+    }
+
+    /// Returns the next level layer kind of the layer.
+    pub fn next_level_layer_kind(&self) -> Option<LayerKind> {
+        match self.layer.next_level_protocol {
+            IpNextHeaderProtocols::Icmp => Some(LayerKinds::Icmpv4),
+            IpNextHeaderProtocols::Tcp => Some(LayerKinds::Tcp),
+            IpNextHeaderProtocols::Udp => Some(LayerKinds::Udp),
+            _ => None,
+        }
     }
 
     /// Returns the source of the layer.

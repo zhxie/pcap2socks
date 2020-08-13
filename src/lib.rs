@@ -24,6 +24,7 @@ use self::socks::{
 use cache::{Queue, Window};
 use packet::layer::arp::Arp;
 use packet::layer::ethernet::Ethernet;
+use packet::layer::icmpv4::Icmpv4;
 use packet::layer::ipv4::Ipv4;
 use packet::layer::tcp::Tcp;
 use packet::layer::udp::Udp;
@@ -1755,14 +1756,16 @@ impl Redirector {
 
                     if let Some(transport) = transport {
                         match transport {
-                            Layers::Tcp(tcp) => self.handle_tcp(&tcp, &payload).await?,
-                            Layers::Udp(udp) => self.handle_udp(&udp, &payload).await?,
+                            Layers::Icmpv4(ref icmpv4) => self.handle_icmpv4(icmpv4)?,
+                            Layers::Tcp(ref tcp) => self.handle_tcp(tcp, &payload).await?,
+                            Layers::Udp(ref udp) => self.handle_udp(udp, &payload).await?,
                             _ => unreachable!(),
                         }
                     }
                 } else {
                     if let Some(transport) = indicator.transport() {
                         match transport {
+                            Layers::Icmpv4(icmpv4) => self.handle_icmpv4(icmpv4)?,
                             Layers::Tcp(tcp) => {
                                 self.handle_tcp(tcp, &frame_without_padding[indicator.len()..])
                                     .await?
@@ -1775,6 +1778,36 @@ impl Redirector {
                         }
                     }
                 }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn handle_icmpv4(&mut self, icmpv4: &Icmpv4) -> io::Result<()> {
+        if icmpv4.is_destination_port_unreachable() {
+            // Destination port unreachable
+            let kind = match icmpv4.next_level_layer_kind() {
+                Some(kind) => kind,
+                None => return Ok(()),
+            };
+            match kind {
+                LayerKinds::Udp => {
+                    let dst = icmpv4.dst().unwrap();
+                    self.unbind_local_udp_port(dst);
+                }
+                _ => {}
+            }
+        } else if icmpv4.is_fragmentation_required_and_df_flag_set() {
+            // Fragmentation required, and DF flag set
+            let mtu = icmpv4.next_hop_mtu().unwrap();
+            if self
+                .tx
+                .lock()
+                .unwrap()
+                .set_src_mtu(icmpv4.dst_ip_addr().unwrap(), mtu as usize)
+            {
+                info!("Update MTU of {} to {}", icmpv4.dst_ip_addr().unwrap(), mtu);
             }
         }
 
@@ -2134,10 +2167,6 @@ impl Redirector {
         Ok(())
     }
 
-    fn get_tx(&self) -> Arc<Mutex<Forwarder>> {
-        Arc::clone(&self.tx)
-    }
-
     async fn bind_local_udp_port(&mut self, src: SocketAddrV4) -> io::Result<u16> {
         let local_port = self.datagram_map.get(&src);
         match local_port {
@@ -2192,5 +2221,23 @@ impl Redirector {
                 }
             }
         }
+    }
+
+    fn unbind_local_udp_port(&mut self, src: SocketAddrV4) {
+        let local_port = self.datagram_map.get(&src);
+        match local_port {
+            Some(&local_port) => {
+                self.datagrams.remove(&local_port);
+                self.udp_lru.pop(&local_port);
+                self.datagram_map.remove(&src);
+
+                trace!("unbind UDP port {} = {}", local_port, src);
+            }
+            None => {}
+        }
+    }
+
+    fn get_tx(&self) -> Arc<Mutex<Forwarder>> {
+        Arc::clone(&self.tx)
     }
 }

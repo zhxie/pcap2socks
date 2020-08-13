@@ -2,8 +2,9 @@
 
 use pnet::packet::arp::ArpPacket;
 use pnet::packet::ethernet::{EtherTypes, EthernetPacket};
+use pnet::packet::icmp::IcmpPacket;
 use pnet::packet::ip::IpNextHeaderProtocols;
-use pnet::packet::ipv4::{Ipv4Flags, Ipv4Packet};
+use pnet::packet::ipv4::Ipv4Packet;
 use pnet::packet::tcp::TcpPacket;
 use pnet::packet::udp::UdpPacket;
 use pnet::packet::Packet;
@@ -16,6 +17,7 @@ use std::time::Instant;
 pub mod layer;
 use layer::arp::Arp;
 use layer::ethernet::Ethernet;
+use layer::icmpv4::Icmpv4;
 use layer::ipv4::Ipv4;
 use layer::tcp::Tcp;
 use layer::udp::Udp;
@@ -53,10 +55,16 @@ impl Indicator {
                 Some(ref ipv4_packet) => {
                     let ipv4 = Ipv4::parse(ipv4_packet);
                     // Fragment
-                    if ipv4_packet.get_flags() & Ipv4Flags::MoreFragments == 0
-                        && ipv4_packet.get_fragment_offset() <= 0
-                    {
+                    if !ipv4.is_fragment() {
                         transport = match ipv4_packet.get_next_level_protocol() {
+                            IpNextHeaderProtocols::Icmp => {
+                                match IcmpPacket::new(ipv4_packet.payload()) {
+                                    Some(ref icmp_packet) => {
+                                        Some(Layers::Icmpv4(Icmpv4::parse(icmp_packet)))
+                                    }
+                                    None => None,
+                                }
+                            }
                             IpNextHeaderProtocols::Tcp => {
                                 match TcpPacket::new(ipv4_packet.payload()) {
                                     Some(ref tcp_packet) => {
@@ -106,6 +114,13 @@ impl Indicator {
                 Layers::Arp(arp) => format!("{}", arp),
                 Layers::Ipv4(ipv4) => match self.transport() {
                     Some(transport) => match transport {
+                        Layers::Icmpv4(icmpv4) => format!(
+                            "{}: {} -> {}, {}",
+                            icmpv4.kind(),
+                            ipv4.src(),
+                            ipv4.dst(),
+                            icmpv4.description()
+                        ),
                         Layers::Tcp(tcp) => format!(
                             "{}: {}:{} -> {}:{} {}",
                             tcp.kind(),
@@ -297,6 +312,17 @@ impl Indicator {
         None
     }
 
+    /// Returns the ICMPv4 layer.
+    pub fn icmpv4(&self) -> Option<&Icmpv4> {
+        if let Some(layer) = self.transport() {
+            if let Layers::Icmpv4(layer) = layer {
+                return Some(layer);
+            }
+        }
+
+        None
+    }
+
     /// Returns the TCP layer.
     pub fn tcp(&self) -> Option<&Tcp> {
         if let Some(layer) = self.transport() {
@@ -397,6 +423,10 @@ impl Fragmentation {
     /// Concatenates fragmentations and returns the transport layer and the payload.
     pub fn concatenate(&self) -> (Option<Layers>, &[u8]) {
         let transport = match self.ipv4.next_level_protocol() {
+            IpNextHeaderProtocols::Icmp => match IcmpPacket::new(&self.buffer[..self.length]) {
+                Some(ref icmp_packet) => Some(Layers::Icmpv4(Icmpv4::parse(icmp_packet))),
+                None => None,
+            },
             IpNextHeaderProtocols::Tcp => match TcpPacket::new(&self.buffer[..self.length]) {
                 Some(ref tcp_packet) => Some(Layers::Tcp(Tcp::parse(tcp_packet, &self.ipv4))),
                 None => None,

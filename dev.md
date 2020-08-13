@@ -6,15 +6,23 @@ This is the development documentation of pcap2socks.
 
 ### Differences with the Standard [RFC 791](https://tools.ietf.org/html/rfc791) and Its Updates
 
-- pcap2socks does not support ICMPv4.
+- pcap2socks ignores DSCP, ECN and all the options.
+
+- pcap2socks will send packets with a TTL of `TTL` regardless of the TTL from the received packets.
 
 - pcap2socks dost not support broadcasting.
 
-- pcap2socks will send packets with a TTL of `TTL` regardless of the TTL from the received packets.
+## ICMPv4 Implementation
+
+### Differences with the Standard [RFC]() and Its Updates
+
+- pcap2socks only supports the destination unreachable (destination port unreachable and fragmentation required, and DF flag set) message.
 
 ## TCP Implementation
 
 ### Differences with the Standard [RFC 793](https://tools.ietf.org/html/rfc793) and Its Updates
+
+- pcap2socks ignores flags NS, CWR, ECE, URG and PSH, and urgent pointers, and only support part of the options including MSS, window scale and selective acknowledgements.
 
 - pcap2socks does not retransmit the ACK/SYN segments in handshaking since if these segments are dropped accidentally, the source will attempt to re-establish the connection.
 
@@ -22,9 +30,11 @@ This is the development documentation of pcap2socks.
 
 - pcap2socks does not consider the wait time in states like `TIME_WAIT` since the source should maintain its state.
 
+- pcap2socks does not realize the zero window probe ([RFC 1122](https://tools.ietf.org/html/rfc1122)) and does not report its window explicitly.
+
 - pcap2socks does not calculate for the window scale ([RFC 7323](https://tools.ietf.org/html/rfc7323)) option and will open a same-size receive window as the source by default.
 
-- pcap2socks does not realize the timestamp ([RFC 7323](https://www.iana.org/go/rfc7323)) option. Since only the source and destination know the full information of the traffic, pcap2socks may not trace any segments and report their timestamp correctly.
+- pcap2socks does not support the timestamp ([RFC 7323](https://www.iana.org/go/rfc7323)) option. Since only the source and destination know the full information of the traffic, pcap2socks may not trace any segments and report their timestamp correctly.
 
 ## SOCKS5 Implementation
 

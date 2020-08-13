@@ -8,6 +8,7 @@ use std::io;
 
 pub mod arp;
 pub mod ethernet;
+pub mod icmpv4;
 pub mod ipv4;
 pub mod tcp;
 pub mod udp;
@@ -25,6 +26,7 @@ impl Display for LayerKind {
                 LayerKinds::Ethernet => "Ethernet",
                 LayerKinds::Arp => "ARP",
                 LayerKinds::Ipv4 => "IPv4",
+                LayerKinds::Icmpv4 => "ICMPv4",
                 LayerKinds::Tcp => "TCP",
                 LayerKinds::Udp => "UDP",
                 _ => "unknown",
@@ -45,10 +47,12 @@ pub mod LayerKinds {
     pub const Arp: LayerKind = LayerKind(1);
     /// Represents the layer kind of IPv4.
     pub const Ipv4: LayerKind = LayerKind(2);
+    /// Represents the layer kind of ICMPv4.
+    pub const Icmpv4: LayerKind = LayerKind(3);
     /// Represents the layer kind of TCP.
-    pub const Tcp: LayerKind = LayerKind(3);
+    pub const Tcp: LayerKind = LayerKind(4);
     /// Represents the layer kind of UDP.
-    pub const Udp: LayerKind = LayerKind(4);
+    pub const Udp: LayerKind = LayerKind(5);
 }
 
 /// Represents a layer.
@@ -80,6 +84,8 @@ pub enum Layers {
     Arp(arp::Arp),
     /// Represents the IPv4 layer.
     Ipv4(ipv4::Ipv4),
+    /// Represents the ICMPv4 layer.
+    Icmpv4(icmpv4::Icmpv4),
     /// Represents the TCP layer.
     Tcp(tcp::Tcp),
     /// Represents the UDP layer.
@@ -92,6 +98,7 @@ impl Display for Layers {
             Layers::Ethernet(ref layer) => layer.fmt(f),
             Layers::Arp(ref layer) => layer.fmt(f),
             Layers::Ipv4(ref layer) => layer.fmt(f),
+            Layers::Icmpv4(ref layer) => layer.fmt(f),
             Layers::Tcp(ref layer) => layer.fmt(f),
             Layers::Udp(ref layer) => layer.fmt(f),
         }
@@ -104,6 +111,7 @@ impl Layer for Layers {
             Layers::Ethernet(ref layer) => layer.kind(),
             Layers::Arp(ref layer) => layer.kind(),
             Layers::Ipv4(ref layer) => layer.kind(),
+            Layers::Icmpv4(ref layer) => layer.kind(),
             Layers::Tcp(ref layer) => layer.kind(),
             Layers::Udp(ref layer) => layer.kind(),
         }
@@ -114,6 +122,7 @@ impl Layer for Layers {
             Layers::Ethernet(ref layer) => layer.len(),
             Layers::Arp(ref layer) => layer.len(),
             Layers::Ipv4(ref layer) => layer.len(),
+            Layers::Icmpv4(ref layer) => layer.len(),
             Layers::Tcp(ref layer) => layer.len(),
             Layers::Udp(ref layer) => layer.len(),
         }
@@ -124,6 +133,7 @@ impl Layer for Layers {
             Layers::Ethernet(ref layer) => layer.serialize(buffer, n),
             Layers::Arp(ref layer) => layer.serialize(buffer, n),
             Layers::Ipv4(ref layer) => layer.serialize(buffer, n),
+            Layers::Icmpv4(ref layer) => layer.serialize(buffer, n),
             Layers::Tcp(ref layer) => layer.serialize(buffer, n),
             Layers::Udp(ref layer) => layer.serialize(buffer, n),
         }
@@ -139,6 +149,7 @@ impl Layer for Layers {
             Layers::Ethernet(ref layer) => layer.serialize_with_payload(buffer, payload, n),
             Layers::Arp(ref layer) => layer.serialize_with_payload(buffer, payload, n),
             Layers::Ipv4(ref layer) => layer.serialize_with_payload(buffer, payload, n),
+            Layers::Icmpv4(ref layer) => layer.serialize_with_payload(buffer, payload, n),
             Layers::Tcp(ref layer) => layer.serialize_with_payload(buffer, payload, n),
             Layers::Udp(ref layer) => layer.serialize_with_payload(buffer, payload, n),
         }
