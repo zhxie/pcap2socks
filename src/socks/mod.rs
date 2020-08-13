@@ -325,6 +325,13 @@ impl DatagramWorker {
     }
 }
 
+impl Drop for DatagramWorker {
+    fn drop(&mut self) {
+        self.is_closed.store(true, Ordering::Relaxed);
+        trace!("drop datagram {} = {}", self.src(), self.local_port);
+    }
+}
+
 fn socket_addr_v4_to_u64(addr: &SocketAddrV4) -> u64 {
     let ip = u32::from(addr.ip().clone());
 
