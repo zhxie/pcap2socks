@@ -1460,7 +1460,7 @@ struct TcpRxState {
 }
 
 impl TcpRxState {
-    /// Creates a new `TcpRxState`, the sequence is the sequence in the TCP SYN segment.
+    /// Creates a new `TcpRxState`, the sequence is the sequence in the TCP SYN packet.
     fn new(
         src: SocketAddrV4,
         dst: SocketAddrV4,
@@ -1884,7 +1884,7 @@ impl Redirector {
                         match stream.send(payload.as_slice()).await {
                             Ok(_) => {
                                 let cache_remaining_size =
-                                    (state.cache.remaining_size() >> state.wscale as usize) as u16;
+                                    (state.cache.remaining() >> state.wscale as usize) as u16;
 
                                 state.add_recv_next(payload.len() as u32);
 
@@ -1919,7 +1919,7 @@ impl Redirector {
                     None => {
                         // Retransmission or unordered
                         let cache_remaining_size =
-                            (state.cache.remaining_size() >> state.wscale as usize) as u16;
+                            (state.cache.remaining() >> state.wscale as usize) as u16;
 
                         // Update window size
                         let mut tx_locked = self.tx.lock().unwrap();

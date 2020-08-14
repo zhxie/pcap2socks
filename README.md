@@ -86,6 +86,8 @@ pcap2socks -s <ADDRESS> -p <ADDRESS> -d <ADDRESS>
 
 1. Applications like VMWare Workstation on Windows may implement their own IP forwarding and forward packets which should be handled by pcap2socks, resulting in abnormal operations in pcap2socks.
 
+2. The traffic flow control was not implemented in pcap2socks currently. On certain occasions, bandwidth may be heavily occupied by one side of a connection, causing the other side of the connection and other connections to be unable to transmit data normally.
+
 ## License
 
 pcap2socks is licensed under [the MIT License](/LICENSE).

@@ -581,7 +581,7 @@ impl Window {
     }
 
     /// Returns the remaining size of the window.
-    pub fn remaining_size(&self) -> usize {
+    pub fn remaining(&self) -> usize {
         self.buffer.len() - self.size
     }
 
