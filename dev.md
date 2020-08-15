@@ -10,11 +10,11 @@ This is the development documentation of pcap2socks.
 
 - pcap2socks will send packets with a TTL of `TTL` regardless of the TTL from the received packets.
 
-- pcap2socks dost not support broadcasting.
+- pcap2socks dost not support broadcasting and multicasting.
 
 ## ICMPv4 Implementation
 
-### Differences with the Standard [RFC]() and Its Updates
+### Differences with the Standard [RFC 792](https://tools.ietf.org/html/rfc792) and Its Updates
 
 - pcap2socks only supports the destination unreachable (destination port unreachable and fragmentation required, and DF flag set) message.
 
@@ -26,15 +26,17 @@ This is the development documentation of pcap2socks.
 
 - pcap2socks does not retransmit the ACK/SYN packets in handshaking since if these packets are dropped accidentally, the source will attempt to re-establish the connection.
 
-- pcap2socks does not maintain the congestion window ([RFC 5681](https://tools.ietf.org/html/rfc5681)). The congestion control will be implemented in the future release, and the algorithm CUBIC ([RFC 8312](https://tools.ietf.org/html/rfc8312)), PRR ([RFC 6973](https://tools.ietf.org/html/rfc6937)) or [BBR](https://github.com/google/bbr) may be considered.
-
 - pcap2socks does not consider the wait time in states like `TIME_WAIT` since the source should maintain its state.
-
-- pcap2socks does not realize the zero window probe ([RFC 1122](https://tools.ietf.org/html/rfc1122)) and does not report its window explicitly.
 
 - pcap2socks does not calculate for the window scale ([RFC 7323](https://tools.ietf.org/html/rfc7323)) option and will open a same-size receive window as the source by default.
 
 - pcap2socks does not support the timestamp ([RFC 7323](https://www.iana.org/go/rfc7323)) option. Since only the source and destination know the full information of the traffic, pcap2socks may not trace any packets and report their timestamp correctly.
+
+- pcap2socks does not maintain the congestion window ([RFC 5681](https://tools.ietf.org/html/rfc5681)). The congestion control will be implemented in the future release, and the algorithm CUBIC ([RFC 8312](https://tools.ietf.org/html/rfc8312)), PRR ([RFC 6973](https://tools.ietf.org/html/rfc6937)) or [BBR](https://github.com/google/bbr) may be considered.
+
+- pcap2socks does not realize the zero window probe ([RFC 1122](https://tools.ietf.org/html/rfc1122)) and does not report its window explicitly.
+
+- pcap2socks does not realize keep-alive ([RFC 1122](https://tools.ietf.org/html/rfc1122)) for performance consideration.
 
 ## SOCKS5 Implementation
 
@@ -114,7 +116,7 @@ This is the development documentation of pcap2socks.
 
 pcap2socks has some defects in the view of engineering.
 
-- Because pcap2socks does not implement the TCP congestion control, the traffic transmission performance may be lost. However, since pcap2socks is mainly used in LANs, the actual impact may be minimal.
+- Because pcap2socks does not implement the congestion control, the zero window probe and the keep-alive in any TCP connections, the traffic transmission performance may be lost. However, since pcap2socks is mainly used in LANs, the actual impact may be minimal.
 
 - pcap2socks ignores checksums, lengths and some other fields in headers to support non-standard systems and LRO (large receive offload), but will also bring security issues.
 

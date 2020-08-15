@@ -493,6 +493,12 @@ impl TcpTxState {
     }
 }
 
+impl Display for TcpTxState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "TCP TX State: {} -> {}", self.dst, self.src)
+    }
+}
+
 /// Represents the wait time after a `TimedOut` `IoError`.
 const TIMEDOUT_WAIT: u64 = 20;
 
@@ -1575,11 +1581,7 @@ impl TcpRxState {
 
 impl Display for TcpRxState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "TCP Rx State: {} -> {} Recv_Next = {} WS = {} SACK_PERM = {}",
-            self.src, self.dst, self.recv_next, self.wscale, self.sack_perm
-        )
+        write!(f, "TCP RX State: {} -> {}", self.src, self.dst)
     }
 }
 
