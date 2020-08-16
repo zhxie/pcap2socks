@@ -21,6 +21,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v2
+    - name: Rustfmt
+      run: rustup component add rustfmt && cargo fmt --all -- --check
     - name: Build
       run: cargo build --release --verbose
     - name: Run tests
