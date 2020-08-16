@@ -2,7 +2,8 @@
 
 use std::cmp::{max, min};
 use std::collections::{BTreeMap, VecDeque};
-use std::io;
+use std::fmt::{self, Display};
+use std::io::{Error, ErrorKind, Result};
 use std::ops::Bound::Included;
 use std::time::Duration;
 
@@ -21,7 +22,7 @@ const EXPANSION_FACTOR: f64 = 1.5;
 #[derive(Debug)]
 pub struct Queue {
     buffer: Vec<u8>,
-    unbounded: bool,
+    capacity: usize,
     sequence: u32,
     head: usize,
     size: usize,
@@ -32,14 +33,14 @@ pub struct Queue {
 impl Queue {
     /// Creates a new `Queue`.
     pub fn new(sequence: u32) -> Queue {
-        Queue::with_capacity(INITIAL_SIZE, sequence)
+        Queue::with_capacity(usize::MAX, sequence)
     }
 
     /// Creates a new `Queue` with the specified capacity.
     pub fn with_capacity(capacity: usize, sequence: u32) -> Queue {
         Queue {
-            buffer: vec![0; capacity],
-            unbounded: false,
+            buffer: Vec::new(),
+            capacity,
             sequence,
             head: 0,
             size: 0,
@@ -48,42 +49,44 @@ impl Queue {
         }
     }
 
-    /// Creates a new `Queue` which can increase its size dynamically.
-    pub fn new_unbounded(sequence: u32) -> Queue {
-        let mut queue = Queue::new(sequence);
-        queue.unbounded = true;
-
-        queue
-    }
-
     /// Appends some bytes to the end of the queue.
-    pub fn append(&mut self, payload: &[u8], rto: u64) -> io::Result<()> {
+    pub fn append(&mut self, payload: &[u8], rto: u64) -> Result<()> {
+        if payload.len() > self.remaining() {
+            return Err(Error::new(ErrorKind::Other, "queue is full"));
+        }
         if payload.len() > self.buffer.len() - self.size {
-            if self.is_unbounded() {
-                // Extend the buffer
-                let size = max(
-                    (self.buffer.len() as f64 * EXPANSION_FACTOR) as usize,
-                    self.buffer.len() + payload.len(),
-                );
+            // Extend the buffer
+            let prev_len = self.buffer.len();
+            let next_len = min(
+                self.capacity,
+                max(self.buffer.len() * 3 / 2, self.size + payload.len()),
+            );
+            self.buffer.resize(next_len, 0);
 
-                let mut new_buffer = vec![0u8; size];
+            // From the begin of the buffer to the tail
+            // TODO: all the computation of tail in queue may panic
+            let prev_tail = (self.head + self.size)
+                .checked_sub(prev_len)
+                .unwrap_or(self.head + self.size);
+            if prev_tail < self.head {
+                // From the begin to the mid of the buffer
+                let len_a = min(prev_tail, next_len - prev_len);
+                let (first, second) = self.buffer.split_at_mut(prev_len);
+                second[..len_a].copy_from_slice(&first[..len_a]);
 
-                // From the head to the end of the buffer
-                let length_a = min(self.size, self.buffer.len() - self.head);
-                new_buffer[..length_a]
-                    .copy_from_slice(&self.buffer[self.head..self.head + length_a]);
+                // From the mid to the tail of the buffer
+                let len_b = prev_tail - len_a;
+                if len_b > 0 {
+                    let len_b_a = len_b.checked_sub(len_a).unwrap_or(0);
+                    if len_b_a > 0 {
+                        let (first, second) = self.buffer.split_at_mut(len_a);
+                        first[..len_b_a].copy_from_slice(&second[..len_b_a]);
+                    }
 
-                // From the begin of the buffer to the tail
-                let length_b = self.size - length_a;
-                if length_b > 0 {
-                    new_buffer[length_a..length_a + length_b]
-                        .copy_from_slice(&self.buffer[..length_b]);
+                    let len_b_b = len_b - len_b_a;
+                    let (first, second) = self.buffer.split_at_mut(len_a + len_b_a);
+                    first[len_b_a..].copy_from_slice(&second[..len_b_b]);
                 }
-
-                self.buffer = new_buffer;
-                self.head = 0;
-            } else {
-                return Err(io::Error::new(io::ErrorKind::Other, "queue is full"));
             }
         }
 
@@ -95,17 +98,16 @@ impl Queue {
         self.clocks.push_back((sequence, Timer::new(rto)));
 
         // From the tail to the end of the buffer
-        let mut length_a = 0;
-        if self.head + self.size < self.buffer.len() {
-            length_a = min(payload.len(), self.buffer.len() - (self.head + self.size));
-            self.buffer[self.head + self.size..self.head + self.size + length_a]
-                .copy_from_slice(&payload[..length_a]);
-        }
+        let tail = (self.head + self.size)
+            .checked_sub(self.buffer.len())
+            .unwrap_or(self.head + self.size);
+        let len_a = min(self.buffer.len() - tail, payload.len());
+        self.buffer[tail..tail + len_a].copy_from_slice(&payload[..len_a]);
 
         // From the begin of the buffer to the head
-        let length_b = payload.len() - length_a;
-        if length_b > 0 {
-            self.buffer[..length_b].copy_from_slice(&payload[length_a..]);
+        let len_b = payload.len() - len_a;
+        if len_b > 0 {
+            self.buffer[..len_b].copy_from_slice(&payload[len_a..]);
         }
 
         self.size += payload.len();
@@ -197,7 +199,7 @@ impl Queue {
     }
 
     /// Returns the payload from the certain sequence of the queue in the given size.
-    pub fn get(&self, sequence: u32, size: usize) -> io::Result<Vec<u8>> {
+    pub fn get(&self, sequence: u32, size: usize) -> Result<Vec<u8>> {
         if size == 0 {
             return Ok(Vec::new());
         }
@@ -206,16 +208,13 @@ impl Queue {
             .unwrap_or_else(|| sequence + (u32::MAX - self.sequence))
             as usize;
         if distance > self.size {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
                 "queue at the certain sequence does not exist",
             ));
         }
         if self.size - distance < size {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "request size too big",
-            ));
+            return Err(Error::new(ErrorKind::InvalidInput, "request size too big"));
         }
 
         let mut payload = vec![0u8; size];
@@ -315,6 +314,11 @@ impl Queue {
         }
     }
 
+    /// Returns the capacity of the queue.
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
     /// Returns the sequence of the queue.
     pub fn sequence(&self) -> u32 {
         self.sequence
@@ -325,6 +329,11 @@ impl Queue {
         self.size
     }
 
+    /// Returns the remaining size of the window.
+    pub fn remaining(&self) -> usize {
+        self.capacity - self.size
+    }
+
     /// Returns the receive next of the queue.
     pub fn recv_next(&self) -> u32 {
         self.sequence
@@ -332,14 +341,73 @@ impl Queue {
             .unwrap_or_else(|| self.size as u32 - (u32::MAX - self.sequence))
     }
 
-    fn is_unbounded(&self) -> bool {
-        self.unbounded
-    }
-
     /// Returns if the queue is empty.
     pub fn is_empty(&self) -> bool {
         self.size == 0
     }
+}
+
+impl Display for Queue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let head = self.head;
+        let tail = (self.head + self.size).checked_sub(1).unwrap_or(usize::MAX);
+        let tail = tail.checked_sub(self.buffer.len()).unwrap_or(tail);
+
+        write!(f, "[")?;
+        for i in 0..self.buffer.len() {
+            if i != 0 {
+                write!(f, ", ")?;
+            }
+            if i == head {
+                write!(f, "<{}", self.buffer[i])?;
+            } else if i == tail {
+                write!(f, "{}>", self.buffer[i])?;
+            } else {
+                write!(f, "{}", self.buffer[i])?;
+            }
+        }
+        write!(f, "]")
+    }
+}
+
+#[test]
+fn queue_append_overflow() {
+    let mut q = Queue::with_capacity(9, 0);
+
+    let v = (0..8).into_iter().collect::<Vec<_>>();
+    q.append(&v, 0).unwrap();
+
+    q.invalidate_to(2);
+
+    let v = (8..10).into_iter().collect::<Vec<_>>();
+    q.append(&v, 0).unwrap();
+
+    q.invalidate_to(6);
+
+    let v = (10..15).into_iter().collect::<Vec<_>>();
+    q.append(&v, 0).unwrap();
+
+    assert_eq!(q.to_string(), "[9, 10, 11, 12, 13, 14>, <6, 7, 8]");
+}
+
+#[test]
+fn queue_append_overflow_overlapped() {
+    let mut q = Queue::with_capacity(9, 0);
+
+    let v = (0..8).into_iter().collect::<Vec<_>>();
+    q.append(&v, 0).unwrap();
+
+    q.invalidate_to(3);
+
+    let v = (8..11).into_iter().collect::<Vec<_>>();
+    q.append(&v, 0).unwrap();
+
+    q.invalidate_to(6);
+
+    let v = (11..15).into_iter().collect::<Vec<_>>();
+    q.append(&v, 0).unwrap();
+
+    assert_eq!(q.to_string(), "[9, 10, 11, 12, 13, 14>, <6, 7, 8]");
 }
 
 /// Represents a window cache. The `Window` can hold discontinuous bytes and pop out them when
@@ -383,7 +451,7 @@ impl Window {
     }
 
     /// Appends some bytes to the window and returns continuous bytes from the beginning.
-    pub fn append(&mut self, sequence: u32, payload: &[u8]) -> io::Result<Option<Vec<u8>>> {
+    pub fn append(&mut self, sequence: u32, payload: &[u8]) -> Result<Option<Vec<u8>>> {
         let sub_sequence = sequence
             .checked_sub(self.sequence)
             .unwrap_or_else(|| sequence + (u32::MAX - self.sequence))
@@ -437,7 +505,7 @@ impl Window {
                 self.buffer = new_buffer;
                 self.head = 0;
             } else {
-                return Err(io::Error::new(io::ErrorKind::Other, "window is full"));
+                return Err(Error::new(ErrorKind::Other, "window is full"));
             }
         }
 
