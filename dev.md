@@ -74,10 +74,6 @@ This is the development documentation of pcap2socks.
 
 `MAX_U32_WINDOW_SIZE`: Represents the max distance of u32 values between packets in an u32 window. Data with sequence `1000` and sequence `101000` may be recognized as increment but discontinuous, but data with sequence `101000` and `1000` may be recognized as expired or out of order. The former example's seconds data will be pushed into the cache, while the latter's will be dropped. Default as `16777216` Bytes, or 16 MB.
 
-`INITIAL_SIZE`: Represents the initial size of cache. Default as `65536` Bytes, or 64 kB.
-
-`EXPANSION_FACTOR`: Represents the expansion factor of the cache. The cache will be expanded by the factor if it is full. An expansion factor between 1 and 2 is reasonable. Default as `1.5`.
-
 ### Forwarder & Redirector
 
 `MAX_U32_WINDOW_SIZE`: Same as above. Default as `16777216` Bytes, or 16 MB.

@@ -1,7 +1,7 @@
 //! Support for caching and keeping send & receive window.
 
 use std::cmp::{max, min};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::fmt::{self, Display};
 use std::io::{Error, ErrorKind, Result};
 use std::ops::Bound::Included;
@@ -11,11 +11,6 @@ use super::Timer;
 
 /// Represents the max distance of u32 values between packets in an u32 window.
 const MAX_U32_WINDOW_SIZE: usize = 16 * 1024 * 1024;
-
-/// Represents the initial size of cache.
-const INITIAL_SIZE: usize = u16::MAX as usize;
-/// Represents the expansion factor of the cache. The cache will be expanded by the factor.
-const EXPANSION_FACTOR: f64 = 1.5;
 
 /// Represents a queue cache. The `Queue` can hold continuos bytes constantly unless they are
 /// invalidated. The `Queue` can be used as a send window of a TCP connection.
@@ -57,35 +52,23 @@ impl Queue {
         if payload.len() > self.buffer.len() - self.size {
             // Extend the buffer
             let prev_len = self.buffer.len();
-            let next_len = min(
+            let prev_tail = self.tail();
+            let new_len = min(
                 self.capacity,
                 max(self.buffer.len() * 3 / 2, self.size + payload.len()),
             );
-            self.buffer.resize(next_len, 0);
+            self.buffer.resize(new_len, 0);
 
             // From the begin of the buffer to the tail
-            // TODO: all the computation of tail in queue may panic
-            let prev_tail = (self.head + self.size)
-                .checked_sub(prev_len)
-                .unwrap_or(self.head + self.size);
-            if prev_tail < self.head {
+            if prev_tail <= self.head {
                 // From the begin to the mid of the buffer
-                let len_a = min(prev_tail, next_len - prev_len);
-                let (first, second) = self.buffer.split_at_mut(prev_len);
-                second[..len_a].copy_from_slice(&first[..len_a]);
+                let len_a = min(prev_tail, new_len - prev_len);
+                self.buffer.copy_within(..len_a, prev_len);
 
                 // From the mid to the tail of the buffer
                 let len_b = prev_tail - len_a;
                 if len_b > 0 {
-                    let len_b_a = len_b.checked_sub(len_a).unwrap_or(0);
-                    if len_b_a > 0 {
-                        let (first, second) = self.buffer.split_at_mut(len_a);
-                        first[..len_b_a].copy_from_slice(&second[..len_b_a]);
-                    }
-
-                    let len_b_b = len_b - len_b_a;
-                    let (first, second) = self.buffer.split_at_mut(len_a + len_b_a);
-                    first[len_b_a..].copy_from_slice(&second[..len_b_b]);
+                    self.buffer.copy_within(len_a..len_a + len_b, 0);
                 }
             }
         }
@@ -98,9 +81,7 @@ impl Queue {
         self.clocks.push_back((sequence, Timer::new(rto)));
 
         // From the tail to the end of the buffer
-        let tail = (self.head + self.size)
-            .checked_sub(self.buffer.len())
-            .unwrap_or(self.head + self.size);
+        let tail = self.tail();
         let len_a = min(self.buffer.len() - tail, payload.len());
         self.buffer[tail..tail + len_a].copy_from_slice(&payload[..len_a]);
 
@@ -334,6 +315,13 @@ impl Queue {
         self.capacity - self.size
     }
 
+    fn tail(&self) -> usize {
+        // TODO: may panic if overflows
+        (self.head + self.size)
+            .checked_sub(self.buffer.len())
+            .unwrap_or(self.head + self.size)
+    }
+
     /// Returns the receive next of the queue.
     pub fn recv_next(&self) -> u32 {
         self.sequence
@@ -350,20 +338,24 @@ impl Queue {
 impl Display for Queue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let head = self.head;
-        let tail = (self.head + self.size).checked_sub(1).unwrap_or(usize::MAX);
-        let tail = tail.checked_sub(self.buffer.len()).unwrap_or(tail);
+        // The second checked_sub will only fall on 0 if the length of the buffer is 0
+        let tail = self
+            .tail()
+            .checked_sub(1)
+            .unwrap_or(self.buffer.len().checked_sub(1).unwrap_or(0));
 
         write!(f, "[")?;
         for i in 0..self.buffer.len() {
             if i != 0 {
                 write!(f, ", ")?;
             }
+
             if i == head {
-                write!(f, "<{}", self.buffer[i])?;
-            } else if i == tail {
-                write!(f, "{}>", self.buffer[i])?;
-            } else {
-                write!(f, "{}", self.buffer[i])?;
+                write!(f, "<")?;
+            }
+            write!(f, "{}", self.buffer[i])?;
+            if i == tail {
+                write!(f, ">")?;
             }
         }
         write!(f, "]")
@@ -375,17 +367,17 @@ fn queue_append_overflow() {
     let mut q = Queue::with_capacity(9, 0);
 
     let v = (0..8).into_iter().collect::<Vec<_>>();
-    q.append(&v, 0).unwrap();
+    q.append(v.as_slice(), 0).unwrap();
 
     q.invalidate_to(2);
 
     let v = (8..10).into_iter().collect::<Vec<_>>();
-    q.append(&v, 0).unwrap();
+    q.append(v.as_slice(), 0).unwrap();
 
     q.invalidate_to(6);
 
     let v = (10..15).into_iter().collect::<Vec<_>>();
-    q.append(&v, 0).unwrap();
+    q.append(v.as_slice(), 0).unwrap();
 
     assert_eq!(q.to_string(), "[9, 10, 11, 12, 13, 14>, <6, 7, 8]");
 }
@@ -395,17 +387,35 @@ fn queue_append_overflow_overlapped() {
     let mut q = Queue::with_capacity(9, 0);
 
     let v = (0..8).into_iter().collect::<Vec<_>>();
-    q.append(&v, 0).unwrap();
+    q.append(v.as_slice(), 0).unwrap();
 
     q.invalidate_to(3);
 
     let v = (8..11).into_iter().collect::<Vec<_>>();
-    q.append(&v, 0).unwrap();
+    q.append(v.as_slice(), 0).unwrap();
 
     q.invalidate_to(6);
 
     let v = (11..15).into_iter().collect::<Vec<_>>();
-    q.append(&v, 0).unwrap();
+    q.append(v.as_slice(), 0).unwrap();
+
+    assert_eq!(q.to_string(), "[9, 10, 11, 12, 13, 14>, <6, 7, 8]");
+}
+
+#[test]
+fn queue_append_overflow_overlapped_2() {
+    let mut q = Queue::with_capacity(9, 0);
+
+    let v = (0..8).into_iter().collect::<Vec<_>>();
+    q.append(v.as_slice(), 0).unwrap();
+
+    q.invalidate_to(6);
+
+    let v = (8..14).into_iter().collect::<Vec<_>>();
+    q.append(v.as_slice(), 0).unwrap();
+
+    let v = (14..15).into_iter().collect::<Vec<_>>();
+    q.append(v.as_slice(), 0).unwrap();
 
     assert_eq!(q.to_string(), "[9, 10, 11, 12, 13, 14>, <6, 7, 8]");
 }
@@ -415,7 +425,7 @@ fn queue_append_overflow_overlapped() {
 #[derive(Debug)]
 pub struct Window {
     buffer: Vec<u8>,
-    unbounded: bool,
+    capacity: usize,
     sequence: u32,
     head: usize,
     /// Represents the expected size from the head to the tail. NOT all the bytes in [head, head + size) are filled.
@@ -427,14 +437,14 @@ pub struct Window {
 impl Window {
     /// Creates a new `Window`.
     pub fn new(sequence: u32) -> Window {
-        Window::with_capacity(INITIAL_SIZE, sequence)
+        Window::with_capacity(usize::MAX, sequence)
     }
 
     /// Creates a new `Window` with the specified capacity.
     pub fn with_capacity(capacity: usize, sequence: u32) -> Window {
         Window {
-            buffer: vec![0u8; capacity],
-            unbounded: false,
+            buffer: Vec::new(),
+            capacity,
             sequence,
             head: 0,
             size: 0,
@@ -442,16 +452,9 @@ impl Window {
         }
     }
 
-    /// Creates a new `Window` which can increase its size dynamically.
-    pub fn new_unbounded(sequence: u32) -> Window {
-        let mut window = Window::new(sequence);
-        window.unbounded = true;
-
-        window
-    }
-
     /// Appends some bytes to the window and returns continuous bytes from the beginning.
     pub fn append(&mut self, sequence: u32, payload: &[u8]) -> Result<Option<Vec<u8>>> {
+        // TODO: unrecorded payload may be dropped
         let sub_sequence = sequence
             .checked_sub(self.sequence)
             .unwrap_or_else(|| sequence + (u32::MAX - self.sequence))
@@ -461,67 +464,44 @@ impl Window {
         }
 
         let size = sub_sequence + payload.len();
+        if size > self.capacity {
+            return Err(Error::new(ErrorKind::Other, "window is full"));
+        }
         if size > self.buffer.len() {
-            if self.is_unbounded() {
-                // Extend the buffer
-                let size = max((self.buffer.len() as f64 * EXPANSION_FACTOR) as usize, size);
+            // Extend the buffer
+            let prev_len = self.buffer.len();
+            let prev_tail = self.tail();
+            let new_len = min(self.capacity, max(self.buffer.len() * 3 / 2, size));
+            self.buffer.resize(new_len, 0);
 
-                let mut new_buffer = vec![0u8; size];
+            // TODO: the procedure may by optimized to copy valid bytes only
+            // From the begin of the buffer to the tail
+            if prev_tail <= self.head {
+                // From the begin to the mid of the buffer
+                let len_a = min(prev_tail, new_len - prev_len);
+                self.buffer.copy_within(..len_a, prev_len);
 
-                let filled = self.filled();
-                for (sequence, recv_next) in filled {
-                    // Place in the new buffer
-                    let new_head = sequence
-                        .checked_sub(self.sequence)
-                        .unwrap_or_else(|| sequence + (u32::MAX - self.sequence))
-                        as usize;
-                    let new_head = new_head.checked_sub(self.buffer.len()).unwrap_or(new_head);
-                    let new_tail = recv_next
-                        .checked_sub(self.sequence)
-                        .unwrap_or_else(|| recv_next + (u32::MAX - self.sequence))
-                        as usize;
-                    let new_tail = new_tail.checked_sub(self.buffer.len()).unwrap_or(new_tail);
-
-                    // Place in the original buffer
-                    let head = self.head + new_head;
-                    let head = head.checked_sub(self.buffer.len()).unwrap_or(head);
-                    let tail = self.head + new_tail;
-                    let tail = tail.checked_sub(self.buffer.len()).unwrap_or(tail);
-
-                    if tail < head {
-                        // From the head to the end of the buffer
-                        let length_a = self.buffer.len() - head;
-                        new_buffer[new_head..new_head + length_a]
-                            .copy_from_slice(&self.buffer[head..]);
-
-                        // From the begin of the buffer to the tail
-                        new_buffer[new_head + length_a..new_tail]
-                            .copy_from_slice(&self.buffer[..tail]);
-                    } else {
-                        new_buffer[new_head..new_tail].copy_from_slice(&self.buffer[head..tail]);
-                    }
+                // From the mid to the tail of the buffer
+                let len_b = prev_tail - len_a;
+                if len_b > 0 {
+                    self.buffer.copy_within(len_a..len_a + len_b, 0);
                 }
-
-                self.buffer = new_buffer;
-                self.head = 0;
-            } else {
-                return Err(Error::new(ErrorKind::Other, "window is full"));
             }
         }
 
         // TODO: the procedure may by optimized to copy valid bytes only
         // To the end of the buffer
-        let mut length_a = 0;
-        if self.buffer.len() - self.head > sub_sequence {
-            length_a = min(self.buffer.len() - self.head - sub_sequence, payload.len());
-            self.buffer[self.head + sub_sequence..self.head + sub_sequence + length_a]
-                .copy_from_slice(&payload[..length_a]);
-        }
+        // TODO: may panic if overflows
+        let this_tail = (self.head + sub_sequence)
+            .checked_sub(self.buffer.len())
+            .unwrap_or(self.head + sub_sequence);
+        let len_a = min(self.buffer.len() - this_tail, payload.len());
+        self.buffer[this_tail..this_tail + len_a].copy_from_slice(&payload[..len_a]);
 
         // From the begin of the buffer
-        let length_b = payload.len() - length_a;
-        if length_b > 0 {
-            self.buffer[..length_b].copy_from_slice(&payload[length_a..]);
+        let len_b = payload.len() - len_a;
+        if len_b > 0 {
+            self.buffer[..len_b].copy_from_slice(&payload[len_a..]);
         }
 
         // Update size
@@ -609,13 +589,13 @@ impl Window {
             let mut cont_payload = vec![0u8; size];
 
             // From the head to the end of the buffer
-            let length_a = min(size, self.buffer.len() - self.head);
-            cont_payload[..length_a].copy_from_slice(&self.buffer[self.head..self.head + length_a]);
+            let len_a = min(size, self.buffer.len() - self.head);
+            cont_payload[..len_a].copy_from_slice(&self.buffer[self.head..self.head + len_a]);
 
             // From the begin of the buffer to the tail
-            let length_b = size - length_a;
-            if length_b > 0 {
-                cont_payload[length_a..].copy_from_slice(&self.buffer[..length_b]);
+            let len_b = size - len_a;
+            if len_b > 0 {
+                cont_payload[len_a..].copy_from_slice(&self.buffer[..len_b]);
             }
 
             self.sequence = self
@@ -650,7 +630,14 @@ impl Window {
 
     /// Returns the remaining size of the window.
     pub fn remaining(&self) -> usize {
-        self.buffer.len() - self.size
+        self.capacity - self.size
+    }
+
+    fn tail(&self) -> usize {
+        // TODO: may panic if overflows
+        (self.head + self.size)
+            .checked_sub(self.buffer.len())
+            .unwrap_or(self.head + self.size)
     }
 
     /// Returns the filled edges of the window.
@@ -667,12 +654,140 @@ impl Window {
         v
     }
 
-    fn is_unbounded(&self) -> bool {
-        self.unbounded
-    }
-
     /// Returns if the window is empty.
     pub fn is_empty(&self) -> bool {
         self.size == 0
     }
+}
+
+impl Display for Window {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let head = self.head;
+        // The second checked_sub will only fall on 0 if the length of the buffer is 0
+        let tail = self
+            .tail()
+            .checked_sub(1)
+            .unwrap_or(self.buffer.len().checked_sub(1).unwrap_or(0));
+
+        let sequence = self.sequence;
+        let mut edge_begin_set = HashSet::new();
+        let mut edge_end_set = HashSet::new();
+        self.edges.iter().for_each(|(edge_sequence, &size)| {
+            let begin = edge_sequence
+                .checked_sub(sequence as u64)
+                .unwrap_or_else(|| edge_sequence + (u32::MAX - sequence) as u64)
+                as usize;
+            let begin = begin
+                .checked_add(head)
+                .unwrap_or_else(|| head - (usize::MAX - begin));
+            let end = begin
+                .checked_add(size)
+                .unwrap_or_else(|| size - (usize::MAX - begin));
+            let end = end
+                .checked_sub(self.buffer.len())
+                .unwrap_or(end)
+                .checked_sub(1)
+                .unwrap_or(self.buffer.len() - 1);
+            edge_begin_set.insert(begin);
+            edge_end_set.insert(end);
+        });
+
+        write!(f, "[")?;
+        for i in 0..self.buffer.len() {
+            if i != 0 {
+                write!(f, ", ")?;
+            }
+
+            if i == head {
+                write!(f, "<")?;
+            }
+            if edge_begin_set.contains(&i) {
+                write!(f, "<")?;
+            }
+            write!(f, "{}", self.buffer[i])?;
+            if edge_end_set.contains(&i) {
+                write!(f, ">")?;
+            }
+            if i == tail {
+                write!(f, ">")?;
+            }
+        }
+        write!(f, "]")
+    }
+}
+
+#[test]
+fn window_append() {
+    let mut w = Window::with_capacity(9, 0);
+
+    let v = (0..8).into_iter().collect::<Vec<_>>();
+    w.append(0, v.as_slice()).unwrap();
+
+    let v = (12..14).into_iter().collect::<Vec<_>>();
+    w.append(12, v.as_slice()).unwrap();
+
+    let v = (8..12).into_iter().collect::<Vec<_>>();
+    w.append(8, v.as_slice()).unwrap();
+
+    let v = (15..16).into_iter().collect::<Vec<_>>();
+    w.append(15, v.as_slice()).unwrap();
+
+    assert_eq!(w.to_string(), "[8, 9, 10, 11, 12, 13, <6, <15>>]");
+}
+
+#[test]
+fn window_append_overflow() {
+    let mut w = Window::with_capacity(9, 0);
+
+    let v = (6..8).into_iter().collect::<Vec<_>>();
+    w.append(6, v.as_slice()).unwrap();
+
+    let v = (0..5).into_iter().collect::<Vec<_>>();
+    w.append(0, v.as_slice()).unwrap();
+
+    let v = (8..10).into_iter().collect::<Vec<_>>();
+    w.append(8, v.as_slice()).unwrap();
+
+    let v = (10..14).into_iter().collect::<Vec<_>>();
+    w.append(10, v.as_slice()).unwrap();
+
+    assert_eq!(w.to_string(), "[9, 10, 11, 12, 13>>, <0, <6, 7, 8]");
+}
+
+#[test]
+fn window_append_overflow_overlapped() {
+    let mut w = Window::with_capacity(9, 0);
+
+    let v = (6..8).into_iter().collect::<Vec<_>>();
+    w.append(6, v.as_slice()).unwrap();
+
+    let v = (0..5).into_iter().collect::<Vec<_>>();
+    w.append(0, v.as_slice()).unwrap();
+
+    let v = (8..11).into_iter().collect::<Vec<_>>();
+    w.append(8, v.as_slice()).unwrap();
+
+    let v = (11..14).into_iter().collect::<Vec<_>>();
+    w.append(11, v.as_slice()).unwrap();
+
+    assert_eq!(w.to_string(), "[9, 10, 11, 12, 13>>, <0, <6, 7, 8]");
+}
+
+#[test]
+fn window_append_overflow_overlapped_2() {
+    let mut w = Window::with_capacity(9, 0);
+
+    let v = (7..8).into_iter().collect::<Vec<_>>();
+    w.append(7, v.as_slice()).unwrap();
+
+    let v = (0..6).into_iter().collect::<Vec<_>>();
+    w.append(0, v.as_slice()).unwrap();
+
+    let v = (8..14).into_iter().collect::<Vec<_>>();
+    w.append(8, v.as_slice()).unwrap();
+
+    let v = (14..15).into_iter().collect::<Vec<_>>();
+    w.append(14, v.as_slice()).unwrap();
+
+    assert_eq!(w.to_string(), "[9, 10, 11, 12, 13, 14>>, <0, <7, 8]");
 }
