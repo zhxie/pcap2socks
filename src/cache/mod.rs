@@ -454,14 +454,27 @@ impl Window {
 
     /// Appends some bytes to the window and returns continuous bytes from the beginning.
     pub fn append(&mut self, sequence: u32, payload: &[u8]) -> Result<Option<Vec<u8>>> {
-        // TODO: unrecorded payload may be dropped
         let sub_sequence = sequence
             .checked_sub(self.sequence)
             .unwrap_or_else(|| sequence + (u32::MAX - self.sequence))
             as usize;
-        if sub_sequence > MAX_U32_WINDOW_SIZE {
-            return Ok(None);
-        }
+        let (sequence, payload, sub_sequence) = if sub_sequence > MAX_U32_WINDOW_SIZE {
+            let recv_next = sequence
+                .checked_add(payload.len() as u32)
+                .unwrap_or_else(|| payload.len() as u32 - (u32::MAX - sequence));
+            let sub_recv_next_to_sequence = recv_next
+                .checked_sub(self.sequence)
+                .unwrap_or_else(|| sequence + (u32::MAX - recv_next));
+
+            if sub_recv_next_to_sequence > 0 {
+                let sub_sequence = self.sequence - sequence;
+                (self.sequence, &payload[sub_sequence as usize..], 0)
+            } else {
+                return Ok(None);
+            }
+        } else {
+            (sequence, payload, sub_sequence)
+        };
 
         let size = sub_sequence + payload.len();
         if size > self.capacity {
@@ -790,4 +803,23 @@ fn window_append_overflow_overlapped_2() {
     w.append(14, v.as_slice()).unwrap();
 
     assert_eq!(w.to_string(), "[9, 10, 11, 12, 13, 14>>, <0, <7, 8]");
+}
+
+#[test]
+fn window_append_prev_and_next() {
+    let mut w = Window::with_capacity(8, 0);
+
+    let v = (4..6).into_iter().collect::<Vec<_>>();
+    w.append(4, v.as_slice()).unwrap();
+
+    let v = (0..2).into_iter().collect::<Vec<_>>();
+    w.append(0, v.as_slice()).unwrap();
+
+    let v = (0..3).into_iter().collect::<Vec<_>>();
+    w.append(0, v.as_slice()).unwrap();
+
+    let v = (11..13).into_iter().collect::<Vec<_>>();
+    w.append(1, v.as_slice()).unwrap();
+
+    assert_eq!(w.to_string(), "[0, 1, 2, <0, <4, 5>>]");
 }
