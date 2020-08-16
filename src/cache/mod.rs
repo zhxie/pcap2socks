@@ -316,10 +316,11 @@ impl Queue {
     }
 
     fn tail(&self) -> usize {
-        // TODO: may panic if overflows
-        (self.head + self.size)
-            .checked_sub(self.buffer.len())
-            .unwrap_or(self.head + self.size)
+        let tmp = self
+            .head
+            .checked_add(self.size)
+            .unwrap_or_else(|| self.size - (usize::MAX - self.head));
+        tmp.checked_sub(self.buffer.len()).unwrap_or(tmp)
     }
 
     /// Returns the receive next of the queue.
@@ -504,10 +505,13 @@ impl Window {
 
         // TODO: the procedure may by optimized to copy valid bytes only
         // To the end of the buffer
-        // TODO: may panic if overflows
-        let this_tail = (self.head + sub_sequence)
+        let this_tail = self
+            .head
+            .checked_add(sub_sequence)
+            .unwrap_or_else(|| sub_sequence - (usize::MAX - self.head));
+        let this_tail = this_tail
             .checked_sub(self.buffer.len())
-            .unwrap_or(self.head + sub_sequence);
+            .unwrap_or(this_tail);
         let len_a = min(self.buffer.len() - this_tail, payload.len());
         self.buffer[this_tail..this_tail + len_a].copy_from_slice(&payload[..len_a]);
 
@@ -647,10 +651,11 @@ impl Window {
     }
 
     fn tail(&self) -> usize {
-        // TODO: may panic if overflows
-        (self.head + self.size)
-            .checked_sub(self.buffer.len())
-            .unwrap_or(self.head + self.size)
+        let tmp = self
+            .head
+            .checked_add(self.size)
+            .unwrap_or_else(|| self.size - (usize::MAX - self.head));
+        tmp.checked_sub(self.buffer.len()).unwrap_or(tmp)
     }
 
     /// Returns the filled edges of the window.
