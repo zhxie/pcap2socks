@@ -316,11 +316,11 @@ impl Queue {
     }
 
     fn tail(&self) -> usize {
-        let tmp = self
-            .head
+        self.head
             .checked_add(self.size)
-            .unwrap_or_else(|| self.size - (usize::MAX - self.head));
-        tmp.checked_sub(self.buffer.len()).unwrap_or(tmp)
+            .unwrap_or_else(|| self.size - (self.buffer.len() - self.head))
+            .checked_rem(self.buffer.len())
+            .unwrap_or(0)
     }
 
     /// Returns the receive next of the queue.
@@ -361,6 +361,12 @@ impl Display for Queue {
         }
         write!(f, "]")
     }
+}
+
+#[test]
+fn queue_new() {
+    let q = Queue::with_capacity(0, 0);
+    assert_eq!(q.to_string(), "[]");
 }
 
 #[test]
@@ -488,7 +494,7 @@ impl Window {
             let new_len = min(self.capacity, max(self.buffer.len() * 3 / 2, size));
             self.buffer.resize(new_len, 0);
 
-            // TODO: the procedure may by optimized to copy valid bytes only
+            // TODO: copy valid bytes only
             // From the begin of the buffer to the tail
             if prev_tail <= self.head {
                 // From the begin to the mid of the buffer
@@ -503,17 +509,12 @@ impl Window {
             }
         }
 
-        // TODO: the procedure may by optimized to copy valid bytes only
+        // TODO: copy valid bytes only
+        // TODO: copy bytes into empty ranges only
         // To the end of the buffer
-        let this_tail = self
-            .head
-            .checked_add(sub_sequence)
-            .unwrap_or_else(|| sub_sequence - (usize::MAX - self.head));
-        let this_tail = this_tail
-            .checked_sub(self.buffer.len())
-            .unwrap_or(this_tail);
-        let len_a = min(self.buffer.len() - this_tail, payload.len());
-        self.buffer[this_tail..this_tail + len_a].copy_from_slice(&payload[..len_a]);
+        let tail = self.get_tail(self.head, sub_sequence);
+        let len_a = min(self.buffer.len() - tail, payload.len());
+        self.buffer[tail..tail + len_a].copy_from_slice(&payload[..len_a]);
 
         // From the begin of the buffer
         let len_b = payload.len() - len_a;
@@ -651,11 +652,15 @@ impl Window {
     }
 
     fn tail(&self) -> usize {
-        let tmp = self
-            .head
-            .checked_add(self.size)
-            .unwrap_or_else(|| self.size - (usize::MAX - self.head));
-        tmp.checked_sub(self.buffer.len()).unwrap_or(tmp)
+        self.get_tail(self.head, self.size)
+    }
+
+    fn get_tail(&self, head: usize, size: usize) -> usize {
+        let mod_sub_sequence = size.checked_rem(self.buffer.len()).unwrap_or(0);
+        head.checked_add(mod_sub_sequence)
+            .unwrap_or_else(|| mod_sub_sequence - (self.buffer.len() - head))
+            .checked_rem(self.buffer.len())
+            .unwrap_or(0)
     }
 
     /// Returns the filled edges of the window.
@@ -691,19 +696,14 @@ impl Display for Window {
         let mut edge_begin_set = HashSet::new();
         let mut edge_end_set = HashSet::new();
         self.edges.iter().for_each(|(edge_sequence, &size)| {
-            let begin = edge_sequence
+            let sub_sequence = edge_sequence
                 .checked_sub(sequence as u64)
                 .unwrap_or_else(|| edge_sequence + (u32::MAX - sequence) as u64)
-                as usize;
-            let begin = begin
-                .checked_add(head)
-                .unwrap_or_else(|| head - (usize::MAX - begin));
-            let end = begin
-                .checked_add(size)
-                .unwrap_or_else(|| size - (usize::MAX - begin));
-            let end = end
-                .checked_sub(self.buffer.len())
-                .unwrap_or(end)
+                as usize
+                % self.buffer.len();
+            let begin = self.get_tail(head, sub_sequence);
+            let end = self
+                .get_tail(begin, size)
                 .checked_sub(1)
                 .unwrap_or(self.buffer.len() - 1);
             edge_begin_set.insert(begin);
@@ -732,6 +732,12 @@ impl Display for Window {
         }
         write!(f, "]")
     }
+}
+
+#[test]
+fn window_new() {
+    let w = Window::with_capacity(0, 0);
+    assert_eq!(w.to_string(), "[]");
 }
 
 #[test]
