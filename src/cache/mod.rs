@@ -490,21 +490,41 @@ impl Window {
         if size > self.buffer.len() {
             // Extend the buffer
             let prev_len = self.buffer.len();
-            let prev_tail = self.tail();
             let new_len = min(self.capacity, max(self.buffer.len() * 3 / 2, size));
             self.buffer.resize(new_len, 0);
 
-            // TODO: copy valid bytes only
             // From the begin of the buffer to the tail
-            if prev_tail <= self.head {
+            let ranges = self
+                .edges
+                .iter()
+                .map(|(sequence, &size)| {
+                    let sub_sequence = sequence
+                        .checked_sub(self.sequence as u64)
+                        .unwrap_or_else(|| sequence + (u32::MAX - self.sequence) as u64)
+                        as usize;
+                    let mut begin = self.get_tail(self.head, sub_sequence, prev_len);
+                    let end = self.get_tail(begin, size, prev_len);
+                    if end <= begin {
+                        begin = 0;
+                    }
+
+                    (begin, end)
+                })
+                .filter(|(begin, end)| *begin < self.head || *end <= self.head)
+                .collect::<Vec<_>>();
+            for (begin, end) in ranges {
                 // From the begin to the mid of the buffer
-                let len_a = min(prev_tail, new_len - prev_len);
-                self.buffer.copy_within(..len_a, prev_len);
+                let len_a = (new_len - prev_len).checked_sub(begin).unwrap_or(0);
+                if len_a > 0 {
+                    self.buffer
+                        .copy_within(begin..begin + len_a, prev_len + begin);
+                }
 
                 // From the mid to the tail of the buffer
-                let len_b = prev_tail - len_a;
+                let len_b = (end - begin) - len_a;
                 if len_b > 0 {
-                    self.buffer.copy_within(len_a..len_a + len_b, 0);
+                    self.buffer
+                        .copy_within(begin + len_a..end, begin + len_a - (new_len - prev_len));
                 }
             }
         }
@@ -512,7 +532,7 @@ impl Window {
         // TODO: copy valid bytes only
         // TODO: copy bytes into empty ranges only
         // To the end of the buffer
-        let tail = self.get_tail(self.head, sub_sequence);
+        let tail = self.get_tail(self.head, sub_sequence, self.buffer.len());
         let len_a = min(self.buffer.len() - tail, payload.len());
         self.buffer[tail..tail + len_a].copy_from_slice(&payload[..len_a]);
 
@@ -652,14 +672,14 @@ impl Window {
     }
 
     fn tail(&self) -> usize {
-        self.get_tail(self.head, self.size)
+        self.get_tail(self.head, self.size, self.buffer.len())
     }
 
-    fn get_tail(&self, head: usize, size: usize) -> usize {
-        let mod_sub_sequence = size.checked_rem(self.buffer.len()).unwrap_or(0);
+    fn get_tail(&self, head: usize, size: usize, max: usize) -> usize {
+        let mod_sub_sequence = size.checked_rem(max).unwrap_or(0);
         head.checked_add(mod_sub_sequence)
-            .unwrap_or_else(|| mod_sub_sequence - (self.buffer.len() - head))
-            .checked_rem(self.buffer.len())
+            .unwrap_or_else(|| mod_sub_sequence - (max - head))
+            .checked_rem(max)
             .unwrap_or(0)
     }
 
@@ -692,18 +712,16 @@ impl Display for Window {
             .checked_sub(1)
             .unwrap_or(self.buffer.len().checked_sub(1).unwrap_or(0));
 
-        let sequence = self.sequence;
         let mut edge_begin_set = HashSet::new();
         let mut edge_end_set = HashSet::new();
-        self.edges.iter().for_each(|(edge_sequence, &size)| {
-            let sub_sequence = edge_sequence
-                .checked_sub(sequence as u64)
-                .unwrap_or_else(|| edge_sequence + (u32::MAX - sequence) as u64)
-                as usize
-                % self.buffer.len();
-            let begin = self.get_tail(head, sub_sequence);
+        self.edges.iter().for_each(|(sequence, &size)| {
+            let sub_sequence = sequence
+                .checked_sub(self.sequence as u64)
+                .unwrap_or_else(|| sequence + (u32::MAX - self.sequence) as u64)
+                as usize;
+            let begin = self.get_tail(head, sub_sequence, self.buffer.len());
             let end = self
-                .get_tail(begin, size)
+                .get_tail(begin, size, self.buffer.len())
                 .checked_sub(1)
                 .unwrap_or(self.buffer.len() - 1);
             edge_begin_set.insert(begin);
