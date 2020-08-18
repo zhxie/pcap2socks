@@ -514,7 +514,10 @@ impl Window {
                 .collect::<Vec<_>>();
             for (begin, end) in ranges {
                 // From the begin to the mid of the buffer
-                let len_a = (new_len - prev_len).checked_sub(begin).unwrap_or(0);
+                let len_a = min(
+                    (new_len - prev_len).checked_sub(begin).unwrap_or(0),
+                    end - begin,
+                );
                 if len_a > 0 {
                     self.buffer
                         .copy_within(begin..begin + len_a, prev_len + begin);
