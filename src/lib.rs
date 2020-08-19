@@ -16,9 +16,9 @@ use tokio::io;
 pub mod cache;
 pub mod packet;
 pub mod pcap;
-pub mod socks;
+pub mod proxy;
 
-use self::socks::{
+use self::proxy::{
     DatagramWorker, ForwardDatagram, ForwardStream, SocksAuth, SocksOption, StreamWorker,
 };
 use cache::{Queue, Window};

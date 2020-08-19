@@ -14,7 +14,7 @@ mod socks;
 use self::socks::SocksSendHalf;
 pub use self::socks::{SocksAuth, SocksOption};
 
-/// Trait for forwarding stream.
+/// Trait for forwarding a stream.
 pub trait ForwardStream: Send {
     /// Opens a stream connection.
     fn open(&mut self, dst: SocketAddrV4, src: SocketAddrV4) -> io::Result<()>;
@@ -102,7 +102,7 @@ impl StreamWorker {
                         }
                         recv_zero = 0;
                         debug!(
-                            "receive from SOCKS: {}: {} -> {} ({} Bytes)",
+                            "receive from proxy: {}: {} -> {} ({} Bytes)",
                             "TCP", dst, 0, size
                         );
 
@@ -116,7 +116,7 @@ impl StreamWorker {
                             time::delay_for(Duration::from_millis(TIMEDOUT_WAIT)).await;
                             continue;
                         }
-                        warn!("SOCKS: {}: {} -> {}: {}", "TCP", 0, dst, e);
+                        warn!("proxy: {}: {} -> {}: {}", "TCP", 0, dst, e);
                         is_read_closed_cloned.store(true, Ordering::Relaxed);
                         is_write_closed_cloned.store(true, Ordering::Relaxed);
                         break;
@@ -155,7 +155,7 @@ impl StreamWorker {
     /// Sends data on the SOCKS5 in TCP to the destination.
     pub async fn send(&mut self, payload: &[u8]) -> io::Result<()> {
         debug!(
-            "send to SOCKS {}: {} -> {} ({} Bytes)",
+            "send to proxy {}: {} -> {} ({} Bytes)",
             "TCP",
             "0",
             self.dst,
@@ -207,7 +207,7 @@ impl Drop for StreamWorker {
     }
 }
 
-/// Trait for forwarding datagram.
+/// Trait for forwarding a datagram.
 pub trait ForwardDatagram: Send {
     /// Forwards datagram.
     fn forward(&mut self, dst: SocketAddrV4, src: SocketAddrV4, payload: &[u8]) -> io::Result<()>;
@@ -247,7 +247,7 @@ impl DatagramWorker {
                             break;
                         }
                         debug!(
-                            "receive from SOCKS: {}: {} -> {} ({} Bytes)",
+                            "receive from proxy: {}: {} -> {} ({} Bytes)",
                             "UDP", addr, local_port, size
                         );
 
@@ -266,7 +266,7 @@ impl DatagramWorker {
                             continue;
                         }
                         warn!(
-                            "SOCKS: {}: {} = {}: {}",
+                            "proxy: {}: {} = {}: {}",
                             "UDP",
                             local_port,
                             u64_to_socket_addr_v4(a_src_cloned.load(Ordering::Relaxed)),
@@ -296,7 +296,7 @@ impl DatagramWorker {
     /// Sends data on the SOCKS5 in UDP to the destination.
     pub async fn send_to(&mut self, payload: &[u8], dst: SocketAddrV4) -> io::Result<usize> {
         debug!(
-            "send to SOCKS {}: {} -> {} ({} Bytes)",
+            "send to proxy {}: {} -> {} ({} Bytes)",
             "UDP",
             self.local_port,
             dst,

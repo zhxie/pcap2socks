@@ -152,7 +152,7 @@ impl SocksRecvHalf {
     }
 }
 
-/// Bind a local address to a target server through a SOCKS5 proxy.
+/// Binds a local address to a target server through a SOCKS5 proxy.
 pub async fn bind(
     remote: SocketAddrV4,
     options: &SocksOption,
