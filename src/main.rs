@@ -9,7 +9,7 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use structopt::StructOpt;
 
-use pcap2socks::{self as lib, Forwarder, Redirector};
+use pcap2socks::{self as lib, Forwarder, ProxyConfig, Redirector};
 
 #[tokio::main]
 async fn main() {
@@ -116,10 +116,12 @@ async fn main() {
         src,
         gw,
         publish,
-        flags.dst.addr(),
-        flags.force_associate_dst,
-        flags.force_associate_bind_addr,
-        auth,
+        ProxyConfig::new_socks(
+            flags.dst.addr(),
+            flags.force_associate_dst,
+            flags.force_associate_bind_addr,
+            auth,
+        ),
     );
     match flags.username {
         Some(username) => info!("Proxy {} to {}@{}", src, username, flags.dst),

@@ -1,4 +1,4 @@
-//! Support for handling SOCKS proxies.
+//! Support for handling proxies.
 
 use log::{debug, trace, warn};
 use std::net::{Ipv4Addr, Shutdown, SocketAddrV4};
@@ -11,8 +11,36 @@ use tokio::prelude::*;
 use tokio::time;
 
 mod socks;
-use self::socks::SocksSendHalf;
-pub use self::socks::{SocksAuth, SocksOption};
+use socks::SocksSendHalf;
+use socks::{SocksAuth, SocksOption};
+
+/// Represents the configuration of the proxy.
+pub enum ProxyConfig {
+    /// Represents the SOCKS proxy configuration.
+    Socks(SocketAddrV4, SocksOption),
+}
+
+impl ProxyConfig {
+    /// Creates a new SOCKS `ProxyConfig`.
+    pub fn new_socks(
+        remote: SocketAddrV4,
+        force_associate_remote: bool,
+        force_associate_bind_addr: bool,
+        auth: Option<(String, String)>,
+    ) -> ProxyConfig {
+        ProxyConfig::Socks(
+            remote,
+            SocksOption::new(
+                force_associate_remote,
+                force_associate_bind_addr,
+                match auth {
+                    Some((username, password)) => Some(SocksAuth::new(username, password)),
+                    None => None,
+                },
+            ),
+        )
+    }
+}
 
 /// Trait for forwarding a stream.
 pub trait ForwardStream: Send {
@@ -40,7 +68,7 @@ const MAX_RECV_ZERO: usize = 3;
 /// Represents the interval of a tick.
 const TICK_INTERVAL: u64 = 1000;
 
-/// Represents a worker of a SOCKS5 TCP stream.
+/// Represents a worker of a proxied TCP stream.
 pub struct StreamWorker {
     dst: SocketAddrV4,
     stream_tx: Option<OwnedWriteHalf>,
@@ -54,12 +82,15 @@ impl StreamWorker {
         tx: Arc<Mutex<dyn ForwardStream>>,
         src: SocketAddrV4,
         dst: SocketAddrV4,
-        remote: SocketAddrV4,
-        options: &SocksOption,
+        proxy: &ProxyConfig,
     ) -> io::Result<StreamWorker> {
         let tx_cloned = Arc::clone(&tx);
 
-        let stream = socks::connect(remote, dst, &options).await?;
+        let stream = match proxy {
+            ProxyConfig::Socks(remote, options) => {
+                socks::connect(remote.clone(), dst, options).await?
+            }
+        };
         let stream = stream.into_inner();
         let (mut stream_rx, stream_tx) = stream.into_split();
 
@@ -152,7 +183,7 @@ impl StreamWorker {
         })
     }
 
-    /// Sends data on the SOCKS5 in TCP to the destination.
+    /// Sends data on the proxied stream in TCP to the destination.
     pub async fn send(&mut self, payload: &[u8]) -> io::Result<()> {
         debug!(
             "send to proxy {}: {} -> {} ({} Bytes)",
@@ -169,7 +200,7 @@ impl StreamWorker {
         }
     }
 
-    /// Shuts down the read, write, or both halves of this connection.
+    /// Shuts down the read, write, or both halves of this worker.
     pub fn shutdown(&mut self, how: Shutdown) {
         match how {
             Shutdown::Write => {
@@ -213,7 +244,7 @@ pub trait ForwardDatagram: Send {
     fn forward(&mut self, dst: SocketAddrV4, src: SocketAddrV4, payload: &[u8]) -> io::Result<()>;
 }
 
-/// Represents a worker of a SOCKS5 UDP client.
+/// Represents a worker of a proxied UDP datagram.
 pub struct DatagramWorker {
     src: Arc<AtomicU64>,
     local_port: u16,
@@ -226,10 +257,11 @@ impl DatagramWorker {
     pub async fn bind(
         tx: Arc<Mutex<dyn ForwardDatagram>>,
         src: SocketAddrV4,
-        remote: SocketAddrV4,
-        options: &SocksOption,
+        proxy: &ProxyConfig,
     ) -> io::Result<(DatagramWorker, u16)> {
-        let (mut socks_rx, socks_tx, local_port) = socks::bind(remote, &options).await?;
+        let (mut socks_rx, socks_tx, local_port) = match proxy {
+            ProxyConfig::Socks(remote, options) => socks::bind(remote.clone(), options).await?,
+        };
 
         let a_src = Arc::new(AtomicU64::from(socket_addr_v4_to_u64(&src)));
         let a_src_cloned = Arc::clone(&a_src);
@@ -293,7 +325,7 @@ impl DatagramWorker {
         ))
     }
 
-    /// Sends data on the SOCKS5 in UDP to the destination.
+    /// Sends data on the proxied datagram in UDP to the destination.
     pub async fn send_to(&mut self, payload: &[u8], dst: SocketAddrV4) -> io::Result<usize> {
         debug!(
             "send to proxy {}: {} -> {} ({} Bytes)",
@@ -307,14 +339,14 @@ impl DatagramWorker {
         self.socks_tx.send_to(payload, dst).await
     }
 
-    /// Sets the source of the `DatagramWorker`.
+    /// Sets the source of the worker.
     pub fn set_src(&mut self, src: &SocketAddrV4) {
         self.src
             .store(socket_addr_v4_to_u64(src), Ordering::Relaxed);
         trace!("set datagram {} = {}", src, self.local_port);
     }
 
-    /// Returns the source of the `DatagramWorker`.
+    /// Returns the source of the worker.
     pub fn src(&self) -> SocketAddrV4 {
         u64_to_socket_addr_v4(self.src.load(Ordering::Relaxed))
     }

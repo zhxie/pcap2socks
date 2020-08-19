@@ -18,9 +18,8 @@ pub mod packet;
 pub mod pcap;
 pub mod proxy;
 
-use self::proxy::{
-    DatagramWorker, ForwardDatagram, ForwardStream, SocksAuth, SocksOption, StreamWorker,
-};
+pub use self::proxy::ProxyConfig;
+use self::proxy::{DatagramWorker, ForwardDatagram, ForwardStream, StreamWorker};
 use cache::{Queue, Window};
 use packet::layer::arp::Arp;
 use packet::layer::ethernet::Ethernet;
@@ -1596,15 +1595,14 @@ const ENABLE_SACK: bool = true;
 /// Represents the max limit of UDP port for binding in local.
 const MAX_UDP_PORT: usize = 256;
 
-/// Represents a channel redirect traffic to the proxy of SOCKS or loopback to the source in pcap.
+/// Represents a channel redirect traffic to the proxy or loopback to the source in pcap.
 pub struct Redirector {
     tx: Arc<Mutex<Forwarder>>,
     is_tx_src_hardware_addr_set: bool,
     src_ip_addr: Ipv4Network,
     local_ip_addr: Ipv4Addr,
     gw_ip_addr: Option<Ipv4Addr>,
-    remote: SocketAddrV4,
-    options: SocksOption,
+    proxy: ProxyConfig,
     streams: HashMap<(SocketAddrV4, SocketAddrV4), StreamWorker>,
     states: HashMap<(SocketAddrV4, SocketAddrV4), TcpRxState>,
     datagrams: HashMap<u16, DatagramWorker>,
@@ -1622,23 +1620,15 @@ impl Redirector {
         src_ip_addr: Ipv4Network,
         local_ip_addr: Ipv4Addr,
         gw_ip_addr: Option<Ipv4Addr>,
-        remote: SocketAddrV4,
-        force_associate_dst: bool,
-        force_associate_bind_addr: bool,
-        auth: Option<(String, String)>,
+        proxy: ProxyConfig,
     ) -> Redirector {
-        let auth = match auth {
-            Some((username, password)) => Some(SocksAuth::new(username, password)),
-            None => None,
-        };
         let redirector = Redirector {
             tx,
             is_tx_src_hardware_addr_set: false,
             src_ip_addr,
             local_ip_addr,
             gw_ip_addr,
-            remote,
-            options: SocksOption::new(force_associate_dst, force_associate_bind_addr, auth),
+            proxy,
             streams: HashMap::new(),
             states: HashMap::new(),
             datagrams: HashMap::new(),
@@ -2038,8 +2028,7 @@ impl Redirector {
             }
 
             // Connect
-            let stream =
-                StreamWorker::connect(self.get_tx(), src, dst, self.remote, &self.options).await;
+            let stream = StreamWorker::connect(self.get_tx(), src, dst, &self.proxy).await;
 
             let stream = match stream {
                 Ok(stream) => stream,
@@ -2180,8 +2169,7 @@ impl Redirector {
             }
             None => {
                 let bind_port = if self.udp_lru.len() < self.udp_lru.cap() {
-                    match DatagramWorker::bind(self.get_tx(), src, self.remote, &self.options).await
-                    {
+                    match DatagramWorker::bind(self.get_tx(), src, &self.proxy).await {
                         Ok((worker, port)) => {
                             self.datagrams.insert(port, worker);
 
