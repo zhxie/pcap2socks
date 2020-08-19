@@ -506,3 +506,58 @@ impl Defraggler {
         }
     }
 }
+
+#[test]
+fn defraggler_add() {
+    use layer::LayerKinds;
+
+    let mut d = Defraggler::new();
+    let ethernet = Ethernet::new(
+        LayerKinds::Ipv4,
+        "11:11:11:11:11:11".parse().unwrap(),
+        "22:22:22:22:22:22".parse().unwrap(),
+    )
+    .unwrap();
+    let mut b = vec![0u8; ethernet.len() + Ipv4::minimum_len() + Udp::minimum_len() + 8];
+
+    let ipv4 = Ipv4::new_more_fragment(
+        0,
+        LayerKinds::Udp,
+        0,
+        "1.1.1.1".parse().unwrap(),
+        "2.2.2.2".parse().unwrap(),
+    )
+    .unwrap();
+    let udp = Udp::new(1, 2);
+    let i = Indicator::new(
+        Layers::Ethernet(ethernet.clone()),
+        Some(Layers::Ipv4(ipv4)),
+        Some(Layers::Udp(udp)),
+    );
+    let v = (0..8).into_iter().collect::<Vec<_>>();
+    i.serialize_with_payload(b.as_mut_slice(), v.as_slice())
+        .unwrap();
+
+    let i = Indicator::from(b.as_slice()).unwrap();
+    let r = d.add(&i, &b[..i.content_len()]);
+    assert!(r.is_none());
+
+    let ipv4 = Ipv4::new_last_fragment(
+        0,
+        LayerKinds::Udp,
+        2,
+        "1.1.1.1".parse().unwrap(),
+        "2.2.2.2".parse().unwrap(),
+    )
+    .unwrap();
+    let i = Indicator::new(Layers::Ethernet(ethernet), Some(Layers::Ipv4(ipv4)), None);
+    let v = (8..16).into_iter().collect::<Vec<_>>();
+    i.serialize_with_payload(b.as_mut_slice(), v.as_slice())
+        .unwrap();
+
+    let i = Indicator::from(b.as_slice()).unwrap();
+    let f = d.add(&i, &b[..i.content_len()]).unwrap();
+    let (_, p) = f.concatenate();
+
+    assert_eq!(p, &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+}
