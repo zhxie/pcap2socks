@@ -376,7 +376,7 @@ impl TcpTxState {
         match self.srtt {
             Some(prev_srtt) => {
                 // RTTVAR
-                let prev_rttvar = self.rttvar.unwrap();
+                let prev_rttvar = self.rttvar.unwrap_or(prev_srtt / 2);
                 rttvar = (prev_rttvar / 8 * 7)
                     .checked_add(
                         prev_srtt
@@ -594,7 +594,18 @@ impl Forwarder {
     }
 
     /// Returns the state of a TCP connection.
-    pub fn get_state(&mut self, dst: SocketAddrV4, src: SocketAddrV4) -> Option<&mut TcpTxState> {
+    pub fn get_state(&self, dst: SocketAddrV4, src: SocketAddrV4) -> Option<&TcpTxState> {
+        let key = (src, dst);
+
+        self.states.get(&key)
+    }
+
+    /// Returns the mutable state of a TCP connection.
+    pub fn get_state_mut(
+        &mut self,
+        dst: SocketAddrV4,
+        src: SocketAddrV4,
+    ) -> Option<&mut TcpTxState> {
         let key = (src, dst);
 
         self.states.get_mut(&key)
@@ -667,7 +678,9 @@ impl Forwarder {
         payload: &[u8],
     ) -> io::Result<()> {
         // Append to queue
-        let state = self.get_state(dst, src).unwrap();
+        let state = self
+            .get_state_mut(dst, src)
+            .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
         state.append_queue(payload);
 
         self.send_tcp_ack(dst, src)
@@ -675,10 +688,10 @@ impl Forwarder {
 
     /// Retransmits TCP ACK packets from the cache. This method is used for fast retransmission.
     pub fn retransmit_tcp_ack(&mut self, dst: SocketAddrV4, src: SocketAddrV4) -> io::Result<()> {
-        let key = (src, dst);
-
         // Retransmit
-        let state = self.states.get(&key).unwrap();
+        let state = self
+            .get_state(dst, src)
+            .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
         let payload = state.cache().get_all();
         let sequence = state.cache().sequence();
         let size = state.cache().len();
@@ -722,9 +735,9 @@ impl Forwarder {
         src: SocketAddrV4,
         sacks: Vec<(u32, u32)>,
     ) -> io::Result<()> {
-        let key = (src, dst);
-
-        let state = self.states.get(&key).unwrap();
+        let state = self
+            .get_state(dst, src)
+            .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
         let sequence = state.cache().sequence();
         let recv_next = state.cache().recv_next();
 
@@ -750,7 +763,9 @@ impl Forwarder {
                 .1
                 .checked_sub(range.0)
                 .unwrap_or_else(|| range.1 + (u32::MAX - range.0)) as usize;
-            let state = self.states.get(&key).unwrap();
+            let state = self
+                .get_state(dst, src)
+                .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
             let payload = state.cache().get(range.0, size)?;
             if payload.len() > 0 {
                 if range.1 == recv_next && state.cache_fin().is_some() {
@@ -782,7 +797,9 @@ impl Forwarder {
         }
 
         // Pure FIN
-        let state = self.states.get(&key).unwrap();
+        let state = self
+            .get_state(dst, src)
+            .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
         if ranges.len() == 0 && state.cache_fin().is_some() {
             // FIN
             trace!("retransmit TCP FIN {} -> {}", dst, src);
@@ -801,7 +818,9 @@ impl Forwarder {
         dst: SocketAddrV4,
         src: SocketAddrV4,
     ) -> io::Result<()> {
-        let state = self.get_state(dst, src).unwrap();
+        let state = self
+            .get_state_mut(dst, src)
+            .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
         let next_rto = state.rto().checked_mul(2).unwrap_or(u64::MAX);
         let payload = state
             .cache_mut()
@@ -860,10 +879,10 @@ impl Forwarder {
 
     /// Sends TCP ACK packets from the queue.
     pub fn send_tcp_ack(&mut self, dst: SocketAddrV4, src: SocketAddrV4) -> io::Result<()> {
-        let key = (src, dst);
-
         // Retransmit unhandled SYN
-        let state = self.states.get(&key).unwrap();
+        let state = self
+            .get_state(dst, src)
+            .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
         if state.cache_syn().is_some() {
             return self.send_tcp_ack_syn(dst, src);
         }
@@ -886,7 +905,9 @@ impl Forwarder {
             }
             let size = size;
             if size > 0 {
-                let state = self.get_state(dst, src).unwrap();
+                let state = self
+                    .get_state_mut(dst, src)
+                    .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
                 let payload = state.append_cache(size)?;
 
                 // If the queue is empty and a FIN is in the queue, pop it
@@ -895,12 +916,16 @@ impl Forwarder {
                     state.append_cache_fin();
 
                     // Send
-                    let state = self.states.get(&key).unwrap();
+                    let state = self
+                        .get_state(dst, src)
+                        .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
                     let sequence = state.sequence();
                     self.send_tcp_ack_raw(dst, src, sequence, &payload, true)?;
                 } else {
                     // ACK
-                    let state = self.states.get(&key).unwrap();
+                    let state = self
+                        .get_state(dst, src)
+                        .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
                     let sequence = state.sequence();
                     self.send_tcp_ack_raw(dst, src, sequence, &payload, false)?;
                 }
@@ -909,7 +934,9 @@ impl Forwarder {
 
         // If the queue is empty and a FIN is in the queue, pop it
         // FIN
-        let state = self.get_state(dst, src).unwrap();
+        let state = self
+            .get_state_mut(dst, src)
+            .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
         if state.queue_fin() {
             if state.cache().is_empty() {
                 // FIN
@@ -931,14 +958,14 @@ impl Forwarder {
         payload: &[u8],
         is_fin: bool,
     ) -> io::Result<()> {
-        let key = (src, dst);
-
         // Segmentation
         let mss = *self.src_mtu.get(src.ip()).unwrap_or(&self.local_mtu)
             - (Ipv4::minimum_len() + Tcp::minimum_len());
         let mut i = 0;
         while mss * i < payload.len() {
-            let state = self.states.get(&key).unwrap();
+            let state = self
+                .get_state(dst, src)
+                .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
             let size = min(mss, payload.len() - i * mss);
             let payload = &payload[i * mss..i * mss + size];
             let sequence = sequence
@@ -983,7 +1010,9 @@ impl Forwarder {
             )?;
 
             // Update TCP sequence
-            let state = self.get_state(dst, src).unwrap();
+            let state = self
+                .get_state_mut(dst, src)
+                .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
             let record_sequence = state.sequence();
             let sub_sequence = recv_next
                 .checked_sub(record_sequence)
@@ -1000,10 +1029,10 @@ impl Forwarder {
 
     /// Sends an TCP ACK packet without payload.
     pub fn send_tcp_ack_0(&mut self, dst: SocketAddrV4, src: SocketAddrV4) -> io::Result<()> {
-        let key = (src, dst);
-
         // TCP
-        let state = self.states.get(&key).unwrap();
+        let state = self
+            .get_state(dst, src)
+            .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
         let tcp = Tcp::new_ack(
             dst.port(),
             src.port(),
@@ -1019,8 +1048,6 @@ impl Forwarder {
     }
 
     fn send_tcp_ack_syn(&mut self, dst: SocketAddrV4, src: SocketAddrV4) -> io::Result<()> {
-        let key = (src, dst);
-
         let mss = match ENABLE_MSS {
             true => {
                 let mss = self.local_mtu - (Ipv4::minimum_len() + Tcp::minimum_len());
@@ -1036,7 +1063,9 @@ impl Forwarder {
         };
 
         // TCP
-        let state = self.states.get(&key).unwrap();
+        let state = self
+            .get_state(dst, src)
+            .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
         let tcp = Tcp::new_ack_syn(
             dst.port(),
             src.port(),
@@ -1057,10 +1086,10 @@ impl Forwarder {
 
     /// Sends an TCP ACK/RST packet.
     pub fn send_tcp_ack_rst(&mut self, dst: SocketAddrV4, src: SocketAddrV4) -> io::Result<()> {
-        let key = (src, dst);
-
         // TCP
-        let state = self.states.get(&key).unwrap();
+        let state = self
+            .get_state(dst, src)
+            .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
         let tcp = Tcp::new_ack_rst(
             dst.port(),
             src.port(),
@@ -1084,10 +1113,10 @@ impl Forwarder {
     }
 
     fn send_tcp_fin(&mut self, dst: SocketAddrV4, src: SocketAddrV4) -> io::Result<()> {
-        let key = (src, dst);
-
         // TCP
-        let state = self.states.get(&key).unwrap();
+        let state = self
+            .get_state(dst, src)
+            .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
         let tcp = Tcp::new_fin(
             dst.port(),
             src.port(),
@@ -1359,16 +1388,18 @@ impl ForwardStream for Forwarder {
     fn open(&mut self, dst: SocketAddrV4, src: SocketAddrV4) -> io::Result<()> {
         self.send_tcp_ack_syn(dst, src)?;
 
-        let state = self.get_state(dst, src).unwrap();
+        let state = self
+            .get_state_mut(dst, src)
+            .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
         state.update_syn_timer();
 
         Ok(())
     }
 
     fn forward(&mut self, dst: SocketAddrV4, src: SocketAddrV4, payload: &[u8]) -> io::Result<()> {
-        let key = (src, dst);
-
-        let state = self.states.get(&key).unwrap();
+        let state = self
+            .get_state(dst, src)
+            .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
         if state.cache_fin().is_some() || state.queue_fin() {
             return Err(io::Error::from(io::ErrorKind::InvalidData));
         }
@@ -1381,7 +1412,9 @@ impl ForwardStream for Forwarder {
     }
 
     fn close(&mut self, dst: SocketAddrV4, src: SocketAddrV4) -> io::Result<()> {
-        let state = self.get_state(dst, src).unwrap();
+        let state = self
+            .get_state_mut(dst, src)
+            .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
         state.append_queue_fin();
 
         self.send_tcp_ack(dst, src)
@@ -1836,7 +1869,10 @@ impl Redirector {
 
         if is_exist {
             // ACK
-            let state = self.states.get_mut(&key).unwrap();
+            let state = self
+                .states
+                .get_mut(&key)
+                .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
             if tcp.sequence() != state.recv_next {
                 trace!(
                     "TCP out of order of {} -> {} at {}",
@@ -1847,7 +1883,9 @@ impl Redirector {
             }
             {
                 let mut tx_locked = self.tx.lock().unwrap();
-                let tx_state = tx_locked.get_state(dst, src).unwrap();
+                let tx_state = tx_locked
+                    .get_state_mut(dst, src)
+                    .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
 
                 tx_state.acknowledge(tcp.acknowledgement());
                 tx_state.set_send_window((tcp.window() as usize) << state.wscale as usize);
@@ -1864,15 +1902,18 @@ impl Redirector {
                     self.tx
                         .lock()
                         .unwrap()
-                        .get_state(dst, src)
-                        .unwrap()
+                        .get_state_mut(dst, src)
+                        .ok_or(io::Error::from(io::ErrorKind::NotFound))?
                         .set_sacks(&sacks);
                 }
 
                 match cont_payload {
                     Some(payload) => {
                         // Send
-                        let stream = self.streams.get_mut(&key).unwrap();
+                        let stream = self
+                            .streams
+                            .get_mut(&key)
+                            .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
                         match stream.send(payload.as_slice()).await {
                             Ok(_) => {
                                 let cache_remaining_size =
@@ -1881,7 +1922,9 @@ impl Redirector {
                                 state.add_recv_next(payload.len() as u32);
 
                                 let mut tx_locked = self.tx.lock().unwrap();
-                                let tx_state = tx_locked.get_state(dst, src).unwrap();
+                                let tx_state = tx_locked
+                                    .get_state_mut(dst, src)
+                                    .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
 
                                 // Update window size
                                 tx_state.set_window(cache_remaining_size);
@@ -1915,7 +1958,9 @@ impl Redirector {
 
                         // Update window size
                         let mut tx_locked = self.tx.lock().unwrap();
-                        let tx_state = tx_locked.get_state(dst, src).unwrap();
+                        let tx_state = tx_locked
+                            .get_state_mut(dst, src)
+                            .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
 
                         tx_state.set_window(cache_remaining_size);
 
@@ -2035,7 +2080,9 @@ impl Redirector {
                 Err(e) => {
                     {
                         let mut tx_locked = self.tx.lock().unwrap();
-                        let tx_state = tx_locked.get_state(dst, src).unwrap();
+                        let tx_state = tx_locked
+                            .get_state_mut(dst, src)
+                            .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
 
                         tx_state.add_acknowledgement(1);
 
@@ -2076,7 +2123,10 @@ impl Redirector {
         };
 
         if is_exist {
-            let state = self.states.get_mut(&key).unwrap();
+            let state = self
+                .states
+                .get_mut(&key)
+                .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
             if tcp.is_fin() {
                 // Update FIN sequence
                 state.set_fin_sequence(
@@ -2095,7 +2145,9 @@ impl Redirector {
 
                     {
                         let mut tx_locked = self.tx.lock().unwrap();
-                        let tx_state = tx_locked.get_state(dst, src).unwrap();
+                        let tx_state = tx_locked
+                            .get_state_mut(dst, src)
+                            .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
 
                         tx_state.add_acknowledgement(1);
 
@@ -2104,7 +2156,10 @@ impl Redirector {
                     }
                     if is_readable {
                         // Close by local
-                        let stream = self.streams.get_mut(&key).unwrap();
+                        let stream = self
+                            .streams
+                            .get_mut(&key)
+                            .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
                         stream.shutdown(Shutdown::Write);
                     } else {
                         // Close by remote
@@ -2151,7 +2206,7 @@ impl Redirector {
         // Send
         self.datagrams
             .get_mut(&port)
-            .unwrap()
+            .ok_or(io::Error::from(io::ErrorKind::NotFound))?
             .send_to(payload, SocketAddrV4::new(udp.dst_ip_addr(), udp.dst()))
             .await?;
 
