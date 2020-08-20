@@ -119,13 +119,16 @@ impl StreamWorker {
 
                 // Select
                 {
+                    let rx_close_rx_fuse = rx_close_rx.recv().fuse();
                     let stream_rx_fuse = stream_rx.read(&mut buffer).fuse();
                     let timeout_fuse = time::delay_for(Duration::from_millis(TICK_INTERVAL)).fuse();
-                    let rx_close_rx_fuse = rx_close_rx.recv().fuse();
 
-                    futures::pin_mut!(stream_rx_fuse, timeout_fuse, rx_close_rx_fuse);
+                    futures::pin_mut!(rx_close_rx_fuse, stream_rx_fuse, timeout_fuse);
 
                     futures::select! {
+                        _ = rx_close_rx_fuse => {
+                            event = StreamWorkerEvent::Close;
+                        },
                         stream_rx_result = stream_rx_fuse => match stream_rx_result {
                             Ok(size) => event = StreamWorkerEvent::Recv(size),
                             Err(ref e) => {
@@ -144,13 +147,11 @@ impl StreamWorker {
                             trace!("tick on {} -> {}", dst, 0);
 
                             event = StreamWorkerEvent::Timeout;
-                        },
-                        _ = rx_close_rx_fuse => {
-                            event = StreamWorkerEvent::Close;
                         }
                     }
                 }
 
+                // TODO: race condition may be appeared
                 match event {
                     StreamWorkerEvent::Recv(size) => {
                         if size == 0 {
@@ -318,12 +319,15 @@ impl DatagramWorker {
 
                 // Select
                 {
-                    let socks_rx_fuse = socks_rx.recv_from(&mut buffer).fuse();
                     let close_rx_fuse = close_rx.recv().fuse();
+                    let socks_rx_fuse = socks_rx.recv_from(&mut buffer).fuse();
 
-                    futures::pin_mut!(socks_rx_fuse, close_rx_fuse);
+                    futures::pin_mut!(close_rx_fuse, socks_rx_fuse);
 
                     futures::select! {
+                        _ = close_rx_fuse => {
+                            event = DatagramWorkerEvent::Close;
+                        },
                         socks_rx_result = socks_rx_fuse => {
                             match socks_rx_result {
                                 Ok((size, addr)) => event = DatagramWorkerEvent::Recv(size, addr),
@@ -343,13 +347,11 @@ impl DatagramWorker {
                                     event = DatagramWorkerEvent::Close;
                                 }
                             }
-                        },
-                        _ = close_rx_fuse => {
-                            event = DatagramWorkerEvent::Close;
                         }
                     };
                 }
 
+                // TODO: race condition may be appeared
                 match event {
                     DatagramWorkerEvent::Recv(size, addr) => {
                         // Send

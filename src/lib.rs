@@ -1412,9 +1412,10 @@ impl ForwardStream for Forwarder {
     }
 
     fn close(&mut self, dst: SocketAddrV4, src: SocketAddrV4) -> io::Result<()> {
-        let state = self
-            .get_state_mut(dst, src)
-            .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
+        let state = match self.get_state_mut(dst, src) {
+            Some(state) => state,
+            None => return Ok(()),
+        };
         state.append_queue_fin();
 
         self.send_tcp_ack(dst, src)
