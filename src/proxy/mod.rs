@@ -1,5 +1,6 @@
 //! Support for handling proxies.
 
+use futures::{self, FutureExt};
 use log::{debug, trace, warn};
 use std::net::{Ipv4Addr, Shutdown, SocketAddrV4};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -8,6 +9,7 @@ use std::time::Duration;
 use tokio::io;
 use tokio::net::tcp::OwnedWriteHalf;
 use tokio::prelude::*;
+use tokio::sync::mpsc::{self, Sender};
 use tokio::time;
 
 mod socks;
@@ -68,12 +70,19 @@ const MAX_RECV_ZERO: usize = 3;
 /// Represents the interval of a tick.
 const TICK_INTERVAL: u64 = 1000;
 
+enum StreamWorkerEvent {
+    Recv(usize),
+    Timeout,
+    Close,
+}
+
 /// Represents a worker of a proxied TCP stream.
 pub struct StreamWorker {
     dst: SocketAddrV4,
     stream_tx: Option<OwnedWriteHalf>,
-    is_write_closed: Arc<AtomicBool>,
-    is_read_closed: Arc<AtomicBool>,
+    is_tx_closed: Arc<AtomicBool>,
+    is_rx_closed: Arc<AtomicBool>,
+    rx_close_tx: Sender<()>,
 }
 
 impl StreamWorker {
@@ -94,38 +103,67 @@ impl StreamWorker {
         let stream = stream.into_inner();
         let (mut stream_rx, stream_tx) = stream.into_split();
 
-        let is_write_closed = Arc::new(AtomicBool::new(false));
-        let is_write_closed_cloned = Arc::clone(&is_write_closed);
-        let is_read_closed = Arc::new(AtomicBool::new(false));
-        let is_read_closed_cloned = Arc::clone(&is_read_closed);
-        let is_read_closed_cloned2 = Arc::clone(&is_read_closed);
-
         // Open
         tx_cloned.lock().unwrap().open(dst, src)?;
 
-        // Forward
+        let is_tx_closed = Arc::new(AtomicBool::new(false));
+        let is_tx_closed_cloned = Arc::clone(&is_tx_closed);
+        let is_rx_closed = Arc::new(AtomicBool::new(false));
+        let is_rx_closed_cloned = Arc::clone(&is_rx_closed);
+        let (rx_close_tx, mut rx_close_rx) = mpsc::channel(1);
         tokio::spawn(async move {
             let mut buffer = vec![0u8; u16::MAX as usize];
             let mut recv_zero = 0;
             loop {
-                if is_read_closed_cloned.load(Ordering::Relaxed) {
-                    break;
-                }
-                match stream_rx.read(&mut buffer).await {
-                    Ok(size) => {
-                        if is_read_closed_cloned.load(Ordering::Relaxed) {
-                            break;
+                let event;
+
+                // Select
+                {
+                    let stream_rx_fuse = stream_rx.read(&mut buffer).fuse();
+                    let timeout_fuse = time::delay_for(Duration::from_millis(TICK_INTERVAL)).fuse();
+                    let rx_close_rx_fuse = rx_close_rx.recv().fuse();
+
+                    futures::pin_mut!(stream_rx_fuse, timeout_fuse, rx_close_rx_fuse);
+
+                    futures::select! {
+                        stream_rx_result = stream_rx_fuse => match stream_rx_result {
+                            Ok(size) => event = StreamWorkerEvent::Recv(size),
+                            Err(ref e) => {
+                                if e.kind() == io::ErrorKind::TimedOut {
+                                    time::delay_for(Duration::from_millis(TIMEDOUT_WAIT)).await;
+                                    continue;
+                                }
+                                warn!("proxy: {}: {} -> {}: {}", "TCP", 0, dst, e);
+
+                                is_tx_closed_cloned.store(true, Ordering::Relaxed);
+                                event = StreamWorkerEvent::Close;
+                            }
+                        },
+                        _ = timeout_fuse => {
+                            // Tick
+                            trace!("tick on {} -> {}", dst, 0);
+
+                            event = StreamWorkerEvent::Timeout;
+                        },
+                        _ = rx_close_rx_fuse => {
+                            event = StreamWorkerEvent::Close;
                         }
+                    }
+                }
+
+                match event {
+                    StreamWorkerEvent::Recv(size) => {
                         if size == 0 {
                             recv_zero += 1;
                             if recv_zero > MAX_RECV_ZERO {
                                 // Close by remote
-                                trace!("close stream read {} -> {}", dst, 0);
+                                trace!("close stream RX {} -> {}", dst, 0);
 
                                 if let Err(ref e) = tx.lock().unwrap().close(dst, src) {
                                     warn!("handle {}: {}", "TCP", e)
                                 }
-                                is_read_closed_cloned.store(true, Ordering::Relaxed);
+
+                                is_rx_closed_cloned.store(true, Ordering::Relaxed);
                                 break;
                             }
                             time::delay_for(Duration::from_millis(RECV_ZERO_WAIT)).await;
@@ -142,34 +180,17 @@ impl StreamWorker {
                             warn!("handle {}: {}", "TCP", e);
                         }
                     }
-                    Err(ref e) => {
-                        if e.kind() == io::ErrorKind::TimedOut {
-                            time::delay_for(Duration::from_millis(TIMEDOUT_WAIT)).await;
-                            continue;
+                    StreamWorkerEvent::Timeout => {
+                        // Send
+                        if let Err(ref e) = tx_cloned.lock().unwrap().tick(dst, src) {
+                            warn!("handle {}: {}", "TCP", e);
                         }
-                        warn!("proxy: {}: {} -> {}: {}", "TCP", 0, dst, e);
-                        is_read_closed_cloned.store(true, Ordering::Relaxed);
-                        is_write_closed_cloned.store(true, Ordering::Relaxed);
+                    }
+                    StreamWorkerEvent::Close => {
+                        is_rx_closed_cloned.store(true, Ordering::Relaxed);
                         break;
                     }
                 }
-            }
-        });
-
-        // Triggers sending timed out data
-        tokio::spawn(async move {
-            loop {
-                if is_read_closed_cloned2.load(Ordering::Relaxed) {
-                    break;
-                }
-                // Tick
-                trace!("tick on {} -> {}", dst, 0);
-
-                if let Err(ref e) = tx_cloned.lock().unwrap().tick(dst, src) {
-                    warn!("handle {}: {}", "TCP", e);
-                }
-
-                time::delay_for(Duration::from_millis(TICK_INTERVAL)).await;
             }
         });
 
@@ -178,8 +199,9 @@ impl StreamWorker {
         Ok(StreamWorker {
             dst,
             stream_tx: Some(stream_tx),
-            is_write_closed,
-            is_read_closed,
+            is_tx_closed,
+            is_rx_closed,
+            rx_close_tx,
         })
     }
 
@@ -200,40 +222,55 @@ impl StreamWorker {
         }
     }
 
-    /// Shuts down the read, write, or both halves of this worker.
+    /// Shuts down the read, write, or both halves of the worker.
     pub fn shutdown(&mut self, how: Shutdown) {
         match how {
             Shutdown::Write => {
-                if !self.is_write_closed.load(Ordering::Relaxed) {
-                    self.is_write_closed.store(true, Ordering::Relaxed);
+                if !self.is_tx_closed.load(Ordering::Relaxed) {
+                    self.is_tx_closed.store(true, Ordering::Relaxed);
                     self.stream_tx.take().unwrap().forget();
-                    trace!("close stream write {} -> {}", 0, self.dst);
+                    trace!("close stream TX {} -> {}", 0, self.dst);
                 }
             }
             _ => unreachable!(),
         }
     }
 
-    /// Closes the worker.
-    pub fn close(&mut self) {
-        self.shutdown(Shutdown::Write);
-        self.is_read_closed.store(true, Ordering::Relaxed);
+    /// Attempts to immediately shut down the read, write, or both halves of the worker.
+    pub fn try_shutdown(&mut self, how: Shutdown) {
+        match how {
+            Shutdown::Write => self.shutdown(Shutdown::Write),
+            Shutdown::Read => {
+                if !self.is_rx_closed.load(Ordering::Relaxed) {
+                    let _ = self.rx_close_tx.try_send(());
+                }
+            }
+            Shutdown::Both => {
+                self.shutdown(Shutdown::Write);
+                self.try_shutdown(Shutdown::Read);
+            }
+        }
+    }
+
+    /// Attempts to immediately close the worker.
+    pub fn try_close(&mut self) {
+        self.try_shutdown(Shutdown::Both);
     }
 
     /// Returns if the worker is closed for writing.
-    pub fn is_write_closed(&self) -> bool {
-        self.is_write_closed.load(Ordering::Relaxed)
+    pub fn is_tx_closed(&self) -> bool {
+        self.is_tx_closed.load(Ordering::Relaxed)
     }
 
     /// Returns if the worker is closed for reading.
-    pub fn is_read_closed(&self) -> bool {
-        self.is_read_closed.load(Ordering::Relaxed)
+    pub fn is_rx_closed(&self) -> bool {
+        self.is_rx_closed.load(Ordering::Relaxed)
     }
 }
 
 impl Drop for StreamWorker {
     fn drop(&mut self) {
-        self.close();
+        self.try_close();
         trace!("drop stream {} -> {}", 0, self.dst);
     }
 }
@@ -244,12 +281,18 @@ pub trait ForwardDatagram: Send {
     fn forward(&mut self, dst: SocketAddrV4, src: SocketAddrV4, payload: &[u8]) -> io::Result<()>;
 }
 
+enum DatagramWorkerEvent {
+    Recv(usize, SocketAddrV4),
+    Close,
+}
+
 /// Represents a worker of a proxied UDP datagram.
 pub struct DatagramWorker {
     src: Arc<AtomicU64>,
     local_port: u16,
     socks_tx: SocksSendHalf,
     is_closed: Arc<AtomicBool>,
+    close_tx: Sender<()>,
 }
 
 impl DatagramWorker {
@@ -267,23 +310,54 @@ impl DatagramWorker {
         let a_src_cloned = Arc::clone(&a_src);
         let is_closed = Arc::new(AtomicBool::new(false));
         let is_closed_cloned = Arc::clone(&is_closed);
+        let (close_tx, mut close_rx) = mpsc::channel(1);
         tokio::spawn(async move {
             let mut buffer = vec![0u8; u16::MAX as usize];
             loop {
-                if is_closed_cloned.load(Ordering::Relaxed) {
-                    break;
-                }
-                match socks_rx.recv_from(&mut buffer).await {
-                    Ok((size, addr)) => {
-                        if is_closed_cloned.load(Ordering::Relaxed) {
-                            break;
+                let event;
+
+                // Select
+                {
+                    let socks_rx_fuse = socks_rx.recv_from(&mut buffer).fuse();
+                    let close_rx_fuse = close_rx.recv().fuse();
+
+                    futures::pin_mut!(socks_rx_fuse, close_rx_fuse);
+
+                    futures::select! {
+                        socks_rx_result = socks_rx_fuse => {
+                            match socks_rx_result {
+                                Ok((size, addr)) => event = DatagramWorkerEvent::Recv(size, addr),
+                                Err(ref e) => {
+                                    if e.kind() == io::ErrorKind::TimedOut {
+                                        time::delay_for(Duration::from_millis(TIMEDOUT_WAIT)).await;
+                                        continue;
+                                    }
+                                    warn!(
+                                        "proxy: {}: {} = {}: {}",
+                                        "UDP",
+                                        local_port,
+                                        u64_to_socket_addr_v4(a_src_cloned.load(Ordering::Relaxed)),
+                                        e
+                                    );
+
+                                    event = DatagramWorkerEvent::Close;
+                                }
+                            }
+                        },
+                        _ = close_rx_fuse => {
+                            event = DatagramWorkerEvent::Close;
                         }
+                    };
+                }
+
+                match event {
+                    DatagramWorkerEvent::Recv(size, addr) => {
+                        // Send
                         debug!(
                             "receive from proxy: {}: {} -> {} ({} Bytes)",
                             "UDP", addr, local_port, size
                         );
 
-                        // Send
                         if let Err(ref e) = tx.lock().unwrap().forward(
                             addr,
                             u64_to_socket_addr_v4(a_src_cloned.load(Ordering::Relaxed)),
@@ -292,20 +366,8 @@ impl DatagramWorker {
                             warn!("handle {}: {}", "UDP", e);
                         }
                     }
-                    Err(ref e) => {
-                        if e.kind() == io::ErrorKind::TimedOut {
-                            time::delay_for(Duration::from_millis(TIMEDOUT_WAIT)).await;
-                            continue;
-                        }
-                        warn!(
-                            "proxy: {}: {} = {}: {}",
-                            "UDP",
-                            local_port,
-                            u64_to_socket_addr_v4(a_src_cloned.load(Ordering::Relaxed)),
-                            e
-                        );
+                    DatagramWorkerEvent::Close => {
                         is_closed_cloned.store(true, Ordering::Relaxed);
-
                         break;
                     }
                 }
@@ -320,6 +382,7 @@ impl DatagramWorker {
                 local_port,
                 socks_tx,
                 is_closed,
+                close_tx,
             },
             local_port,
         ))
@@ -359,7 +422,7 @@ impl DatagramWorker {
 
 impl Drop for DatagramWorker {
     fn drop(&mut self) {
-        self.is_closed.store(true, Ordering::Relaxed);
+        let _ = self.close_tx.try_send(());
         trace!("drop datagram {} = {}", self.src(), self.local_port);
     }
 }

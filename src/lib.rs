@@ -1830,7 +1830,7 @@ impl Redirector {
         let key = (src, dst);
         let is_exist = self.streams.get(&key).is_some();
         let is_writable = match self.streams.get(&key) {
-            Some(stream) => !stream.is_write_closed(),
+            Some(stream) => !stream.is_tx_closed(),
             None => false,
         };
 
@@ -2071,7 +2071,7 @@ impl Redirector {
         let key = (src, dst);
         let is_exist = self.streams.get(&key).is_some();
         let is_readable = match self.streams.get(&key) {
-            Some(stream) => !stream.is_read_closed(),
+            Some(stream) => !stream.is_rx_closed(),
             None => false,
         };
 
