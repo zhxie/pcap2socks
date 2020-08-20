@@ -110,7 +110,17 @@ impl StreamWorker {
         let is_tx_closed_cloned = Arc::clone(&is_tx_closed);
         let is_rx_closed = Arc::new(AtomicBool::new(false));
         let is_rx_closed_cloned = Arc::clone(&is_rx_closed);
+        let (mut timeout_tx, mut timeout_rx) = mpsc::channel(1);
         let (rx_close_tx, mut rx_close_rx) = mpsc::channel(1);
+        tokio::spawn(async move {
+            let mut interval = time::interval(time::Duration::from_millis(TICK_INTERVAL));
+            loop {
+                interval.tick().await;
+                if let Err(_) = timeout_tx.send(()).await {
+                    return;
+                }
+            }
+        });
         tokio::spawn(async move {
             let mut buffer = vec![0u8; u16::MAX as usize];
             let mut recv_zero = 0;
@@ -121,7 +131,7 @@ impl StreamWorker {
                 {
                     let rx_close_rx_fuse = rx_close_rx.recv().fuse();
                     let stream_rx_fuse = stream_rx.read(&mut buffer).fuse();
-                    let timeout_fuse = time::delay_for(Duration::from_millis(TICK_INTERVAL)).fuse();
+                    let timeout_fuse = timeout_rx.recv().fuse();
 
                     futures::pin_mut!(rx_close_rx_fuse, stream_rx_fuse, timeout_fuse);
 
@@ -161,7 +171,7 @@ impl StreamWorker {
                                 trace!("close stream RX {} -> {}", dst, 0);
 
                                 if let Err(ref e) = tx.lock().unwrap().close(dst, src) {
-                                    warn!("handle {}: {}", "TCP", e)
+                                    warn!("handle {} closing: {} -> {}: {}", "TCP", dst, 0, e)
                                 }
 
                                 is_rx_closed_cloned.store(true, Ordering::Relaxed);
@@ -178,13 +188,13 @@ impl StreamWorker {
 
                         // Send
                         if let Err(ref e) = tx.lock().unwrap().forward(dst, src, &buffer[..size]) {
-                            warn!("handle {}: {}", "TCP", e);
+                            warn!("handle {}: {} -> {}: {}", "TCP", dst, 0, e);
                         }
                     }
                     StreamWorkerEvent::Timeout => {
                         // Send
                         if let Err(ref e) = tx_cloned.lock().unwrap().tick(dst, src) {
-                            warn!("handle {}: {}", "TCP", e);
+                            warn!("handle {} timeout: {} -> {}: {}", "TCP", dst, 0, e);
                         }
                     }
                     StreamWorkerEvent::Close => {
@@ -365,7 +375,7 @@ impl DatagramWorker {
                             u64_to_socket_addr_v4(a_src_cloned.load(Ordering::Relaxed)),
                             &buffer[..size],
                         ) {
-                            warn!("handle {}: {}", "UDP", e);
+                            warn!("handle {}: {} -> {}: {}", "UDP", addr, local_port, e);
                         }
                     }
                     DatagramWorkerEvent::Close => {
