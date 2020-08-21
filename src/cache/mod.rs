@@ -473,8 +473,11 @@ impl Window {
                 .checked_sub(self.sequence)
                 .unwrap_or_else(|| sequence + (u32::MAX - recv_next));
 
-            if sub_recv_next_to_sequence > 0 {
-                let sub_sequence = self.sequence - sequence;
+            if sub_recv_next_to_sequence as usize <= MAX_U32_WINDOW_SIZE {
+                let sub_sequence = self
+                    .sequence
+                    .checked_sub(sequence)
+                    .unwrap_or_else(|| self.sequence + (u32::MAX - sequence));
                 (self.sequence, &payload[sub_sequence as usize..], 0)
             } else {
                 return Ok(None);
@@ -848,7 +851,11 @@ fn window_append_prev_and_next() {
     w.append(0, v.as_slice()).unwrap();
 
     let v = (0..3).into_iter().collect::<Vec<_>>();
-    w.append(0, v.as_slice()).unwrap();
+    let r = w.append(0, v.as_slice()).unwrap().unwrap();
+    assert_eq!(r.len(), 1);
+
+    let v = (252..254).into_iter().collect::<Vec<_>>();
+    w.append(u32::MAX - 4, v.as_slice()).unwrap();
 
     let v = (11..13).into_iter().collect::<Vec<_>>();
     w.append(1, v.as_slice()).unwrap();
