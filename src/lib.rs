@@ -27,7 +27,7 @@ use packet::layer::icmpv4::Icmpv4;
 use packet::layer::ipv4::Ipv4;
 use packet::layer::tcp::Tcp;
 use packet::layer::udp::Udp;
-use packet::layer::{Layer, LayerKind, LayerKinds, Layers};
+use packet::layer::{Layer, LayerKinds, Layers};
 use packet::{Defraggler, Indicator};
 use pcap::Interface;
 use pcap::{HardwareAddr, Receiver, Sender};
@@ -683,7 +683,7 @@ impl Forwarder {
             .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
         state.append_queue(payload);
 
-        self.send_tcp_ack(dst, src)
+        self.send_tcp(dst, src)
     }
 
     /// Retransmits TCP ACK packets from the cache. This method is used for fast retransmission.
@@ -708,7 +708,7 @@ impl Forwarder {
                 );
 
                 // Send
-                self.send_tcp_ack_raw(dst, src, sequence, payload.as_slice(), true)?;
+                self.send_tcp_ack(dst, src, sequence, payload.as_slice(), true)?;
             } else {
                 // ACK
                 trace!(
@@ -720,7 +720,7 @@ impl Forwarder {
                 );
 
                 // Send
-                self.send_tcp_ack_raw(dst, src, sequence, payload.as_slice(), false)?;
+                self.send_tcp_ack(dst, src, sequence, payload.as_slice(), false)?;
             }
         }
 
@@ -779,7 +779,7 @@ impl Forwarder {
                     );
 
                     // Send
-                    self.send_tcp_ack_raw(dst, src, range.0, payload.as_slice(), true)?;
+                    self.send_tcp_ack(dst, src, range.0, payload.as_slice(), true)?;
                 } else {
                     // ACK
                     trace!(
@@ -791,7 +791,7 @@ impl Forwarder {
                     );
 
                     // Send
-                    self.send_tcp_ack_raw(dst, src, range.0, payload.as_slice(), false)?;
+                    self.send_tcp_ack(dst, src, range.0, payload.as_slice(), false)?;
                 }
             }
         }
@@ -845,7 +845,7 @@ impl Forwarder {
                 );
 
                 // Send
-                self.send_tcp_ack_raw(dst, src, sequence, payload.as_slice(), true)?;
+                self.send_tcp_ack(dst, src, sequence, payload.as_slice(), true)?;
             } else {
                 // ACK
                 trace!(
@@ -857,7 +857,7 @@ impl Forwarder {
                 );
 
                 // Send
-                self.send_tcp_ack_raw(dst, src, sequence, payload.as_slice(), false)?;
+                self.send_tcp_ack(dst, src, sequence, payload.as_slice(), false)?;
             }
         } else {
             // FIN
@@ -877,8 +877,8 @@ impl Forwarder {
         Ok(())
     }
 
-    /// Sends TCP ACK packets from the queue.
-    pub fn send_tcp_ack(&mut self, dst: SocketAddrV4, src: SocketAddrV4) -> io::Result<()> {
+    /// Sends TCP packets from the queue.
+    pub fn send_tcp(&mut self, dst: SocketAddrV4, src: SocketAddrV4) -> io::Result<()> {
         // Retransmit unhandled SYN
         let state = self
             .get_state(dst, src)
@@ -920,14 +920,14 @@ impl Forwarder {
                         .get_state(dst, src)
                         .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
                     let sequence = state.sequence();
-                    self.send_tcp_ack_raw(dst, src, sequence, &payload, true)?;
+                    self.send_tcp_ack(dst, src, sequence, &payload, true)?;
                 } else {
                     // ACK
                     let state = self
                         .get_state(dst, src)
                         .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
                     let sequence = state.sequence();
-                    self.send_tcp_ack_raw(dst, src, sequence, &payload, false)?;
+                    self.send_tcp_ack(dst, src, sequence, &payload, false)?;
                 }
             }
         }
@@ -950,7 +950,7 @@ impl Forwarder {
         Ok(())
     }
 
-    fn send_tcp_ack_raw(
+    fn send_tcp_ack(
         &mut self,
         dst: SocketAddrV4,
         src: SocketAddrV4,
@@ -1002,7 +1002,7 @@ impl Forwarder {
             }
 
             // Send
-            self.send_ipv4_with_transport(
+            self.send_ipv4(
                 dst.ip().clone(),
                 src.ip().clone(),
                 Layers::Tcp(tcp),
@@ -1044,7 +1044,7 @@ impl Forwarder {
         );
 
         // Send
-        self.send_ipv4_with_transport(dst.ip().clone(), src.ip().clone(), Layers::Tcp(tcp), None)
+        self.send_ipv4(dst.ip().clone(), src.ip().clone(), Layers::Tcp(tcp), None)
     }
 
     fn send_tcp_ack_syn(&mut self, dst: SocketAddrV4, src: SocketAddrV4) -> io::Result<()> {
@@ -1079,7 +1079,7 @@ impl Forwarder {
         );
 
         // Send
-        self.send_ipv4_with_transport(dst.ip().clone(), src.ip().clone(), Layers::Tcp(tcp), None)?;
+        self.send_ipv4(dst.ip().clone(), src.ip().clone(), Layers::Tcp(tcp), None)?;
 
         Ok(())
     }
@@ -1100,7 +1100,7 @@ impl Forwarder {
         );
 
         // Send
-        self.send_ipv4_with_transport(dst.ip().clone(), src.ip().clone(), Layers::Tcp(tcp), None)
+        self.send_ipv4(dst.ip().clone(), src.ip().clone(), Layers::Tcp(tcp), None)
     }
 
     /// Sends an TCP RST packet.
@@ -1109,7 +1109,7 @@ impl Forwarder {
         let tcp = Tcp::new_rst(dst.port(), src.port(), 0, 0, 0, None);
 
         // Send
-        self.send_ipv4_with_transport(dst.ip().clone(), src.ip().clone(), Layers::Tcp(tcp), None)
+        self.send_ipv4(dst.ip().clone(), src.ip().clone(), Layers::Tcp(tcp), None)
     }
 
     fn send_tcp_fin(&mut self, dst: SocketAddrV4, src: SocketAddrV4) -> io::Result<()> {
@@ -1127,7 +1127,7 @@ impl Forwarder {
         );
 
         // Send
-        self.send_ipv4_with_transport(dst.ip().clone(), src.ip().clone(), Layers::Tcp(tcp), None)
+        self.send_ipv4(dst.ip().clone(), src.ip().clone(), Layers::Tcp(tcp), None)
     }
 
     /// Sends UDP packets.
@@ -1137,24 +1137,82 @@ impl Forwarder {
         src: SocketAddrV4,
         payload: &[u8],
     ) -> io::Result<()> {
+        // UDP
+        let udp = Udp::new(dst.port(), src.port());
+
+        self.send_ipv4(
+            dst.ip().clone(),
+            src.ip().clone(),
+            Layers::Udp(udp),
+            Some(payload),
+        )
+    }
+
+    fn send_ipv4(
+        &mut self,
+        dst_ip_addr: Ipv4Addr,
+        src_ip_addr: Ipv4Addr,
+        mut transport: Layers,
+        payload: Option<&[u8]>,
+    ) -> io::Result<()> {
         // Fragmentation
-        let size = Udp::minimum_len() + payload.len();
-        let mss = *self.src_mtu.get(src.ip()).unwrap_or(&self.local_mtu) - Ipv4::minimum_len();
+        let size = &transport.len()
+            + match payload {
+                Some(payload) => payload.len(),
+                None => 0,
+            };
+        let mss = *self.src_mtu.get(&src_ip_addr).unwrap_or(&self.local_mtu) - Ipv4::minimum_len();
         if size <= mss {
+            // IPv4
+            let ipv4 = Ipv4::new(
+                *self
+                    .ipv4_identification_map
+                    .get(&(src_ip_addr, dst_ip_addr))
+                    .unwrap_or(&0),
+                transport.kind(),
+                dst_ip_addr,
+                src_ip_addr,
+            )
+            .unwrap();
+
+            // Set IPv4 layer for checksum
+            match transport {
+                Layers::Tcp(ref mut tcp) => tcp.set_ipv4_layer(&ipv4),
+                Layers::Udp(ref mut udp) => udp.set_ipv4_layer(&ipv4),
+                _ => {}
+            }
+
             // Send
-            self.send_udp_raw(dst, src, payload)?;
+            self.send_ethernet(
+                *self
+                    .src_hardware_addr
+                    .get(&src_ip_addr)
+                    .unwrap_or(&pcap::HARDWARE_ADDR_UNSPECIFIED),
+                Layers::Ipv4(ipv4),
+                Some(transport),
+                payload,
+            )?;
         } else {
-            // Fragmentation required
-            // UDP
-            let mut udp = Udp::new(dst.port(), src.port());
-            let ipv4 = Ipv4::new(0, udp.kind(), dst.ip().clone(), src.ip().clone()).unwrap();
-            udp.set_ipv4_layer(&ipv4);
-            let udp = udp;
+            // Pseudo header
+            let ipv4 = Ipv4::new(0, transport.kind(), dst_ip_addr, src_ip_addr).unwrap();
+
+            // Set IPv4 layer for checksum
+            match &mut transport {
+                Layers::Tcp(tcp) => tcp.set_ipv4_layer(&ipv4),
+                Layers::Udp(udp) => udp.set_ipv4_layer(&ipv4),
+                _ => {}
+            }
 
             // Payload
-            let mut buffer = vec![0u8; udp.len() + payload.len()];
-            udp.serialize_with_payload(buffer.as_mut_slice(), payload, udp.len() + payload.len())?;
-            let buffer = buffer;
+            let mut buffer = vec![0u8; size];
+            match payload {
+                Some(payload) => transport.serialize_with_payload(
+                    buffer.as_mut_slice(),
+                    payload,
+                    transport.len() + payload.len(),
+                )?,
+                None => transport.serialize(buffer.as_mut_slice(), transport.len())?,
+            };
 
             let mut n = 0;
             while n < size {
@@ -1172,156 +1230,47 @@ impl Forwarder {
                     length = length - 8;
                 }
 
-                // Send
-                if remain > 0 {
-                    self.send_ipv4_with_fragment(
-                        dst.ip().clone(),
-                        src.ip().clone(),
-                        udp.kind(),
+                // IPv4
+                let ipv4 = if remain > 0 {
+                    Ipv4::new_more_fragment(
+                        *self
+                            .ipv4_identification_map
+                            .get(&(src_ip_addr, dst_ip_addr))
+                            .unwrap_or(&0),
+                        transport.kind(),
                         (n / 8) as u16,
-                        &buffer[n..n + length],
-                    )?;
+                        dst_ip_addr,
+                        src_ip_addr,
+                    )
+                    .unwrap()
                 } else {
-                    self.send_ipv4_with_last_fragment(
-                        dst.ip().clone(),
-                        src.ip().clone(),
-                        udp.kind(),
+                    Ipv4::new_last_fragment(
+                        *self
+                            .ipv4_identification_map
+                            .get(&(src_ip_addr, dst_ip_addr))
+                            .unwrap_or(&0),
+                        transport.kind(),
                         (n / 8) as u16,
-                        &buffer[n..n + length],
-                    )?;
-                }
+                        dst_ip_addr,
+                        src_ip_addr,
+                    )
+                    .unwrap()
+                };
 
-                n = n + length;
+                // Send
+                self.send_ethernet(
+                    *self
+                        .src_hardware_addr
+                        .get(&src_ip_addr)
+                        .unwrap_or(&pcap::HARDWARE_ADDR_UNSPECIFIED),
+                    Layers::Ipv4(ipv4),
+                    None,
+                    Some(&buffer[n..n + length]),
+                )?;
+
+                n += length;
             }
         }
-
-        Ok(())
-    }
-
-    fn send_udp_raw(
-        &mut self,
-        dst: SocketAddrV4,
-        src: SocketAddrV4,
-        payload: &[u8],
-    ) -> io::Result<()> {
-        // UDP
-        let udp = Udp::new(dst.port(), src.port());
-
-        self.send_ipv4_with_transport(
-            dst.ip().clone(),
-            src.ip().clone(),
-            Layers::Udp(udp),
-            Some(payload),
-        )
-    }
-
-    fn send_ipv4_with_fragment(
-        &mut self,
-        dst_ip_addr: Ipv4Addr,
-        src_ip_addr: Ipv4Addr,
-        t: LayerKind,
-        fragment_offset: u16,
-        payload: &[u8],
-    ) -> io::Result<()> {
-        // IPv4
-        let ipv4 = Ipv4::new_more_fragment(
-            *self
-                .ipv4_identification_map
-                .get(&(src_ip_addr, dst_ip_addr))
-                .unwrap_or(&0),
-            t,
-            fragment_offset,
-            dst_ip_addr,
-            src_ip_addr,
-        )
-        .unwrap();
-
-        // Send
-        self.send_ethernet(
-            *self
-                .src_hardware_addr
-                .get(&src_ip_addr)
-                .unwrap_or(&pcap::HARDWARE_ADDR_UNSPECIFIED),
-            Layers::Ipv4(ipv4),
-            None,
-            Some(payload),
-        )
-    }
-
-    fn send_ipv4_with_last_fragment(
-        &mut self,
-        dst_ip_addr: Ipv4Addr,
-        src_ip_addr: Ipv4Addr,
-        t: LayerKind,
-        fragment_offset: u16,
-        payload: &[u8],
-    ) -> io::Result<()> {
-        // IPv4
-        let ipv4 = Ipv4::new_last_fragment(
-            *self
-                .ipv4_identification_map
-                .get(&(src_ip_addr, dst_ip_addr))
-                .unwrap_or(&0),
-            t,
-            fragment_offset,
-            dst_ip_addr,
-            src_ip_addr,
-        )
-        .unwrap();
-
-        // Send
-        self.send_ethernet(
-            *self
-                .src_hardware_addr
-                .get(&src_ip_addr)
-                .unwrap_or(&pcap::HARDWARE_ADDR_UNSPECIFIED),
-            Layers::Ipv4(ipv4),
-            None,
-            Some(payload),
-        )?;
-
-        // Update IPv4 identification
-        self.increase_ipv4_identification(dst_ip_addr, src_ip_addr);
-
-        Ok(())
-    }
-
-    fn send_ipv4_with_transport(
-        &mut self,
-        dst_ip_addr: Ipv4Addr,
-        src_ip_addr: Ipv4Addr,
-        mut transport: Layers,
-        payload: Option<&[u8]>,
-    ) -> io::Result<()> {
-        // IPv4
-        let ipv4 = Ipv4::new(
-            *self
-                .ipv4_identification_map
-                .get(&(src_ip_addr, dst_ip_addr))
-                .unwrap_or(&0),
-            transport.kind(),
-            dst_ip_addr,
-            src_ip_addr,
-        )
-        .unwrap();
-
-        // Set IPv4 layer for checksum
-        match transport {
-            Layers::Tcp(ref mut tcp) => tcp.set_ipv4_layer(&ipv4),
-            Layers::Udp(ref mut udp) => udp.set_ipv4_layer(&ipv4),
-            _ => {}
-        }
-
-        // Send
-        self.send_ethernet(
-            *self
-                .src_hardware_addr
-                .get(&src_ip_addr)
-                .unwrap_or(&pcap::HARDWARE_ADDR_UNSPECIFIED),
-            Layers::Ipv4(ipv4),
-            Some(transport),
-            payload,
-        )?;
 
         // Update IPv4 identification
         self.increase_ipv4_identification(dst_ip_addr, src_ip_addr);
@@ -1418,7 +1367,7 @@ impl ForwardStream for Forwarder {
         };
         state.append_queue_fin();
 
-        self.send_tcp_ack(dst, src)
+        self.send_tcp(dst, src)
     }
 }
 
@@ -2010,7 +1959,7 @@ impl Redirector {
             }
 
             // Trigger sending remaining data
-            self.tx.lock().unwrap().send_tcp_ack(dst, src)?;
+            self.tx.lock().unwrap().send_tcp(dst, src)?;
 
             // FIN
             if tcp.is_fin() || state.fin_sequence.is_some() {
