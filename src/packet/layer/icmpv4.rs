@@ -41,13 +41,26 @@ impl Icmpv4 {
         Icmpv4::from(icmp)
     }
 
+    /// Creates a `Icmpv4` represents an ICMPv4 destination host unreachable.
+    pub fn new_destination_host_unreachable(payload: &[u8]) -> Icmpv4 {
+        let mut next_payload = vec![0u8; 4 + payload.len()];
+        &next_payload[4..].copy_from_slice(payload);
+        let icmp = Icmp {
+            icmp_type: IcmpTypes::DestinationUnreachable,
+            icmp_code: destination_unreachable::IcmpCodes::DestinationHostUnreachable,
+            checksum: 0,
+            payload: next_payload,
+        };
+        Icmpv4::from(icmp)
+    }
+
     /// Creates a `Icmpv4` represents an ICMPv4 destination port unreachable.
     pub fn new_destination_port_unreachable(payload: &[u8]) -> Icmpv4 {
         let mut next_payload = vec![0u8; 4 + payload.len()];
         &next_payload[4..].copy_from_slice(payload);
         let icmp = Icmp {
-            icmp_type: IcmpTypes::EchoReply,
-            icmp_code: echo_reply::IcmpCodes::NoCode,
+            icmp_type: IcmpTypes::DestinationUnreachable,
+            icmp_code: destination_unreachable::IcmpCodes::DestinationPortUnreachable,
             checksum: 0,
             payload: next_payload,
         };
@@ -70,6 +83,8 @@ impl Icmpv4 {
     pub fn description(&self) -> String {
         if self.is_echo_reply() {
             String::from("Echo reply")
+        } else if self.is_destination_host_unreachable() {
+            String::from("Destination host unreachable")
         } else if self.is_destination_port_unreachable() {
             String::from("Destination port unreachable")
         } else if self.is_fragmentation_required_and_df_flag_set() {
@@ -247,6 +262,13 @@ impl Icmpv4 {
     pub fn is_echo_reply(&self) -> bool {
         self.layer.icmp_type == IcmpTypes::EchoReply
             && self.layer.icmp_code == echo_reply::IcmpCodes::NoCode
+    }
+
+    /// Returns if the layer is an ICMPv4 destination host unreachable.
+    pub fn is_destination_host_unreachable(&self) -> bool {
+        self.layer.icmp_type == IcmpTypes::DestinationUnreachable
+            && self.layer.icmp_code
+                == destination_unreachable::IcmpCodes::DestinationHostUnreachable
     }
 
     /// Returns if the layer is an ICMPv4 destination port unreachable.
