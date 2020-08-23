@@ -116,8 +116,10 @@ pcap2socks has some defects in the view of engineering.
 
 - pcap2socks ignores checksums, lengths and some other fields in headers to support non-standard systems and LRO (large receive offload), but will also bring security issues.
 
-- pcap2socks works like a router but will redirect all traffic including local traffic, so local connections through pcap2socks and broadcasts will not work properly.
+- pcap2socks works like a router but will redirect all traffic including local traffic, so local connections via pcap2socks and broadcasts will not work properly.
 
 - The structure of the `Redirector`, the `StreamWorker` & `DatagramWorker` and the `Forwarder` looks like a chaos. Caches and states should be located in the `StreamWorker` & `DatagramWorker` instead of the `Redirector` and the `Forwarder`.
 
-- pcap2socks cannot close gracefully, all the data in the receive and send cache will be dropped. The connections will be closed (or shutdown, depending on the kernel or the OS) immediately.
+- pcap2socks cannot close gracefully, all the data in the receive and send cache will be dropped. The connections will be closed (or shutdown, depending on the kernel or the OS) immediately for performance consideration. This is limited by the crate [pnet](https://crates.io/crates/pnet) which only supports synchronous methods.
+
+- pcap2socks is waiting for Rust's updates, including the asynchronous methods in traits, to enhance the commonality of the system.

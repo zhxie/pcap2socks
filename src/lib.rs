@@ -670,8 +670,48 @@ impl Forwarder {
         self.send(&indicator)
     }
 
-    /// Appends TCP ACK payload to the queue.
-    pub fn append_to_queue(
+    /// Sends an ICMPv4 echo reply packet.
+    pub fn send_icmpv4_echo_reply(
+        &mut self,
+        dst_ip_addr: Ipv4Addr,
+        src_ip_addr: Ipv4Addr,
+        identifier: u16,
+        sequence_number: u16,
+    ) -> io::Result<()> {
+        // ICMPv4
+        let icmpv4 = Icmpv4::new_echo_reply(identifier, sequence_number);
+
+        self.send_ipv4(dst_ip_addr, src_ip_addr, Layers::Icmpv4(icmpv4), None)
+    }
+
+    /// Sends an ICMPv4 destination host unreachable packet.
+    pub fn send_icmpv4_destination_host_unreachable(
+        &mut self,
+        dst_ip_addr: Ipv4Addr,
+        src_ip_addr: Ipv4Addr,
+        payload: &[u8],
+    ) -> io::Result<()> {
+        // ICMPv4
+        let icmpv4 = Icmpv4::new_destination_host_unreachable(payload);
+
+        self.send_ipv4(dst_ip_addr, src_ip_addr, Layers::Icmpv4(icmpv4), None)
+    }
+
+    /// Sends an ICMPv4 destination port unreachable packet.
+    pub fn send_icmpv4_destination_port_unreachable(
+        &mut self,
+        dst_ip_addr: Ipv4Addr,
+        src_ip_addr: Ipv4Addr,
+        payload: &[u8],
+    ) -> io::Result<()> {
+        // ICMPv4
+        let icmpv4 = Icmpv4::new_destination_port_unreachable(payload);
+
+        self.send_ipv4(dst_ip_addr, src_ip_addr, Layers::Icmpv4(icmpv4), None)
+    }
+
+    /// Appends TCP payload to the queue.
+    pub fn queue_tcp(
         &mut self,
         dst: SocketAddrV4,
         src: SocketAddrV4,
@@ -686,8 +726,8 @@ impl Forwarder {
         self.send_tcp(dst, src)
     }
 
-    /// Retransmits TCP ACK packets from the cache. This method is used for fast retransmission.
-    pub fn retransmit_tcp_ack(&mut self, dst: SocketAddrV4, src: SocketAddrV4) -> io::Result<()> {
+    /// Retransmits TCP packets from the cache. This method is used for fast retransmission.
+    pub fn retransmit_tcp(&mut self, dst: SocketAddrV4, src: SocketAddrV4) -> io::Result<()> {
         // Retransmit
         let state = self
             .get_state(dst, src)
@@ -727,9 +767,9 @@ impl Forwarder {
         Ok(())
     }
 
-    /// Retransmits TCP ACK packets from the cache excluding the certain edges. This method is used
+    /// Retransmits TCP packets from the cache excluding the certain edges. This method is used
     /// for fast retransmission.
-    pub fn retransmit_tcp_ack_without(
+    pub fn retransmit_tcp_without(
         &mut self,
         dst: SocketAddrV4,
         src: SocketAddrV4,
@@ -811,9 +851,9 @@ impl Forwarder {
         Ok(())
     }
 
-    /// Retransmits timed out TCP ACK packets from the cache. This method is used for transmitting
+    /// Retransmits timed out TCP packets from the cache. This method is used for transmitting
     /// timed out data.
-    pub fn retransmit_tcp_ack_timedout(
+    pub fn retransmit_tcp_timedout(
         &mut self,
         dst: SocketAddrV4,
         src: SocketAddrV4,
@@ -1353,11 +1393,11 @@ impl ForwardStream for Forwarder {
             return Err(io::Error::from(io::ErrorKind::InvalidData));
         }
 
-        self.append_to_queue(dst, src, payload)
+        self.queue_tcp(dst, src, payload)
     }
 
     fn tick(&mut self, dst: SocketAddrV4, src: SocketAddrV4) -> io::Result<()> {
-        self.retransmit_tcp_ack_timedout(dst, src)
+        self.retransmit_tcp_timedout(dst, src)
     }
 
     fn close(&mut self, dst: SocketAddrV4, src: SocketAddrV4) -> io::Result<()> {
@@ -1941,7 +1981,7 @@ impl Redirector {
                                     self.tx
                                         .lock()
                                         .unwrap()
-                                        .retransmit_tcp_ack_without(dst, src, sacks)?;
+                                        .retransmit_tcp_without(dst, src, sacks)?;
                                     is_sr = true;
                                 }
                             }
@@ -1949,7 +1989,7 @@ impl Redirector {
 
                         if !is_sr {
                             // Back N
-                            self.tx.lock().unwrap().retransmit_tcp_ack(dst, src)?;
+                            self.tx.lock().unwrap().retransmit_tcp(dst, src)?;
                         }
 
                         state.clear_duplicate();
