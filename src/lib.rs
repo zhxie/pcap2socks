@@ -101,12 +101,15 @@ const MIN_RTO: u64 = 1000;
 /// Represents the maximum timeout for a retransmission in a TCP connection.
 const MAX_RTO: u64 = 60000;
 
+/// Represents the initial slow start threshold rate for congestion window in a TCP connection.
+const INITIAL_SSTHRESH_RATE: usize = 10;
+
 /// Represents the TX state of a TCP connection.
 pub struct TcpTxState {
     src: SocketAddrV4,
     dst: SocketAddrV4,
-    send_window: usize,
-    send_wscale: Option<u8>,
+    src_window: usize,
+    src_wscale: Option<u8>,
     sack_perm: bool,
     sequence: u32,
     acknowledgement: u32,
@@ -121,6 +124,9 @@ pub struct TcpTxState {
     rto: u64,
     srtt: Option<u64>,
     rttvar: Option<u64>,
+    mss: usize,
+    cwnd: usize,
+    ssthresh: usize,
 }
 
 impl TcpTxState {
@@ -130,16 +136,17 @@ impl TcpTxState {
         dst: SocketAddrV4,
         sequence: u32,
         acknowledgement: u32,
-        send_window: u16,
-        send_wscale: Option<u8>,
+        src_window: u16,
+        src_wscale: Option<u8>,
         sack_perm: bool,
         wscale: Option<u8>,
+        mss: usize,
     ) -> TcpTxState {
         TcpTxState {
             src,
             dst,
-            send_window: (send_window as usize) << send_wscale.unwrap_or(0),
-            send_wscale,
+            src_window: (src_window as usize) << src_wscale.unwrap_or(0),
+            src_wscale,
             sack_perm,
             sequence,
             acknowledgement,
@@ -157,14 +164,17 @@ impl TcpTxState {
             rto: INITIAL_RTO,
             srtt: None,
             rttvar: None,
+            mss,
+            cwnd: mss,
+            ssthresh: mss.checked_mul(INITIAL_SSTHRESH_RATE).unwrap_or(usize::MAX),
         }
     }
 
-    /// Sets the window of the TCP connection.
-    pub fn set_send_window(&mut self, window: usize) {
-        self.send_window = window;
+    /// Sets the source window of the TCP connection.
+    pub fn set_src_window(&mut self, window: usize) {
+        self.src_window = window;
         trace!(
-            "set TCP send window of {} -> {} to {}",
+            "set TCP source window of {} -> {} to {}",
             self.dst,
             self.src,
             window
@@ -249,24 +259,35 @@ impl TcpTxState {
             }
         }
 
-        // Invalidate cache
-        let cache_rtt = self.cache.invalidate_to(sequence);
-        if rtt.is_none() {
-            rtt = cache_rtt;
-        }
-        trace!(
-            "acknowledge TCP cache of {} -> {} to sequence {}",
-            self.dst,
-            self.src,
-            sequence
-        );
+        // ACK
+        let sub_sequence = sequence
+            .checked_sub(self.cache.sequence())
+            .unwrap_or_else(|| sequence + (u32::MAX - self.cache.sequence()));
+        if sub_sequence > 0 && sub_sequence as usize <= MAX_U32_WINDOW_SIZE {
+            // Invalidate cache
+            let cache_rtt = self.cache.invalidate_to(sequence);
+            if rtt.is_none() {
+                rtt = cache_rtt;
+            }
+            trace!(
+                "acknowledge TCP cache of {} -> {} to sequence {}",
+                self.dst,
+                self.src,
+                sequence
+            );
 
-        if sequence
-            .checked_sub(self.cache.recv_next())
-            .unwrap_or_else(|| sequence + (u32::MAX - self.cache.recv_next())) as usize
-            <= MAX_U32_WINDOW_SIZE
-        {
-            if let Some(timer) = self.cache_fin {
+            // Increase congestion window
+            self.increase_cwnd();
+        }
+
+        // FIN
+        if let Some(timer) = self.cache_fin {
+            if sequence
+                .checked_sub(self.cache.recv_next())
+                .unwrap_or_else(|| sequence + (u32::MAX - self.cache.recv_next()))
+                as usize
+                <= MAX_U32_WINDOW_SIZE
+            {
                 if rtt.is_none() && !self.cache_fin_retrans && !timer.is_timedout() {
                     rtt = Some(timer.elapsed());
                 }
@@ -420,15 +441,49 @@ impl TcpTxState {
         self.set_rto(rto);
     }
 
-    /// Returns the send window of the TCP connection. The send window represents the received
-    /// window from the source and indicates how much payload it can receive next.
-    pub fn send_window(&self) -> usize {
-        self.send_window
+    /// Increases the congestion window of the TCP connection.
+    pub fn increase_cwnd(&mut self) {
+        if self.cwnd < self.ssthresh {
+            self.cwnd = self.cwnd.checked_mul(2).unwrap_or(usize::MAX);
+        } else {
+            self.cwnd = self.cwnd.checked_add(self.mss).unwrap_or(usize::MAX);
+        }
+        trace!(
+            "set TCP congestion window of {} -> {} to {}",
+            self.dst,
+            self.src,
+            self.cwnd
+        );
     }
 
-    /// Returns the send window scale of the TCP connection.
-    pub fn send_wscale(&self) -> Option<u8> {
-        self.send_wscale
+    /// Decreases the congestion window of the TCP connection. This method is used for reset the
+    /// congestion window when a time out was happened.
+    pub fn decrease_cwnd(&mut self) {
+        self.ssthresh = self.cwnd / 2;
+        trace!(
+            "set TCP slow start threshold of {} -> {} to {}",
+            self.dst,
+            self.src,
+            self.ssthresh
+        );
+        self.cwnd = self.mss;
+        trace!(
+            "set TCP congestion window of {} -> {} to {}",
+            self.dst,
+            self.src,
+            self.cwnd
+        );
+    }
+
+    /// Returns the source window of the TCP connection. The source window represents the received
+    /// window from the source and indicates how much payload it can receive next.
+    pub fn src_window(&self) -> usize {
+        self.src_window
+    }
+
+    /// Returns the source window scale of the TCP connection.
+    pub fn src_wscale(&self) -> Option<u8> {
+        self.src_wscale
     }
 
     /// Returns if the SACK is permitted of the TCP connection.
@@ -489,6 +544,12 @@ impl TcpTxState {
     /// Returns the RTO if the TCP connection.
     pub fn rto(&self) -> u64 {
         self.rto
+    }
+
+    /// Returns the send window of the TCP connection. The send window is the minimum one between
+    /// the congestion window and the source window.
+    pub fn send_window(&self) -> usize {
+        min(self.cwnd, self.src_window)
     }
 }
 
@@ -593,6 +654,18 @@ impl Forwarder {
         self.states.insert(key, state);
     }
 
+    /// Removes all information related to a TCP connection.
+    pub fn clean_up(&mut self, dst: SocketAddrV4, src: SocketAddrV4) {
+        let key = (src, dst);
+
+        self.states.remove(&key);
+    }
+
+    /// Returns the source MTU.
+    pub fn get_src_mtu(&self, src_ip_addr: Ipv4Addr) -> usize {
+        *self.src_mtu.get(&src_ip_addr).unwrap_or(&self.local_mtu)
+    }
+
     /// Returns the state of a TCP connection.
     pub fn get_state(&self, dst: SocketAddrV4, src: SocketAddrV4) -> Option<&TcpTxState> {
         let key = (src, dst);
@@ -628,13 +701,6 @@ impl Forwarder {
         } else {
             state.window()
         }
-    }
-
-    /// Removes all information related to a TCP connection.
-    pub fn clean_up(&mut self, dst: SocketAddrV4, src: SocketAddrV4) {
-        let key = (src, dst);
-
-        self.states.remove(&key);
     }
 
     /// Returns the size of the cache and the queue of a TCP connection.
@@ -832,6 +898,9 @@ impl Forwarder {
             // Double RTO
             state.double_rto();
 
+            // Decrease congestion window
+            state.decrease_cwnd();
+
             // If all the cache is get, the FIN should also be sent
             if size == payload.len() && state.cache_fin().is_some() {
                 // ACK/FIN
@@ -887,7 +956,7 @@ impl Forwarder {
             return self.send_tcp_ack_syn(dst, src);
         }
 
-        if state.send_window() > 0 {
+        if state.src_window() > 0 {
             // TCP sequence
             let sent_size = state.cache().len();
             let remain_size = state.send_window().checked_sub(sent_size).unwrap_or(0);
@@ -1073,7 +1142,7 @@ impl Forwarder {
             state.acknowledgement(),
             self.get_tcp_window(dst, src),
             mss,
-            state.send_wscale(),
+            state.src_wscale(),
             state.sack_perm(),
             None,
         );
@@ -1838,7 +1907,7 @@ impl Redirector {
                     .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
 
                 tx_state.acknowledge(tcp.acknowledgement());
-                tx_state.set_send_window((tcp.window() as usize) << state.wscale as usize);
+                tx_state.set_src_window((tcp.window() as usize) << state.wscale as usize);
             }
 
             if payload.len() > 0 {
@@ -2019,6 +2088,8 @@ impl Redirector {
                     recv_wscale,
                     sack_perm,
                     wscale,
+                    tx_locked.get_src_mtu(tcp.src_ip_addr())
+                        - (Ipv4::minimum_len() + Tcp::minimum_len()),
                 );
                 tx_locked.set_state(dst, src, tx_state);
             }
