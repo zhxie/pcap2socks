@@ -895,38 +895,40 @@ impl Forwarder {
         let size = state.cache().len();
 
         if size > 0 {
-            // Double RTO
-            state.double_rto();
+            if payload.len() > 0 {
+                // Double RTO
+                state.double_rto();
 
-            // Decrease congestion window
-            state.decrease_cwnd();
+                // Decrease congestion window
+                state.decrease_cwnd();
 
-            // If all the cache is get, the FIN should also be sent
-            if size == payload.len() && state.cache_fin().is_some() {
-                // ACK/FIN
-                state.update_fin_timer();
-                trace!(
-                    "retransmit TCP ACK/FIN ({} Bytes) and FIN {} -> {} from {} due to timeout",
-                    payload.len(),
-                    dst,
-                    src,
-                    sequence
-                );
+                // If all the cache is get, the FIN should also be sent
+                if size == payload.len() && state.cache_fin().is_some() {
+                    // ACK/FIN
+                    state.update_fin_timer();
+                    trace!(
+                        "retransmit TCP ACK/FIN ({} Bytes) and FIN {} -> {} from {} due to timeout",
+                        payload.len(),
+                        dst,
+                        src,
+                        sequence
+                    );
 
-                // Send
-                self.send_tcp_ack(dst, src, sequence, payload.as_slice(), true)?;
-            } else {
-                // ACK
-                trace!(
-                    "retransmit TCP ACK ({} Bytes) {} -> {} from {} due to timeout",
-                    payload.len(),
-                    dst,
-                    src,
-                    sequence
-                );
+                    // Send
+                    self.send_tcp_ack(dst, src, sequence, payload.as_slice(), true)?;
+                } else {
+                    // ACK
+                    trace!(
+                        "retransmit TCP ACK ({} Bytes) {} -> {} from {} due to timeout",
+                        payload.len(),
+                        dst,
+                        src,
+                        sequence
+                    );
 
-                // Send
-                self.send_tcp_ack(dst, src, sequence, payload.as_slice(), false)?;
+                    // Send
+                    self.send_tcp_ack(dst, src, sequence, payload.as_slice(), false)?;
+                }
             }
         } else {
             // FIN
