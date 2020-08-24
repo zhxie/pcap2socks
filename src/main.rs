@@ -1,10 +1,11 @@
 use env_logger::fmt::{Color, Formatter, Target};
 use ipnetwork::Ipv4Network;
 use log::{error, info, warn, Level, LevelFilter, Log, Metadata, Record};
+use shadowsocks::{self, ClientConfig, Config, ConfigType, Mode};
 use std::clone::Clone;
 use std::fmt::Display;
 use std::io::{self, Write};
-use std::net::{AddrParseError, IpAddr, Ipv4Addr, SocketAddrV4};
+use std::net::{AddrParseError, IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use structopt::StructOpt;
@@ -97,6 +98,19 @@ async fn main() {
 
     // Instructions
     show_info(src, gw, mtu);
+
+    // Shadowsocks
+    if let Some(path) = flags.shadowsocks {
+        let mut config = Config::load_from_file(path.as_str(), ConfigType::Socks5Local).unwrap();
+        config.local_addr = Some(ClientConfig::from(SocketAddr::from(flags.dst.addr())));
+        config.mode = Mode::TcpAndUdp;
+        tokio::spawn(async move {
+            if let Err(ref e) = shadowsocks::run_local(config).await {
+                error!("{}", e);
+            }
+        });
+        info!("Start Shadowsocks on {}", flags.dst);
+    }
 
     // Proxy
     let (tx, mut rx) = match inter.open() {
@@ -266,6 +280,14 @@ struct Flags {
         display_order(1001)
     )]
     pub password: Option<String>,
+    #[structopt(
+        long,
+        short = "S",
+        help = "Shadowsocks configuration path",
+        value_name = "PATH",
+        display_order(1002)
+    )]
+    pub shadowsocks: Option<String>,
 }
 
 /// Represents a logger.

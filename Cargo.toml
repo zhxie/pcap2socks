@@ -23,6 +23,7 @@ log = "0.4.8"
 lru = "0.5.2"
 pnet = "0.26.0"
 rand = "0.7.3"
+shadowsocks-rust = { version = "1.8.15", default-features = false, features = ["ring-aead-ciphers", "sodium", "rc4", "aes-cfb", "aes-ctr"] }
 structopt = "0.3.15"
 tokio = { version = "0.2.21", features = ["macros", "rt-core", "rt-threaded", "sync", "tcp", "time", "udp"] }
 
