@@ -727,53 +727,11 @@ impl Forwarder {
     }
 
     /// Retransmits TCP packets from the cache. This method is used for fast retransmission.
-    pub fn retransmit_tcp(&mut self, dst: SocketAddrV4, src: SocketAddrV4) -> io::Result<()> {
-        // Retransmit
-        let state = self
-            .get_state(dst, src)
-            .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
-        let payload = state.cache().get_all();
-        let sequence = state.cache().sequence();
-        let size = state.cache().len();
-
-        if payload.len() > 0 {
-            if size == payload.len() && state.cache_fin().is_some() {
-                // ACK/FIN
-                trace!(
-                    "retransmit TCP ACK/FIN ({} Bytes) {} -> {} from {}",
-                    payload.len(),
-                    dst,
-                    src,
-                    sequence
-                );
-
-                // Send
-                self.send_tcp_ack(dst, src, sequence, payload.as_slice(), true)?;
-            } else {
-                // ACK
-                trace!(
-                    "retransmit TCP ACK ({} Bytes) {} -> {} from {}",
-                    payload.len(),
-                    dst,
-                    src,
-                    sequence
-                );
-
-                // Send
-                self.send_tcp_ack(dst, src, sequence, payload.as_slice(), false)?;
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Retransmits TCP packets from the cache excluding the certain edges. This method is used
-    /// for fast retransmission.
-    pub fn retransmit_tcp_without(
+    pub fn retransmit_tcp(
         &mut self,
         dst: SocketAddrV4,
         src: SocketAddrV4,
-        sacks: Vec<(u32, u32)>,
+        sacks: Option<Vec<(u32, u32)>>,
     ) -> io::Result<()> {
         let state = self
             .get_state(dst, src)
@@ -784,16 +742,18 @@ impl Forwarder {
         // Find all disjointed ranges
         let mut ranges = Vec::new();
         ranges.push((sequence, recv_next));
-        for sack in sacks {
-            let mut temp_ranges = Vec::new();
+        if let Some(sacks) = sacks {
+            for sack in sacks {
+                let mut temp_ranges = Vec::new();
 
-            for range in ranges {
-                for temp_range in disjoint_u32_range(range, sack) {
-                    temp_ranges.push(temp_range);
+                for range in ranges {
+                    for temp_range in disjoint_u32_range(range, sack) {
+                        temp_ranges.push(temp_range);
+                    }
                 }
-            }
 
-            ranges = temp_ranges;
+                ranges = temp_ranges;
+            }
         }
         let ranges = ranges;
 
@@ -1978,10 +1938,11 @@ impl Redirector {
                             if let Some(sacks) = tcp.sack() {
                                 if sacks.len() > 0 {
                                     // Selective retransmission
-                                    self.tx
-                                        .lock()
-                                        .unwrap()
-                                        .retransmit_tcp_without(dst, src, sacks)?;
+                                    self.tx.lock().unwrap().retransmit_tcp(
+                                        dst,
+                                        src,
+                                        Some(sacks),
+                                    )?;
                                     is_sr = true;
                                 }
                             }
@@ -1989,7 +1950,7 @@ impl Redirector {
 
                         if !is_sr {
                             // Back N
-                            self.tx.lock().unwrap().retransmit_tcp(dst, src)?;
+                            self.tx.lock().unwrap().retransmit_tcp(dst, src, None)?;
                         }
 
                         state.clear_duplicate();
