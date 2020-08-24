@@ -32,8 +32,6 @@ This is the development documentation of pcap2socks.
 
 - pcap2socks does not support the timestamp ([RFC 7323](https://www.iana.org/go/rfc7323)) option. Since only the source and destination know the full information of the traffic, pcap2socks may not trace any packets and report their timestamp correctly.
 
-- pcap2socks does not maintain the congestion window ([RFC 5681](https://tools.ietf.org/html/rfc5681)). The congestion control will be implemented in the future release, and the algorithm CUBIC ([RFC 8312](https://tools.ietf.org/html/rfc8312)), PRR ([RFC 6973](https://tools.ietf.org/html/rfc6937)) or [BBR](https://github.com/google/bbr) may be considered.
-
 - pcap2socks does not realize the zero window probe ([RFC 1122](https://tools.ietf.org/html/rfc1122)) and does not report its window explicitly.
 
 - pcap2socks does not realize keep-alive ([RFC 1122](https://tools.ietf.org/html/rfc1122)) for performance consideration.
@@ -88,6 +86,10 @@ This is the development documentation of pcap2socks.
 
 `MAX_RTO`: Represents the maximum timeout for a retransmission in a TCP connection. Default as `60000` ms.
 
+`ENABLE_CC`: Represents if the congestion control ([RFC 5681](https://tools.ietf.org/html/rfc5681)) is enabled. The algorithm used currently is Reno (without the fast recovery). Default as `true`.
+
+`INITIAL_SSTHRESH_RATE`: Represents the initial slow start threshold rate for congestion window in a TCP connection. Default as `10` (10 MSS).
+
 `TIMEOUT_WAIT`: Same as above. Default as `20` ms.
 
 `ENABLE_RECV_SWS_AVOID`: Represents if the receive-side silly window syndrome avoidance ([RFC 1122](https://tools.ietf.org/html/rfc1122)) is enabled. Default as `true`.
@@ -112,7 +114,9 @@ This is the development documentation of pcap2socks.
 
 pcap2socks has some defects in the view of engineering.
 
-- Because pcap2socks does not implement the congestion control, the zero window probe and the keep-alive in any TCP connections, the traffic transmission performance may be lost. However, since pcap2socks is mainly used in LANs, the actual impact may be minimal.
+- pcap2socks maintains the congestion window with an out-dated algorithm Reno (without the fast recovery) currently. The congestion control will be updated in the future release with the algorithm CUBIC ([RFC 8312](https://tools.ietf.org/html/rfc8312)), PRR ([RFC 6973](https://tools.ietf.org/html/rfc6937)) or [BBR](https://github.com/google/bbr).
+
+- Because pcap2socks does not implement the zero window probe and the keep-alive in any TCP connections, the traffic transmission performance may be lost. However, since pcap2socks is mainly used in LANs, the actual impact may be minimal.
 
 - pcap2socks ignores checksums, lengths and some other fields in headers to support non-standard systems and LRO (large receive offload), but will also bring security issues.
 

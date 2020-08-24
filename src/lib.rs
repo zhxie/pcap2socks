@@ -101,6 +101,8 @@ const MIN_RTO: u64 = 1000;
 /// Represents the maximum timeout for a retransmission in a TCP connection.
 const MAX_RTO: u64 = 60000;
 
+/// Represents if the congestion control is enabled.
+const ENABLE_CC: bool = true;
 /// Represents the initial slow start threshold rate for congestion window in a TCP connection.
 const INITIAL_SSTHRESH_RATE: usize = 10;
 
@@ -441,38 +443,50 @@ impl TcpTxState {
         self.set_rto(rto);
     }
 
-    /// Increases the congestion window of the TCP connection.
-    pub fn increase_cwnd(&mut self) {
-        if self.cwnd < self.ssthresh {
-            self.cwnd = self.cwnd.checked_mul(2).unwrap_or(usize::MAX);
-        } else {
-            self.cwnd = self.cwnd.checked_add(self.mss).unwrap_or(usize::MAX);
-        }
-        trace!(
-            "set TCP congestion window of {} -> {} to {}",
-            self.dst,
-            self.src,
-            self.cwnd
-        );
-    }
-
-    /// Decreases the congestion window of the TCP connection. This method is used for reset the
-    /// congestion window when a time out was happened.
-    pub fn decrease_cwnd(&mut self) {
-        self.ssthresh = self.cwnd / 2;
+    fn set_ssthresh(&mut self, ssthresh: usize) {
+        self.ssthresh = ssthresh;
         trace!(
             "set TCP slow start threshold of {} -> {} to {}",
             self.dst,
             self.src,
             self.ssthresh
         );
-        self.cwnd = self.mss;
-        trace!(
-            "set TCP congestion window of {} -> {} to {}",
-            self.dst,
-            self.src,
-            self.cwnd
-        );
+    }
+
+    fn set_cwnd(&mut self, cwnd: usize) {
+        if ENABLE_CC {
+            self.cwnd = cwnd;
+            trace!(
+                "set TCP congestion window of {} -> {} to {}",
+                self.dst,
+                self.src,
+                self.cwnd
+            );
+        }
+    }
+
+    /// Increases the congestion window of the TCP connection.
+    pub fn increase_cwnd(&mut self) {
+        if self.cwnd < self.ssthresh {
+            self.set_cwnd(self.cwnd.checked_mul(2).unwrap_or(usize::MAX));
+        } else {
+            self.set_cwnd(self.cwnd.checked_add(self.mss).unwrap_or(usize::MAX));
+        }
+    }
+
+    /// Decreases the congestion window of the TCP connection to the slow start threshold. This
+    /// method is used for decreasing the congestion window when a fast retransmission was
+    /// happened.
+    pub fn decrease_cwnd(&mut self) {
+        self.set_ssthresh(self.cwnd / 2);
+        self.set_cwnd(self.ssthresh);
+    }
+
+    /// Resets the congestion window of the TCP connection. This method is used for resetting the
+    /// congestion window when a time out was happened.
+    pub fn reset_cwnd(&mut self) {
+        self.set_ssthresh(self.cwnd / 2);
+        self.set_cwnd(self.mss);
     }
 
     /// Returns the source window of the TCP connection. The source window represents the received
@@ -549,7 +563,11 @@ impl TcpTxState {
     /// Returns the send window of the TCP connection. The send window is the minimum one between
     /// the congestion window and the source window.
     pub fn send_window(&self) -> usize {
-        min(self.cwnd, self.src_window)
+        if ENABLE_CC {
+            min(self.cwnd, self.src_window)
+        } else {
+            self.src_window
+        }
     }
 }
 
@@ -800,10 +818,13 @@ impl Forwarder {
         sacks: Option<Vec<(u32, u32)>>,
     ) -> io::Result<()> {
         let state = self
-            .get_state(dst, src)
+            .get_state_mut(dst, src)
             .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
         let sequence = state.cache().sequence();
         let recv_next = state.cache().recv_next();
+
+        // Decrease congestion window
+        state.decrease_cwnd();
 
         // Find all disjointed ranges
         let mut ranges = Vec::new();
@@ -899,8 +920,8 @@ impl Forwarder {
                 // Double RTO
                 state.double_rto();
 
-                // Decrease congestion window
-                state.decrease_cwnd();
+                // Reset congestion window
+                state.reset_cwnd();
 
                 // If all the cache is get, the FIN should also be sent
                 if size == payload.len() && state.cache_fin().is_some() {
