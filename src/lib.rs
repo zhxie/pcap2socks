@@ -101,6 +101,12 @@ const MIN_RTO: u64 = 1000;
 /// Represents the maximum timeout for a retransmission in a TCP connection.
 const MAX_RTO: u64 = 60000;
 
+const RTO_K: u64 = 4;
+const RTO_ALPHA_NUM: u64 = 7;
+const RTO_ALPHA_DEN: u64 = 8;
+const RTO_BETA_NUM: u64 = 3;
+const RTO_BETA_DEN: u64 = 4;
+
 /// Represents if the congestion control is enabled.
 const ENABLE_CC: bool = true;
 /// Represents the initial slow start threshold rate for congestion window in a TCP connection.
@@ -547,18 +553,18 @@ impl TcpTxState {
             Some(prev_srtt) => {
                 // RTTVAR
                 let prev_rttvar = self.rttvar.unwrap_or(prev_srtt / 2);
-                rttvar = (prev_rttvar / 8 * 7)
+                rttvar = (prev_rttvar / RTO_BETA_DEN * RTO_BETA_NUM)
                     .checked_add(
                         prev_srtt
                             .checked_sub(rtt)
                             .unwrap_or_else(|| rtt - prev_srtt)
-                            / 4,
+                            / RTO_BETA_DEN,
                     )
                     .unwrap_or(u64::MAX);
 
                 // SRTT
-                srtt = (prev_rttvar / 8 * 7)
-                    .checked_add(rtt / 8)
+                srtt = (prev_rttvar / RTO_ALPHA_DEN * RTO_ALPHA_NUM)
+                    .checked_add(rtt / RTO_ALPHA_DEN)
                     .unwrap_or(u64::MAX);
             }
             None => {
@@ -585,7 +591,7 @@ impl TcpTxState {
 
         // RTO
         let rto = srtt
-            .checked_add(max(1, rttvar.checked_mul(4).unwrap_or(u64::MAX)))
+            .checked_add(max(1, rttvar.checked_mul(RTO_K).unwrap_or(u64::MAX)))
             .unwrap_or(u64::MAX);
         self.set_rto(rto);
     }
