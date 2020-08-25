@@ -72,7 +72,7 @@ This is the development documentation of pcap2socks.
 
 `MAX_U32_WINDOW_SIZE`: Represents the max distance of u32 values between packets in an u32 window. Data with sequence `1000` and sequence `101000` may be recognized as increment but discontinuous, but data with sequence `101000` and `1000` may be recognized as expired or out of order. The former example's seconds data will be pushed into the cache, while the latter's will be dropped. Default as `16777216` Bytes, or 16 MB.
 
-### Forwarder & Redirector
+### TCP
 
 `MAX_U32_WINDOW_SIZE`: Same as above. Default as `16777216` Bytes, or 16 MB.
 
@@ -90,6 +90,10 @@ This is the development documentation of pcap2socks.
 
 `INITIAL_SSTHRESH_RATE`: Represents the initial slow start threshold rate for congestion window in a TCP connection. Default as `10` (10 MSS).
 
+### Forwarder & Redirector
+
+`MAX_U32_WINDOW_SIZE`: Same as above. Default as `16777216` Bytes, or 16 MB.
+
 `TIMEOUT_WAIT`: Same as above. Default as `20` ms.
 
 `ENABLE_RECV_SWS_AVOID`: Represents if the receive-side silly window syndrome avoidance ([RFC 1122](https://tools.ietf.org/html/rfc1122)) is enabled. Default as `true`.
@@ -98,15 +102,15 @@ This is the development documentation of pcap2socks.
 
 `ENABLE_MSS`: Represents if the TCP MSS ([RFC 793](https://www.iana.org/go/rfc793)) option is enabled. Default as `true`.
 
-`DUPLICATES_THRESHOLD`: Represents the threshold of TCP ACK duplicates before trigger a fast retransmission, also recognized as fast retransmission. Default as `3`.
-
-`RETRANS_COOL_DOWN`: Represents the cool down time between 2 retransmissions. Default as `200` ms.
-
 `ENABLE_WSCALE`: Represents if the TCP window scale ([RFC 7323](https://tools.ietf.org/html/rfc7323)) option is enabled. Enable window scale may lead to a bufferbloat described above, and the `MAX_U32_WINDOW_SIZE` must be set at a reasonable value. Default as `true`.
 
 `MAX_RECV_WSCALE`: Represents the max window scale of the receive window. pcap2socks will open a same-size receive window as the source by default unless the window scale is over the limitation. Default as `8` (x256), or 16MB.
 
 `ENABLE_SACK`: Represents if the TCP selective acknowledgment ([RFC 7323](https://tools.ietf.org/html/rfc7323)) option is enabled. Default as `true`.
+
+`DUPLICATES_THRESHOLD`: Represents the threshold of TCP ACK duplicates before trigger a fast retransmission, also recognized as fast retransmission. Default as `3`.
+
+`RETRANS_COOL_DOWN`: Represents the cool down time between 2 retransmissions. Default as `200` ms.
 
 `MAX_UDP_PORT`: Represents the max limit of UDP port for binding in local. If the value is too small, rebind will happen frequently and the previous UDP "connection" will be dropped, and may not able to connect to other peer. If the value is too big, the system resource may be largely consumed, so set with a reasonable value. Default as `256`.
 
