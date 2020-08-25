@@ -96,7 +96,7 @@ impl TcpTahoeCcState {
     }
 
     fn set_cwnd(&mut self, cwnd: usize) {
-        self.cwnd = cwnd;
+        self.cwnd = max(self.mss, cwnd);
         trace!(
             "set TCP congestion window of {} -> {} to {}",
             self.dst,
@@ -168,7 +168,7 @@ impl TcpRenoCcState {
     }
 
     fn set_cwnd(&mut self, cwnd: usize) {
-        self.cwnd = cwnd;
+        self.cwnd = max(self.mss, cwnd);
         trace!(
             "set TCP congestion window of {} -> {} to {}",
             self.dst,
@@ -241,8 +241,8 @@ impl TcpCubicCcState {
         TcpCubicCcState {
             src,
             dst,
-            w_max: mss.checked_mul(INITIAL_SSTHRESH_RATE).unwrap_or(usize::MAX),
-            w_last_max: mss.checked_mul(INITIAL_SSTHRESH_RATE).unwrap_or(usize::MAX),
+            w_max: mss,
+            w_last_max: mss,
             k: 0.0,
             last_update: Instant::now(),
             mss,
@@ -276,7 +276,7 @@ impl TcpCubicCcState {
     }
 
     fn set_cwnd(&mut self, cwnd: usize) {
-        self.cwnd = cwnd;
+        self.cwnd = max(self.mss, cwnd);
         trace!(
             "set TCP congestion window of {} -> {} to {}",
             self.dst,
@@ -299,10 +299,7 @@ impl TcpCubicCcState {
     }
 
     fn reset(&mut self) {
-        self.w_max = self
-            .mss
-            .checked_mul(INITIAL_SSTHRESH_RATE)
-            .unwrap_or(usize::MAX);
+        self.w_max = self.mss;
         trace!(
             "update TCP window max of {} -> {} to {}",
             self.dst,
@@ -412,7 +409,7 @@ const RTO_BETA: f64 = 1.0 / 4.0;
 /// Represents if the congestion control is enabled.
 const ENABLE_CC: bool = true;
 /// Represents the congestion control algorithm.
-const CC_ALGORITHM: TcpCcAlgorithms = TcpCcAlgorithms::Cubic;
+const CC_ALGORITHM: TcpCcAlgorithms = TcpCcAlgorithms::Reno;
 
 /// Represents the TX state of a TCP connection.
 pub struct TcpTxState {

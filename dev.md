@@ -90,7 +90,7 @@ This is the development documentation of pcap2socks.
 
 `ENABLE_CC`: Represents if the congestion control ([RFC 5681](https://tools.ietf.org/html/rfc5681)) is enabled. The algorithm used currently is Reno (without the fast recovery). Default as `true`.
 
-`CC_ALGORITHM`: Represents the congestion control algorithm. Available values are `Tahoe` for TCP Tahoe, `Reno` for TCP Reno and `Cubic` for TCP CUBIC ([RFC 8312](https://tools.ietf.org/html/rfc8312)) congestion control algorithm. Default as `Cubic`.
+`CC_ALGORITHM`: Represents the congestion control algorithm. Available values are `Tahoe` for TCP Tahoe, `Reno` for TCP Reno and `Cubic` for TCP CUBIC ([RFC 8312](https://tools.ietf.org/html/rfc8312)) congestion control algorithm. Default as `Reno`.
 
 ### Forwarder & Redirector
 
@@ -119,8 +119,6 @@ This is the development documentation of pcap2socks.
 ## Defects
 
 pcap2socks has some defects in the view of engineering.
-
-- pcap2socks maintains the congestion window with the algorithm TCP CUBIC ([RFC 8312](https://tools.ietf.org/html/rfc8312)) by default. The congestion control will be updated in the future release with the algorithm PRR ([RFC 6973](https://tools.ietf.org/html/rfc6937)) or [BBR](https://github.com/google/bbr).
 
 - Because pcap2socks does not implement the zero window probe and the keep-alive in any TCP connections, the traffic transmission performance may be lost. However, since pcap2socks is mainly used in LANs, the actual impact may be minimal.
 
