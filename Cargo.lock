@@ -589,7 +589,7 @@ checksum = "260e51e7efe62b592207e9e13a68e43692a7a279171d6ba57abd208bf23645ad"
 
 [[package]]
 name = "pcap2socks"
-version = "0.5.1-alpha"
+version = "0.6.0-alpha"
 dependencies = [
  "async-socks5",
  "clap",
