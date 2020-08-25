@@ -106,6 +106,152 @@ const ENABLE_CC: bool = true;
 /// Represents the initial slow start threshold rate for congestion window in a TCP connection.
 const INITIAL_SSTHRESH_RATE: usize = 10;
 
+/// Trait for TCP congestion control.
+pub trait TcpCc: Send + Sync {
+    /// Indicates a TCP ACK event.
+    fn ack(&mut self);
+
+    /// Indicates a TCP timed out event.
+    fn timedout(&mut self);
+
+    /// Indicates a TCP fast retransmission event.
+    fn fast_retransmission(&mut self);
+
+    /// Returns the congestion window of the TCP connection.
+    fn cwnd(&self) -> usize;
+}
+
+/// Represents the TCP Tahoe congestion control state of a TCP connection.
+pub struct TcpTahoeCcState {
+    src: SocketAddrV4,
+    dst: SocketAddrV4,
+    mss: usize,
+    cwnd: usize,
+    ssthresh: usize,
+}
+
+impl TcpTahoeCcState {
+    /// Creates a new `TcpTahoeCcState`.
+    pub fn new(src: SocketAddrV4, dst: SocketAddrV4, mss: usize) -> TcpTahoeCcState {
+        TcpTahoeCcState {
+            src,
+            dst,
+            mss,
+            cwnd: mss,
+            ssthresh: mss.checked_mul(INITIAL_SSTHRESH_RATE).unwrap_or(usize::MAX),
+        }
+    }
+
+    fn set_cwnd(&mut self, cwnd: usize) {
+        self.cwnd = cwnd;
+        trace!(
+            "set TCP congestion window of {} -> {} to {}",
+            self.dst,
+            self.src,
+            self.cwnd
+        );
+    }
+
+    fn update_ssthresh(&mut self) {
+        self.ssthresh = self.cwnd / 2;
+        trace!(
+            "update TCP slow start threshold of {} -> {} to {}",
+            self.dst,
+            self.src,
+            self.ssthresh
+        );
+    }
+}
+
+impl TcpCc for TcpTahoeCcState {
+    fn ack(&mut self) {
+        if self.cwnd < self.ssthresh {
+            self.set_cwnd(self.cwnd.checked_mul(2).unwrap_or(usize::MAX));
+        } else {
+            self.set_cwnd(self.cwnd.checked_add(self.mss).unwrap_or(usize::MAX));
+        }
+    }
+
+    fn timedout(&mut self) {
+        self.update_ssthresh();
+        self.set_cwnd(self.mss);
+    }
+
+    fn fast_retransmission(&mut self) {
+        self.timedout();
+    }
+
+    fn cwnd(&self) -> usize {
+        self.cwnd
+    }
+}
+
+/// Represents the TCP Reno congestion control state of a TCP connection.
+pub struct TcpRenoCcState {
+    src: SocketAddrV4,
+    dst: SocketAddrV4,
+    mss: usize,
+    cwnd: usize,
+    ssthresh: usize,
+}
+
+impl TcpRenoCcState {
+    /// Creates a new `TcpRenoCcState`.
+    pub fn new(src: SocketAddrV4, dst: SocketAddrV4, mss: usize) -> TcpRenoCcState {
+        TcpRenoCcState {
+            src,
+            dst,
+            mss,
+            cwnd: mss,
+            ssthresh: mss.checked_mul(INITIAL_SSTHRESH_RATE).unwrap_or(usize::MAX),
+        }
+    }
+
+    fn set_cwnd(&mut self, cwnd: usize) {
+        self.cwnd = cwnd;
+        trace!(
+            "set TCP congestion window of {} -> {} to {}",
+            self.dst,
+            self.src,
+            self.cwnd
+        );
+    }
+
+    fn update_ssthresh(&mut self) {
+        self.ssthresh = self.cwnd / 2;
+        trace!(
+            "update TCP slow start threshold of {} -> {} to {}",
+            self.dst,
+            self.src,
+            self.ssthresh
+        );
+    }
+}
+
+impl TcpCc for TcpRenoCcState {
+    fn ack(&mut self) {
+        if self.cwnd < self.ssthresh {
+            self.set_cwnd(self.cwnd.checked_mul(2).unwrap_or(usize::MAX));
+        } else {
+            self.set_cwnd(self.cwnd.checked_add(self.mss).unwrap_or(usize::MAX));
+        }
+    }
+
+    fn timedout(&mut self) {
+        self.update_ssthresh();
+        self.set_cwnd(self.mss);
+    }
+
+    fn fast_retransmission(&mut self) {
+        self.update_ssthresh();
+        self.set_cwnd(self.ssthresh);
+    }
+
+    fn cwnd(&self) -> usize {
+        self.cwnd
+    }
+}
+
 /// Represents the TX state of a TCP connection.
 pub struct TcpTxState {
     src: SocketAddrV4,
@@ -126,9 +272,7 @@ pub struct TcpTxState {
     rto: u64,
     srtt: Option<u64>,
     rttvar: Option<u64>,
-    mss: usize,
-    cwnd: usize,
-    ssthresh: usize,
+    cc: Option<Box<dyn TcpCc>>,
 }
 
 impl TcpTxState {
@@ -166,9 +310,10 @@ impl TcpTxState {
             rto: INITIAL_RTO,
             srtt: None,
             rttvar: None,
-            mss,
-            cwnd: mss,
-            ssthresh: mss.checked_mul(INITIAL_SSTHRESH_RATE).unwrap_or(usize::MAX),
+            cc: match ENABLE_CC {
+                true => Some(Box::new(TcpRenoCcState::new(src, dst, mss))),
+                false => None,
+            },
         }
     }
 
@@ -278,8 +423,10 @@ impl TcpTxState {
                 sequence
             );
 
-            // Increase congestion window
-            self.increase_cwnd();
+            // Congestion control
+            if let Some(cc) = &mut self.cc {
+                cc.ack();
+            }
         }
 
         // FIN
@@ -443,52 +590,6 @@ impl TcpTxState {
         self.set_rto(rto);
     }
 
-    fn set_ssthresh(&mut self, ssthresh: usize) {
-        self.ssthresh = ssthresh;
-        trace!(
-            "set TCP slow start threshold of {} -> {} to {}",
-            self.dst,
-            self.src,
-            self.ssthresh
-        );
-    }
-
-    fn set_cwnd(&mut self, cwnd: usize) {
-        if ENABLE_CC {
-            self.cwnd = cwnd;
-            trace!(
-                "set TCP congestion window of {} -> {} to {}",
-                self.dst,
-                self.src,
-                self.cwnd
-            );
-        }
-    }
-
-    /// Increases the congestion window of the TCP connection.
-    pub fn increase_cwnd(&mut self) {
-        if self.cwnd < self.ssthresh {
-            self.set_cwnd(self.cwnd.checked_mul(2).unwrap_or(usize::MAX));
-        } else {
-            self.set_cwnd(self.cwnd.checked_add(self.mss).unwrap_or(usize::MAX));
-        }
-    }
-
-    /// Decreases the congestion window of the TCP connection to the slow start threshold. This
-    /// method is used for decreasing the congestion window when a fast retransmission was
-    /// happened.
-    pub fn decrease_cwnd(&mut self) {
-        self.set_ssthresh(self.cwnd / 2);
-        self.set_cwnd(self.ssthresh);
-    }
-
-    /// Resets the congestion window of the TCP connection. This method is used for resetting the
-    /// congestion window when a time out was happened.
-    pub fn reset_cwnd(&mut self) {
-        self.set_ssthresh(self.cwnd / 2);
-        self.set_cwnd(self.mss);
-    }
-
     /// Returns the source window of the TCP connection. The source window represents the received
     /// window from the source and indicates how much payload it can receive next.
     pub fn src_window(&self) -> usize {
@@ -563,8 +664,8 @@ impl TcpTxState {
     /// Returns the send window of the TCP connection. The send window is the minimum one between
     /// the congestion window and the source window.
     pub fn send_window(&self) -> usize {
-        if ENABLE_CC {
-            min(self.cwnd, self.src_window)
+        if let Some(cc) = &self.cc {
+            min(cc.cwnd(), self.src_window)
         } else {
             self.src_window
         }
@@ -823,8 +924,10 @@ impl Forwarder {
         let sequence = state.cache().sequence();
         let recv_next = state.cache().recv_next();
 
-        // Decrease congestion window
-        state.decrease_cwnd();
+        // Congestion control
+        if let Some(cc) = &mut state.cc {
+            cc.fast_retransmission();
+        }
 
         // Find all disjointed ranges
         let mut ranges = Vec::new();
@@ -920,8 +1023,10 @@ impl Forwarder {
                 // Double RTO
                 state.double_rto();
 
-                // Reset congestion window
-                state.reset_cwnd();
+                // Congestion control
+                if let Some(cc) = &mut state.cc {
+                    cc.timedout();
+                }
 
                 // If all the cache is get, the FIN should also be sent
                 if size == payload.len() && state.cache_fin().is_some() {
