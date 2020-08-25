@@ -76,6 +76,8 @@ This is the development documentation of pcap2socks.
 
 `MAX_U32_WINDOW_SIZE`: Same as above. Default as `16777216` Bytes, or 16 MB.
 
+`INITIAL_SSTHRESH_RATE`: Represents the initial slow start threshold rate for congestion window in a TCP connection. Default as `10` (10 MSS).
+
 `RECV_WINDOW`: Represents the receive window size. The actual window will be multiplied by `wscale`. Default as `65535` Bytes.
 
 `ENABLE_RTO_COMPUTE`: Represents if the RTO computation ([RFC 6298](https://tools.ietf.org/html/rfc6298)) is enabled. Default as `true`.
@@ -88,7 +90,7 @@ This is the development documentation of pcap2socks.
 
 `ENABLE_CC`: Represents if the congestion control ([RFC 5681](https://tools.ietf.org/html/rfc5681)) is enabled. The algorithm used currently is Reno (without the fast recovery). Default as `true`.
 
-`INITIAL_SSTHRESH_RATE`: Represents the initial slow start threshold rate for congestion window in a TCP connection. Default as `10` (10 MSS).
+`CC_ALGORITHM`: Represents the congestion control algorithm. Available values are `Tahoe` for TCP Tahoe, `Reno` for TCP Reno and `Cubic` for TCP CUBIC ([RFC 8312](https://tools.ietf.org/html/rfc8312)) congestion control algorithm. Default as `Cubic`.
 
 ### Forwarder & Redirector
 
@@ -118,7 +120,7 @@ This is the development documentation of pcap2socks.
 
 pcap2socks has some defects in the view of engineering.
 
-- pcap2socks maintains the congestion window with an out-dated algorithm Reno (without the fast recovery) currently. The congestion control will be updated in the future release with the algorithm CUBIC ([RFC 8312](https://tools.ietf.org/html/rfc8312)), PRR ([RFC 6973](https://tools.ietf.org/html/rfc6937)) or [BBR](https://github.com/google/bbr).
+- pcap2socks maintains the congestion window with the algorithm TCP CUBIC ([RFC 8312](https://tools.ietf.org/html/rfc8312)) by default. The congestion control will be updated in the future release with the algorithm PRR ([RFC 6973](https://tools.ietf.org/html/rfc6937)) or [BBR](https://github.com/google/bbr).
 
 - Because pcap2socks does not implement the zero window probe and the keep-alive in any TCP connections, the traffic transmission performance may be lost. However, since pcap2socks is mainly used in LANs, the actual impact may be minimal.
 
