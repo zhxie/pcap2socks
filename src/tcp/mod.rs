@@ -53,15 +53,15 @@ pub enum TcpCcAlgorithms {
 }
 
 /// Represents the initial slow start threshold rate for congestion window in a TCP connection.
-const INITIAL_SSTHRESH_RATE: usize = 10;
+const INITIAL_SSTHRESH_RATE: usize = 100;
 
 /// Trait for TCP congestion control.
 pub trait TcpCc: Send + Sync {
     /// Indicates a TCP ACK event.
-    fn ack(&mut self);
+    fn ack(&mut self, size: usize);
 
     /// Indicates a TCP ACK event with RTT.
-    fn ack_rtt(&mut self, rtt: f64);
+    fn ack_rtt(&mut self, size: usize, rtt: f64);
 
     /// Indicates a TCP timed out event.
     fn timedout(&mut self);
@@ -81,6 +81,7 @@ pub struct TcpTahoeCcState {
     mss: usize,
     cwnd: usize,
     ssthresh: usize,
+    cwnd_count: usize,
 }
 
 impl TcpTahoeCcState {
@@ -92,6 +93,7 @@ impl TcpTahoeCcState {
             mss,
             cwnd: mss,
             ssthresh: mss.checked_mul(INITIAL_SSTHRESH_RATE).unwrap_or(usize::MAX),
+            cwnd_count: 0,
         }
     }
 
@@ -106,7 +108,7 @@ impl TcpTahoeCcState {
     }
 
     fn update_ssthresh(&mut self) {
-        self.ssthresh = self.cwnd / 2;
+        self.ssthresh = max(self.cwnd / 2, self.mss.checked_mul(2).unwrap_or(usize::MAX));
         trace!(
             "update TCP slow start threshold of {} -> {} to {}",
             self.dst,
@@ -114,26 +116,63 @@ impl TcpTahoeCcState {
             self.ssthresh
         );
     }
+
+    fn slow_start(&mut self, size: usize) -> usize {
+        let remain = self.ssthresh - self.cwnd;
+        let delta = min(remain, size);
+
+        self.set_cwnd(self.cwnd.checked_add(delta).unwrap_or(usize::MAX));
+
+        size - delta
+    }
+
+    fn congestion_control(&mut self, size: usize) {
+        let remain = self.cwnd - self.cwnd_count;
+
+        let size_mod = size % self.cwnd;
+        self.cwnd_count = self
+            .cwnd_count
+            .checked_add(size_mod)
+            .unwrap_or_else(|| size_mod - (self.cwnd - self.cwnd_count))
+            % self.cwnd;
+
+        if size >= remain {
+            let size_remain = size - remain;
+
+            let n = (size_remain / self.cwnd)
+                .checked_add(1)
+                .unwrap_or(usize::MAX);
+            self.set_cwnd(
+                self.cwnd
+                    .checked_add(self.mss.checked_mul(n).unwrap_or(usize::MAX))
+                    .unwrap_or(usize::MAX),
+            )
+        }
+    }
 }
 
 impl TcpCc for TcpTahoeCcState {
-    fn ack(&mut self) {
+    fn ack(&mut self, size: usize) {
+        let mut size = size;
+        // Slow start
         if self.cwnd < self.ssthresh {
-            // Slow start
-            self.set_cwnd(self.cwnd.checked_mul(2).unwrap_or(usize::MAX));
-        } else {
-            // Congestion avoidance
-            self.set_cwnd(self.cwnd.checked_add(self.mss).unwrap_or(usize::MAX));
+            size = self.slow_start(size);
+        }
+
+        // Congestion avoidance
+        if size > 0 {
+            self.congestion_control(size);
         }
     }
 
-    fn ack_rtt(&mut self, _: f64) {
-        self.ack();
+    fn ack_rtt(&mut self, size: usize, _: f64) {
+        self.ack(size);
     }
 
     fn timedout(&mut self) {
         self.update_ssthresh();
         self.set_cwnd(self.mss);
+        self.cwnd_count = 0;
     }
 
     fn fast_retransmission(&mut self) {
@@ -145,6 +184,16 @@ impl TcpCc for TcpTahoeCcState {
     }
 }
 
+impl Display for TcpTahoeCcState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "TCP Tahoe State: {} -> {}, cwnd = {}, ssthresh = {}",
+            self.dst, self.src, self.cwnd, self.ssthresh
+        )
+    }
+}
+
 /// Represents the TCP Reno congestion control state of a TCP connection.
 #[derive(Clone, Debug)]
 pub struct TcpRenoCcState {
@@ -153,6 +202,7 @@ pub struct TcpRenoCcState {
     mss: usize,
     cwnd: usize,
     ssthresh: usize,
+    cwnd_count: usize,
 }
 
 impl TcpRenoCcState {
@@ -164,6 +214,7 @@ impl TcpRenoCcState {
             mss,
             cwnd: mss,
             ssthresh: mss.checked_mul(INITIAL_SSTHRESH_RATE).unwrap_or(usize::MAX),
+            cwnd_count: 0,
         }
     }
 
@@ -178,7 +229,7 @@ impl TcpRenoCcState {
     }
 
     fn update_ssthresh(&mut self) {
-        self.ssthresh = self.cwnd / 2;
+        self.ssthresh = max(self.cwnd / 2, self.mss.checked_mul(2).unwrap_or(usize::MAX));
         trace!(
             "update TCP slow start threshold of {} -> {} to {}",
             self.dst,
@@ -186,35 +237,83 @@ impl TcpRenoCcState {
             self.ssthresh
         );
     }
+
+    fn slow_start(&mut self, size: usize) -> usize {
+        let remain = self.ssthresh - self.cwnd;
+        let delta = min(remain, size);
+
+        self.set_cwnd(self.cwnd.checked_add(delta).unwrap_or(usize::MAX));
+
+        size - delta
+    }
+
+    fn congestion_control(&mut self, size: usize) {
+        let remain = self.cwnd - self.cwnd_count;
+
+        let size_mod = size % self.cwnd;
+        self.cwnd_count = self
+            .cwnd_count
+            .checked_add(size_mod)
+            .unwrap_or_else(|| size_mod - (self.cwnd - self.cwnd_count))
+            % self.cwnd;
+
+        if size >= remain {
+            let size_remain = size - remain;
+
+            let n = (size_remain / self.cwnd)
+                .checked_add(1)
+                .unwrap_or(usize::MAX);
+            self.set_cwnd(
+                self.cwnd
+                    .checked_add(self.mss.checked_mul(n).unwrap_or(usize::MAX))
+                    .unwrap_or(usize::MAX),
+            )
+        }
+    }
 }
 
 impl TcpCc for TcpRenoCcState {
-    fn ack(&mut self) {
+    fn ack(&mut self, size: usize) {
+        let mut size = size;
+        // Slow start
         if self.cwnd < self.ssthresh {
-            // Slow start
-            self.set_cwnd(self.cwnd.checked_mul(2).unwrap_or(usize::MAX));
-        } else {
-            // Congestion avoidance
-            self.set_cwnd(self.cwnd.checked_add(self.mss).unwrap_or(usize::MAX));
+            size = self.slow_start(size);
+        }
+
+        // Congestion avoidance
+        if size > 0 {
+            self.congestion_control(size);
         }
     }
 
-    fn ack_rtt(&mut self, _: f64) {
-        self.ack();
+    fn ack_rtt(&mut self, size: usize, _: f64) {
+        self.ack(size);
     }
 
     fn timedout(&mut self) {
         self.update_ssthresh();
         self.set_cwnd(self.mss);
+        self.cwnd_count = 0;
     }
 
     fn fast_retransmission(&mut self) {
         self.update_ssthresh();
         self.set_cwnd(self.ssthresh);
+        self.cwnd_count = 0;
     }
 
     fn cwnd(&self) -> usize {
         self.cwnd
+    }
+}
+
+impl Display for TcpRenoCcState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "TCP Reno State: {} -> {}, cwnd = {}, ssthresh = {}",
+            self.dst, self.src, self.cwnd, self.ssthresh
+        )
     }
 }
 
@@ -233,6 +332,7 @@ pub struct TcpCubicCcState {
     mss: usize,
     cwnd: usize,
     ssthresh: usize,
+    cwnd_count: usize,
 }
 
 impl TcpCubicCcState {
@@ -241,13 +341,14 @@ impl TcpCubicCcState {
         TcpCubicCcState {
             src,
             dst,
-            w_max: mss,
-            w_last_max: mss,
+            w_max: mss.checked_mul(INITIAL_SSTHRESH_RATE).unwrap_or(usize::MAX),
+            w_last_max: mss.checked_mul(INITIAL_SSTHRESH_RATE).unwrap_or(usize::MAX),
             k: 0.0,
             last_update: Instant::now(),
             mss,
             cwnd: mss,
             ssthresh: mss.checked_mul(INITIAL_SSTHRESH_RATE).unwrap_or(usize::MAX),
+            cwnd_count: 0,
         }
     }
 
@@ -299,22 +400,60 @@ impl TcpCubicCcState {
     }
 
     fn reset(&mut self) {
-        self.w_max = self.mss;
+        self.w_max = self
+            .mss
+            .checked_mul(INITIAL_SSTHRESH_RATE)
+            .unwrap_or(usize::MAX);
         trace!(
-            "update TCP window max of {} -> {} to {}",
+            "reset TCP window max of {} -> {} to {}",
             self.dst,
             self.src,
             self.w_max
         );
 
         self.k = 0.0;
-        trace!("update TCP K of {} -> {} to {}", self.dst, self.src, self.k);
+        trace!("reset TCP K of {} -> {} to {}", self.dst, self.src, self.k);
 
         self.last_update = Instant::now();
     }
 
+    fn slow_start(&mut self, size: usize) -> usize {
+        let remain = self.ssthresh - self.cwnd;
+        let delta = min(remain, size);
+
+        self.set_cwnd(self.cwnd.checked_add(delta).unwrap_or(usize::MAX));
+
+        size - delta
+    }
+
+    fn congestion_control_fallback(&mut self, size: usize) {
+        let remain = self.cwnd - self.cwnd_count;
+
+        let size_mod = size % self.cwnd;
+        self.cwnd_count = self
+            .cwnd_count
+            .checked_add(size_mod)
+            .unwrap_or_else(|| size_mod - (self.cwnd - self.cwnd_count))
+            % self.cwnd;
+
+        if size >= remain {
+            let size_remain = size - remain;
+
+            let n = (size_remain / self.cwnd)
+                .checked_add(1)
+                .unwrap_or(usize::MAX);
+            self.set_cwnd(
+                self.cwnd
+                    .checked_add(self.mss.checked_mul(n).unwrap_or(usize::MAX))
+                    .unwrap_or(usize::MAX),
+            )
+        }
+    }
+
     fn w_t(&self, t: f64) -> usize {
-        (CC_CUBIC_C * (t - self.k).powi(3) + self.w_max as f64).min(usize::MAX as f64) as usize
+        (CC_CUBIC_C * (t - self.k).powi(3) + self.w_max as f64)
+            .max(0.0)
+            .min(usize::MAX as f64) as usize
     }
 
     fn w_est(&self, rtt: f64) -> usize {
@@ -326,50 +465,44 @@ impl TcpCubicCcState {
     fn t(&self) -> f64 {
         self.last_update.elapsed().as_secs_f64()
     }
+
+    fn congestion_control(&mut self, rtt: f64) {
+        let w_t = self.w_t((self.t() + rtt).min(f64::MAX));
+        let w_est = self.w_est(rtt);
+        if w_t < w_est {
+            // TCP-friendly region
+            self.set_cwnd(w_est);
+        } else {
+            // Concave or convex region
+            self.set_cwnd(w_t);
+        }
+    }
 }
 
 impl TcpCc for TcpCubicCcState {
-    fn ack(&mut self) {
-        // [RFC 8312](https://tools.ietf.org/html/rfc8312) says no more than
+    fn ack(&mut self, size: usize) {
+        let mut size = size;
+        // Slow start
         if self.cwnd <= self.ssthresh {
-            // Slow start
-            // The standard one
-            self.set_cwnd(self.cwnd.checked_mul(2).unwrap_or(usize::MAX));
-        } else {
-            // Congestion avoidance
-            self.set_cwnd(self.cwnd.checked_add(self.mss).unwrap_or(usize::MAX));
+            size = self.slow_start(size);
+        }
+
+        // Congestion avoidance
+        if size > 0 {
+            self.congestion_control_fallback(size);
         }
     }
 
-    fn ack_rtt(&mut self, rtt: f64) {
-        // [RFC 8312](https://tools.ietf.org/html/rfc8312) says no more than
+    fn ack_rtt(&mut self, size: usize, rtt: f64) {
+        let mut size = size;
+        // Slow start
         if self.cwnd <= self.ssthresh {
-            // Slow start
-            // The standard one
-            self.set_cwnd(self.cwnd.checked_mul(2).unwrap_or(usize::MAX));
-        } else {
-            // Congestion avoidance
-            let w_t = self.w_t((self.t() + rtt).min(f64::MAX));
-            let w_est = self.w_est(rtt);
-            if w_t < w_est {
-                // TCP-friendly region
-                self.set_cwnd(w_est);
-            } else {
-                // Concave or convex region
-                if w_t >= self.cwnd {
-                    self.set_cwnd(
-                        self.cwnd
-                            .checked_add((w_t - self.cwnd) / self.cwnd)
-                            .unwrap_or(usize::MAX),
-                    );
-                } else {
-                    self.set_cwnd(
-                        self.cwnd
-                            .checked_sub((self.cwnd - w_t) / self.cwnd)
-                            .unwrap_or(1),
-                    );
-                }
-            }
+            size = self.slow_start(size);
+        }
+
+        // Congestion avoidance
+        if size > 0 {
+            self.congestion_control(rtt);
         }
     }
 
@@ -377,16 +510,28 @@ impl TcpCc for TcpCubicCcState {
         self.reset();
         self.update_ssthresh();
         self.set_cwnd((self.cwnd as f64 * CC_CUBIC_BETA) as usize);
+        self.cwnd_count = 0;
     }
 
     fn fast_retransmission(&mut self) {
         self.update();
         self.update_ssthresh();
         self.set_cwnd((self.cwnd as f64 * CC_CUBIC_BETA) as usize);
+        self.cwnd_count = 0;
     }
 
     fn cwnd(&self) -> usize {
         self.cwnd
+    }
+}
+
+impl Display for TcpCubicCcState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "TCP CUBIC State: {} -> {}, cwnd = {}, ssthresh = {}, w_max = {}",
+            self.dst, self.src, self.cwnd, self.ssthresh, self.w_max
+        )
     }
 }
 
@@ -589,8 +734,8 @@ impl TcpTxState {
             // Congestion control
             if let Some(cc) = &mut self.cc {
                 match self.srtt {
-                    Some(srtt) => cc.ack_rtt(srtt),
-                    None => cc.ack(),
+                    Some(srtt) => cc.ack_rtt(sub_sequence as usize, srtt),
+                    None => cc.ack(sub_sequence as usize),
                 }
             }
         }

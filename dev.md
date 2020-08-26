@@ -76,7 +76,7 @@ This is the development documentation of pcap2socks.
 
 `MAX_U32_WINDOW_SIZE`: Same as above. Default as `16777216` Bytes, or 16 MB.
 
-`INITIAL_SSTHRESH_RATE`: Represents the initial slow start threshold rate for congestion window in a TCP connection. Default as `10` (10 MSS).
+`INITIAL_SSTHRESH_RATE`: Represents the initial slow start threshold rate for congestion window in a TCP connection. Default as `100` (100 MSS).
 
 `RECV_WINDOW`: Represents the receive window size. The actual window will be multiplied by `wscale`. Default as `65535` Bytes.
 
