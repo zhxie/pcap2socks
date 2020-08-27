@@ -1237,7 +1237,7 @@ impl Redirector {
         if tcp.is_rst() {
             self.handle_tcp_rst(tcp);
         } else if tcp.is_ack() {
-            self.handle_tcp_ack(tcp, payload).await?;
+            self.handle_tcp_ack(tcp, payload)?;
         } else if tcp.is_syn() {
             // Pure TCP SYN
             self.handle_tcp_syn(tcp).await?;
@@ -1251,7 +1251,7 @@ impl Redirector {
         Ok(())
     }
 
-    async fn handle_tcp_ack(&mut self, tcp: &Tcp, payload: &[u8]) -> io::Result<()> {
+    fn handle_tcp_ack(&mut self, tcp: &Tcp, payload: &[u8]) -> io::Result<()> {
         let src = SocketAddrV4::new(tcp.src_ip_addr(), tcp.src());
         let dst = SocketAddrV4::new(tcp.dst_ip_addr(), tcp.dst());
         let key = (src, dst);
@@ -1287,91 +1287,100 @@ impl Redirector {
 
             if payload.len() > 0 {
                 // ACK
-                // Append to cache
-                let cont_payload = state.append_cache(tcp.sequence(), payload)?;
+                if is_writable {
+                    // Append to cache
+                    let cont_payload = state.append_cache(tcp.sequence(), payload)?;
 
-                // SACK
-                if state.sack_perm() {
-                    let sacks = state.cache().filled();
-                    self.tx
-                        .lock()
-                        .unwrap()
-                        .get_state_mut(dst, src)
-                        .ok_or(io::Error::from(io::ErrorKind::NotFound))?
-                        .set_sacks(&sacks);
-                }
+                    // SACK
+                    if state.sack_perm() {
+                        let sacks = state.cache().filled();
+                        self.tx
+                            .lock()
+                            .unwrap()
+                            .get_state_mut(dst, src)
+                            .ok_or(io::Error::from(io::ErrorKind::NotFound))?
+                            .set_sacks(&sacks);
+                    }
 
-                match cont_payload {
-                    Some(payload) => {
-                        // Send
-                        let stream = self
-                            .streams
-                            .get_mut(&key)
-                            .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
-                        match stream.send(payload.as_slice()).await {
-                            Ok(_) => {
-                                let cache_remaining_size =
-                                    (state.cache().remaining() >> state.wscale() as usize) as u16;
+                    match cont_payload {
+                        Some(payload) => {
+                            // Send
+                            let stream = self
+                                .streams
+                                .get_mut(&key)
+                                .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
+                            let size = payload.len();
+                            match stream.send(payload) {
+                                Ok(_) => {
+                                    let cache_remaining_size = (state.cache().remaining()
+                                        >> state.wscale() as usize)
+                                        as u16;
 
-                                state.add_recv_next(payload.len() as u32);
+                                    state.add_recv_next(size as u32);
 
-                                let mut tx_locked = self.tx.lock().unwrap();
-                                let tx_state = tx_locked
-                                    .get_state_mut(dst, src)
-                                    .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
-
-                                // Update window size
-                                tx_state.set_window(cache_remaining_size);
-
-                                // Update TCP acknowledgement
-                                tx_state.add_acknowledgement(payload.len() as u32);
-
-                                // Send ACK0
-                                // If there is a heavy traffic, the ACK reported may be inaccurate, which would results in retransmission
-                                tx_locked.send_tcp_ack_0(dst, src)?;
-                            }
-                            Err(e) => {
-                                {
-                                    // Send ACK/RST
                                     let mut tx_locked = self.tx.lock().unwrap();
+                                    let tx_state = tx_locked
+                                        .get_state_mut(dst, src)
+                                        .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
 
-                                    tx_locked.send_tcp_ack_rst(dst, src)?;
+                                    // Update window size
+                                    tx_state.set_window(cache_remaining_size);
+
+                                    // Update TCP acknowledgement
+                                    tx_state.add_acknowledgement(size as u32);
+
+                                    // Send ACK0
+                                    // If there is a heavy traffic, the ACK reported may be inaccurate, which would results in retransmission
+                                    tx_locked.send_tcp_ack_0(dst, src)?;
                                 }
+                                Err(e) => {
+                                    {
+                                        // Send ACK/RST
+                                        let mut tx_locked = self.tx.lock().unwrap();
 
-                                // Clean up
-                                self.clean_up(src, dst);
+                                        tx_locked.send_tcp_ack_rst(dst, src)?;
+                                    }
 
-                                return Err(e);
+                                    // Clean up
+                                    self.clean_up(src, dst);
+
+                                    return Err(e);
+                                }
                             }
                         }
+                        None => {
+                            // Retransmission or unordered
+                            let cache_remaining_size =
+                                (state.cache().remaining() >> state.wscale() as usize) as u16;
+
+                            // Update window size
+                            let mut tx_locked = self.tx.lock().unwrap();
+                            let tx_state = tx_locked
+                                .get_state_mut(dst, src)
+                                .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
+
+                            tx_state.set_window(cache_remaining_size);
+
+                            // Send ACK0
+                            tx_locked.send_tcp_ack_0(dst, src)?;
+                        }
                     }
-                    None => {
-                        // Retransmission or unordered
-                        let cache_remaining_size =
-                            (state.cache().remaining() >> state.wscale() as usize) as u16;
+                } else {
+                    // Send RST
+                    self.tx.lock().unwrap().send_tcp_rst(dst, src)?;
 
-                        // Update window size
-                        let mut tx_locked = self.tx.lock().unwrap();
-                        let tx_state = tx_locked
-                            .get_state_mut(dst, src)
-                            .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
+                    // Clean up
+                    self.clean_up(src, dst);
 
-                        tx_state.set_window(cache_remaining_size);
-
-                        // Send ACK0
-                        tx_locked.send_tcp_ack_0(dst, src)?;
-                    }
+                    return Ok(());
                 }
             } else {
                 // ACK0
                 if !is_writable {
-                    let mut tx_locked = self.tx.lock().unwrap();
-                    if tx_locked.get_cache_size(dst, src) == 0 {
+                    if self.tx.lock().unwrap().get_cache_size(dst, src) == 0 {
                         // LAST_ACK
                         // Clean up
-                        self.streams.remove(&key);
-                        self.states.remove(&key);
-                        tx_locked.clean_up(dst, src);
+                        self.clean_up(src, dst);
 
                         return Ok(());
                     }
@@ -1522,13 +1531,12 @@ impl Redirector {
         let src = SocketAddrV4::new(tcp.src_ip_addr(), tcp.src());
         let dst = SocketAddrV4::new(tcp.dst_ip_addr(), tcp.dst());
         let key = (src, dst);
-        let is_exist = self.streams.get(&key).is_some();
-        let is_readable = match self.streams.get(&key) {
-            Some(stream) => !stream.is_rx_closed(),
-            None => false,
+        let (is_writable, is_readable) = match self.streams.get(&key) {
+            Some(stream) => (!stream.is_tx_closed(), !stream.is_rx_closed()),
+            None => (false, false),
         };
 
-        if is_exist {
+        if is_writable {
             let state = self
                 .states
                 .get_mut(&key)
@@ -1589,6 +1597,9 @@ impl Redirector {
         } else {
             // Send RST
             self.tx.lock().unwrap().send_tcp_rst(dst, src)?;
+
+            // Clean up
+            self.clean_up(src, dst);
         }
 
         Ok(())

@@ -9,7 +9,7 @@ use std::time::Duration;
 use tokio::io;
 use tokio::net::tcp::OwnedWriteHalf;
 use tokio::prelude::*;
-use tokio::sync::mpsc::{self, Sender};
+use tokio::sync::mpsc::{self, Sender, UnboundedReceiver, UnboundedSender};
 use tokio::time;
 
 mod socks;
@@ -70,18 +70,13 @@ const MAX_RECV_ZERO: usize = 3;
 /// Represents the interval of a tick.
 const TICK_INTERVAL: u64 = 1000;
 
-enum StreamWorkerEvent {
-    Recv(usize),
-    Timeout,
-    Close,
-}
-
 /// Represents a worker of a proxied TCP stream.
 pub struct StreamWorker {
     dst: SocketAddrV4,
-    stream_tx: Option<OwnedWriteHalf>,
+    tx_tx: UnboundedSender<Vec<u8>>,
     is_tx_closed: Arc<AtomicBool>,
     is_rx_closed: Arc<AtomicBool>,
+    tx_close_tx: Sender<()>,
     rx_close_tx: Sender<()>,
 }
 
@@ -94,6 +89,237 @@ impl StreamWorker {
         proxy: &ProxyConfig,
     ) -> io::Result<StreamWorker> {
         let tx_cloned = Arc::clone(&tx);
+        let tx_cloned2 = Arc::clone(&tx);
+
+        let stream = match proxy {
+            ProxyConfig::Socks(remote, options) => {
+                socks::connect(remote.clone(), dst, options).await?
+            }
+        };
+        let stream = stream.into_inner();
+        let (mut stream_rx, mut stream_tx) = stream.into_split();
+
+        // Open
+        tx_cloned.lock().unwrap().open(dst, src)?;
+
+        let (tx_tx, mut tx_rx): (UnboundedSender<Vec<u8>>, UnboundedReceiver<Vec<u8>>) =
+            mpsc::unbounded_channel();
+        let is_tx_closed = Arc::new(AtomicBool::new(false));
+        let is_tx_closed_cloned = Arc::clone(&is_tx_closed);
+        let is_rx_closed = Arc::new(AtomicBool::new(false));
+        let is_rx_closed_cloned = Arc::clone(&is_rx_closed);
+        let (tx_close_tx, mut tx_close_rx) = mpsc::channel(1);
+        let (rx_close_tx, mut rx_close_rx) = mpsc::channel(1);
+
+        // Send
+        tokio::spawn(async move {
+            loop {
+                let size;
+
+                // Select
+                {
+                    let tx_rx_fuse = tx_rx.recv().fuse();
+                    let tx_close_rx_fuse = tx_close_rx.recv().fuse();
+
+                    futures::pin_mut!(tx_rx_fuse, tx_close_rx_fuse);
+
+                    futures::select! {
+                        r = tx_rx_fuse => match r {
+                            Some(payload) => {
+                                size = match stream_tx.write_all(payload.as_slice()).await {
+                                    Ok(_) => payload.len(),
+                                    Err(e) => {
+                                        warn!("handle send: {}: {} -> {}: {}", "TCP", 0, dst, e);
+
+                                        0
+                                    }
+                                };
+                            }
+                            None => size = 0
+                        },
+                        _ = tx_close_rx_fuse => size = 0
+                    }
+                }
+
+                if size > 0 {
+                    debug!(
+                        "send to proxy: {}: {} -> {} ({} Bytes)",
+                        "TCP", 0, dst, size
+                    );
+                } else {
+                    // Close
+                    is_tx_closed_cloned.store(true, Ordering::Relaxed);
+                    trace!("close stream TX {} -> {}", 0, dst);
+                    break;
+                }
+            }
+        });
+
+        // Receive
+        tokio::spawn(async move {
+            let mut buffer = vec![0u8; u16::MAX as usize];
+            let mut recv_zero: usize = 0;
+            loop {
+                let size;
+
+                // Select
+                {
+                    let stream_rx_fuse = stream_rx.read(&mut buffer).fuse();
+                    let rx_close_rx_fuse = rx_close_rx.recv().fuse();
+
+                    futures::pin_mut!(stream_rx_fuse, rx_close_rx_fuse);
+
+                    futures::select! {
+                        r = stream_rx_fuse => match r {
+                            Ok(this_size) => if this_size > 0 {
+                                size = this_size;
+                            } else {
+                                recv_zero = recv_zero.checked_add(1).unwrap_or(usize::MAX);
+                                if recv_zero > MAX_RECV_ZERO {
+                                    size = 0;
+                                } else {
+                                    time::delay_for(Duration::from_millis(RECV_ZERO_WAIT)).await;
+                                    continue;
+                                }
+                            },
+                            Err(e) => {
+                                if e.kind() == io::ErrorKind::TimedOut {
+                                    time::delay_for(Duration::from_millis(TIMEDOUT_WAIT)).await;
+                                    continue;
+                                }
+
+                                warn!("receive from proxy: {}: {} -> {}: {}", "TCP", dst, 0, e);
+
+                                size = 0;
+                            }
+                        },
+                        _ = rx_close_rx_fuse => size = 0
+                    }
+                }
+
+                if size > 0 {
+                    debug!(
+                        "receive from proxy: {}: {} -> {} ({} Bytes)",
+                        "TCP", dst, 0, size
+                    );
+
+                    if let Err(ref e) = tx.lock().unwrap().forward(dst, src, &buffer[..size]) {
+                        warn!("handle receive: {}: {} -> {}: {}", "TCP", dst, 0, e);
+                    }
+                } else {
+                    // Close
+                    is_rx_closed_cloned.store(true, Ordering::Relaxed);
+                    trace!("close stream RX {} -> {}", dst, 0);
+
+                    if let Err(ref e) = tx.lock().unwrap().close(dst, src) {
+                        warn!("handle close: {}: {} -> {}: {}", "TCP", dst, 0, e);
+                    }
+
+                    break;
+                }
+            }
+        });
+
+        // Timeout
+        tokio::spawn(async move {
+            loop {
+                time::delay_for(Duration::from_millis(TICK_INTERVAL)).await;
+                // Send
+                if let Err(ref e) = tx_cloned2.lock().unwrap().tick(dst, src) {
+                    if e.kind() == io::ErrorKind::NotFound {
+                        return;
+                    }
+                    warn!("handle timeout: {}: {} -> {}: {}", "TCP", dst, 0, e);
+                }
+            }
+        });
+
+        trace!("open stream {} -> {}", 0, dst);
+
+        Ok(StreamWorker {
+            dst,
+            tx_tx,
+            is_tx_closed,
+            is_rx_closed,
+            tx_close_tx,
+            rx_close_tx,
+        })
+    }
+
+    /// Sends data on the proxied stream in TCP to the destination.
+    pub fn send(&mut self, payload: Vec<u8>) -> io::Result<()> {
+        // Send
+        if let Err(_) = self.tx_tx.send(payload) {
+            self.shutdown(Shutdown::Write);
+            return Err(io::Error::from(io::ErrorKind::NotConnected));
+        }
+
+        Ok(())
+    }
+
+    /// Shuts down the read, write, or both halves of the worker.
+    pub fn shutdown(&mut self, how: Shutdown) {
+        match how {
+            Shutdown::Write => {
+                if !self.is_tx_closed.load(Ordering::Relaxed) {
+                    let _ = self.tx_close_tx.try_send(());
+                }
+            }
+            Shutdown::Read => {
+                if !self.is_rx_closed.load(Ordering::Relaxed) {
+                    let _ = self.rx_close_tx.try_send(());
+                }
+            }
+            Shutdown::Both => {
+                self.shutdown(Shutdown::Write);
+                self.shutdown(Shutdown::Read);
+            }
+        }
+    }
+
+    /// Closes the worker.
+    pub fn close(&mut self) {
+        self.shutdown(Shutdown::Both);
+    }
+
+    /// Returns if the worker is closed for writing.
+    pub fn is_tx_closed(&self) -> bool {
+        self.is_tx_closed.load(Ordering::Relaxed)
+    }
+
+    /// Returns if the worker is closed for reading.
+    pub fn is_rx_closed(&self) -> bool {
+        self.is_rx_closed.load(Ordering::Relaxed)
+    }
+}
+
+impl Drop for StreamWorker {
+    fn drop(&mut self) {
+        self.close();
+        trace!("drop stream {} -> {}", 0, self.dst);
+    }
+}
+
+/// Represents a worker of a proxied TCP stream. Comparing with `StreamWorker`, `StreamWorker2` do
+/// not require the ownership of the sent payload, but have to wait until the payload was sent.
+pub struct StreamWorker2 {
+    dst: SocketAddrV4,
+    stream_tx: Option<OwnedWriteHalf>,
+    is_tx_closed: Arc<AtomicBool>,
+    is_rx_closed: Arc<AtomicBool>,
+    rx_close_tx: Sender<()>,
+}
+
+impl StreamWorker2 {
+    /// Opens a new `StreamWorker2`.
+    pub async fn connect(
+        tx: Arc<Mutex<dyn ForwardStream>>,
+        src: SocketAddrV4,
+        dst: SocketAddrV4,
+        proxy: &ProxyConfig,
+    ) -> io::Result<StreamWorker2> {
+        let tx_cloned = Arc::clone(&tx);
+        let tx_cloned2 = Arc::clone(&tx);
 
         let stream = match proxy {
             ProxyConfig::Socks(remote, options) => {
@@ -107,107 +333,92 @@ impl StreamWorker {
         tx_cloned.lock().unwrap().open(dst, src)?;
 
         let is_tx_closed = Arc::new(AtomicBool::new(false));
-        let is_tx_closed_cloned = Arc::clone(&is_tx_closed);
         let is_rx_closed = Arc::new(AtomicBool::new(false));
         let is_rx_closed_cloned = Arc::clone(&is_rx_closed);
-        let (mut timeout_tx, mut timeout_rx) = mpsc::channel(1);
         let (rx_close_tx, mut rx_close_rx) = mpsc::channel(1);
-        tokio::spawn(async move {
-            let mut interval = time::interval(time::Duration::from_millis(TICK_INTERVAL));
-            loop {
-                interval.tick().await;
-                if let Err(_) = timeout_tx.send(()).await {
-                    return;
-                }
-            }
-        });
+
+        // Receive
         tokio::spawn(async move {
             let mut buffer = vec![0u8; u16::MAX as usize];
-            let mut recv_zero = 0;
+            let mut recv_zero: usize = 0;
             loop {
-                let event;
+                let size;
 
                 // Select
                 {
-                    let rx_close_rx_fuse = rx_close_rx.recv().fuse();
                     let stream_rx_fuse = stream_rx.read(&mut buffer).fuse();
-                    let timeout_fuse = timeout_rx.recv().fuse();
+                    let rx_close_rx_fuse = rx_close_rx.recv().fuse();
 
-                    futures::pin_mut!(rx_close_rx_fuse, stream_rx_fuse, timeout_fuse);
+                    futures::pin_mut!(stream_rx_fuse, rx_close_rx_fuse);
 
                     futures::select! {
-                        _ = rx_close_rx_fuse => {
-                            event = StreamWorkerEvent::Close;
-                        },
-                        stream_rx_result = stream_rx_fuse => match stream_rx_result {
-                            Ok(size) => event = StreamWorkerEvent::Recv(size),
-                            Err(ref e) => {
+                        r = stream_rx_fuse => match r {
+                            Ok(this_size) => if this_size > 0 {
+                                size = this_size;
+                            } else {
+                                recv_zero = recv_zero.checked_add(1).unwrap_or(usize::MAX);
+                                if recv_zero > MAX_RECV_ZERO {
+                                    size = 0;
+                                } else {
+                                    time::delay_for(Duration::from_millis(RECV_ZERO_WAIT)).await;
+                                    continue;
+                                }
+                            },
+                            Err(e) => {
                                 if e.kind() == io::ErrorKind::TimedOut {
                                     time::delay_for(Duration::from_millis(TIMEDOUT_WAIT)).await;
                                     continue;
                                 }
-                                warn!("proxy: {}: {} -> {}: {}", "TCP", 0, dst, e);
 
-                                is_tx_closed_cloned.store(true, Ordering::Relaxed);
-                                event = StreamWorkerEvent::Close;
+                                warn!("receive from proxy: {}: {} -> {}: {}", "TCP", dst, 0, e);
+
+                                size = 0;
                             }
                         },
-                        _ = timeout_fuse => {
-                            // Tick
-                            trace!("tick on {} -> {}", dst, 0);
-
-                            event = StreamWorkerEvent::Timeout;
-                        }
+                        _ = rx_close_rx_fuse => size = 0
                     }
                 }
 
-                // TODO: race condition may be appeared
-                match event {
-                    StreamWorkerEvent::Recv(size) => {
-                        if size == 0 {
-                            recv_zero += 1;
-                            if recv_zero > MAX_RECV_ZERO {
-                                // Close by remote
-                                trace!("close stream RX {} -> {}", dst, 0);
+                if size > 0 {
+                    debug!(
+                        "receive from proxy: {}: {} -> {} ({} Bytes)",
+                        "TCP", dst, 0, size
+                    );
 
-                                if let Err(ref e) = tx.lock().unwrap().close(dst, src) {
-                                    warn!("handle {} closing: {} -> {}: {}", "TCP", dst, 0, e)
-                                }
+                    if let Err(ref e) = tx.lock().unwrap().forward(dst, src, &buffer[..size]) {
+                        warn!("handle receive: {}: {} -> {}: {}", "TCP", dst, 0, e);
+                    }
+                } else {
+                    // Close
+                    is_rx_closed_cloned.store(true, Ordering::Relaxed);
+                    trace!("close stream RX {} -> {}", dst, 0);
 
-                                is_rx_closed_cloned.store(true, Ordering::Relaxed);
-                                break;
-                            }
-                            time::delay_for(Duration::from_millis(RECV_ZERO_WAIT)).await;
-                            continue;
-                        }
-                        recv_zero = 0;
-                        debug!(
-                            "receive from proxy: {}: {} -> {} ({} Bytes)",
-                            "TCP", dst, 0, size
-                        );
+                    if let Err(ref e) = tx.lock().unwrap().close(dst, src) {
+                        warn!("handle close: {}: {} -> {}: {}", "TCP", dst, 0, e);
+                    }
 
-                        // Send
-                        if let Err(ref e) = tx.lock().unwrap().forward(dst, src, &buffer[..size]) {
-                            warn!("handle {}: {} -> {}: {}", "TCP", dst, 0, e);
-                        }
+                    break;
+                }
+            }
+        });
+
+        // Timeout
+        tokio::spawn(async move {
+            loop {
+                time::delay_for(Duration::from_millis(TICK_INTERVAL)).await;
+                // Send
+                if let Err(ref e) = tx_cloned2.lock().unwrap().tick(dst, src) {
+                    if e.kind() == io::ErrorKind::NotFound {
+                        return;
                     }
-                    StreamWorkerEvent::Timeout => {
-                        // Send
-                        if let Err(ref e) = tx_cloned.lock().unwrap().tick(dst, src) {
-                            warn!("handle {} timeout: {} -> {}: {}", "TCP", dst, 0, e);
-                        }
-                    }
-                    StreamWorkerEvent::Close => {
-                        is_rx_closed_cloned.store(true, Ordering::Relaxed);
-                        break;
-                    }
+                    warn!("handle timeout: {}: {} -> {}: {}", "TCP", dst, 0, e);
                 }
             }
         });
 
         trace!("open stream {} -> {}", 0, dst);
 
-        Ok(StreamWorker {
+        Ok(StreamWorker2 {
             dst,
             stream_tx: Some(stream_tx),
             is_tx_closed,
@@ -219,7 +430,7 @@ impl StreamWorker {
     /// Sends data on the proxied stream in TCP to the destination.
     pub async fn send(&mut self, payload: &[u8]) -> io::Result<()> {
         debug!(
-            "send to proxy {}: {} -> {} ({} Bytes)",
+            "send to proxy: {}: {} -> {} ({} Bytes)",
             "TCP",
             "0",
             self.dst,
@@ -243,14 +454,6 @@ impl StreamWorker {
                     trace!("close stream TX {} -> {}", 0, self.dst);
                 }
             }
-            _ => unreachable!(),
-        }
-    }
-
-    /// Attempts to immediately shut down the read, write, or both halves of the worker.
-    pub fn try_shutdown(&mut self, how: Shutdown) {
-        match how {
-            Shutdown::Write => self.shutdown(Shutdown::Write),
             Shutdown::Read => {
                 if !self.is_rx_closed.load(Ordering::Relaxed) {
                     let _ = self.rx_close_tx.try_send(());
@@ -258,14 +461,14 @@ impl StreamWorker {
             }
             Shutdown::Both => {
                 self.shutdown(Shutdown::Write);
-                self.try_shutdown(Shutdown::Read);
+                self.shutdown(Shutdown::Read);
             }
         }
     }
 
-    /// Attempts to immediately close the worker.
-    pub fn try_close(&mut self) {
-        self.try_shutdown(Shutdown::Both);
+    /// Closes the worker.
+    pub fn close(&mut self) {
+        self.shutdown(Shutdown::Both);
     }
 
     /// Returns if the worker is closed for writing.
@@ -279,9 +482,9 @@ impl StreamWorker {
     }
 }
 
-impl Drop for StreamWorker {
+impl Drop for StreamWorker2 {
     fn drop(&mut self) {
-        self.try_close();
+        self.close();
         trace!("drop stream {} -> {}", 0, self.dst);
     }
 }
