@@ -89,7 +89,6 @@ impl StreamWorker {
         proxy: &ProxyConfig,
     ) -> io::Result<StreamWorker> {
         let tx_cloned = Arc::clone(&tx);
-        let tx_cloned2 = Arc::clone(&tx);
 
         let stream = match proxy {
             ProxyConfig::Socks(remote, options) => {
@@ -100,7 +99,7 @@ impl StreamWorker {
         let (mut stream_rx, mut stream_tx) = stream.into_split();
 
         // Open
-        tx_cloned.lock().unwrap().open(dst, src)?;
+        tx.lock().unwrap().open(dst, src)?;
 
         let (tx_tx, mut tx_rx): (UnboundedSender<Vec<u8>>, UnboundedReceiver<Vec<u8>>) =
             mpsc::unbounded_channel();
@@ -114,7 +113,7 @@ impl StreamWorker {
         // Send
         tokio::spawn(async move {
             loop {
-                let size;
+                let is_close;
 
                 // Select
                 {
@@ -126,27 +125,29 @@ impl StreamWorker {
                     futures::select! {
                         r = tx_rx_fuse => match r {
                             Some(payload) => {
-                                size = match stream_tx.write_all(payload.as_slice()).await {
-                                    Ok(_) => payload.len(),
-                                    Err(e) => {
+                                match stream_tx.write_all(payload.as_slice()).await {
+                                    Ok(_) => {
+                                        debug!(
+                                            "send to proxy: {}: {} -> {} ({} Bytes)",
+                                            "TCP", 0, dst, payload.len()
+                                        );
+
+                                        is_close = false
+                                    },
+                                    Err(ref e) => {
                                         warn!("handle send: {}: {} -> {}: {}", "TCP", 0, dst, e);
 
-                                        0
+                                        is_close = true
                                     }
                                 };
                             }
-                            None => size = 0
+                            None => is_close = true
                         },
-                        _ = tx_close_rx_fuse => size = 0
+                        _ = tx_close_rx_fuse => is_close = true
                     }
                 }
 
-                if size > 0 {
-                    debug!(
-                        "send to proxy: {}: {} -> {} ({} Bytes)",
-                        "TCP", 0, dst, size
-                    );
-                } else {
+                if is_close {
                     // Close
                     is_tx_closed_cloned.store(true, Ordering::Relaxed);
                     trace!("close stream TX {} -> {}", 0, dst);
@@ -172,6 +173,11 @@ impl StreamWorker {
                     futures::select! {
                         r = stream_rx_fuse => match r {
                             Ok(this_size) => if this_size > 0 {
+                                debug!(
+                                    "receive from proxy: {}: {} -> {} ({} Bytes)",
+                                    "TCP", dst, 0, this_size
+                                );
+
                                 size = this_size;
                             } else {
                                 recv_zero = recv_zero.checked_add(1).unwrap_or(usize::MAX);
@@ -182,7 +188,7 @@ impl StreamWorker {
                                     continue;
                                 }
                             },
-                            Err(e) => {
+                            Err(ref e) => {
                                 if e.kind() == io::ErrorKind::TimedOut {
                                     time::delay_for(Duration::from_millis(TIMEDOUT_WAIT)).await;
                                     continue;
@@ -198,11 +204,6 @@ impl StreamWorker {
                 }
 
                 if size > 0 {
-                    debug!(
-                        "receive from proxy: {}: {} -> {} ({} Bytes)",
-                        "TCP", dst, 0, size
-                    );
-
                     if let Err(ref e) = tx.lock().unwrap().forward(dst, src, &buffer[..size]) {
                         warn!("handle receive: {}: {} -> {}: {}", "TCP", dst, 0, e);
                     }
@@ -225,7 +226,7 @@ impl StreamWorker {
             loop {
                 time::delay_for(Duration::from_millis(TICK_INTERVAL)).await;
                 // Send
-                if let Err(ref e) = tx_cloned2.lock().unwrap().tick(dst, src) {
+                if let Err(ref e) = tx_cloned.lock().unwrap().tick(dst, src) {
                     if e.kind() == io::ErrorKind::NotFound {
                         return;
                     }
@@ -250,7 +251,6 @@ impl StreamWorker {
     pub fn send(&mut self, payload: Vec<u8>) -> io::Result<()> {
         // Send
         if let Err(_) = self.tx_tx.send(payload) {
-            self.shutdown(Shutdown::Write);
             return Err(io::Error::from(io::ErrorKind::NotConnected));
         }
 
@@ -319,7 +319,6 @@ impl StreamWorker2 {
         proxy: &ProxyConfig,
     ) -> io::Result<StreamWorker2> {
         let tx_cloned = Arc::clone(&tx);
-        let tx_cloned2 = Arc::clone(&tx);
 
         let stream = match proxy {
             ProxyConfig::Socks(remote, options) => {
@@ -330,7 +329,7 @@ impl StreamWorker2 {
         let (mut stream_rx, stream_tx) = stream.into_split();
 
         // Open
-        tx_cloned.lock().unwrap().open(dst, src)?;
+        tx.lock().unwrap().open(dst, src)?;
 
         let is_tx_closed = Arc::new(AtomicBool::new(false));
         let is_rx_closed = Arc::new(AtomicBool::new(false));
@@ -354,6 +353,11 @@ impl StreamWorker2 {
                     futures::select! {
                         r = stream_rx_fuse => match r {
                             Ok(this_size) => if this_size > 0 {
+                                debug!(
+                                    "receive from proxy: {}: {} -> {} ({} Bytes)",
+                                    "TCP", dst, 0, this_size
+                                );
+
                                 size = this_size;
                             } else {
                                 recv_zero = recv_zero.checked_add(1).unwrap_or(usize::MAX);
@@ -364,7 +368,7 @@ impl StreamWorker2 {
                                     continue;
                                 }
                             },
-                            Err(e) => {
+                            Err(ref e) => {
                                 if e.kind() == io::ErrorKind::TimedOut {
                                     time::delay_for(Duration::from_millis(TIMEDOUT_WAIT)).await;
                                     continue;
@@ -380,11 +384,6 @@ impl StreamWorker2 {
                 }
 
                 if size > 0 {
-                    debug!(
-                        "receive from proxy: {}: {} -> {} ({} Bytes)",
-                        "TCP", dst, 0, size
-                    );
-
                     if let Err(ref e) = tx.lock().unwrap().forward(dst, src, &buffer[..size]) {
                         warn!("handle receive: {}: {} -> {}: {}", "TCP", dst, 0, e);
                     }
@@ -407,7 +406,7 @@ impl StreamWorker2 {
             loop {
                 time::delay_for(Duration::from_millis(TICK_INTERVAL)).await;
                 // Send
-                if let Err(ref e) = tx_cloned2.lock().unwrap().tick(dst, src) {
+                if let Err(ref e) = tx_cloned.lock().unwrap().tick(dst, src) {
                     if e.kind() == io::ErrorKind::NotFound {
                         return;
                     }
@@ -429,6 +428,11 @@ impl StreamWorker2 {
 
     /// Sends data on the proxied stream in TCP to the destination.
     pub async fn send(&mut self, payload: &[u8]) -> io::Result<()> {
+        // Send
+        match &mut self.stream_tx {
+            Some(tx) => tx.write_all(payload).await?,
+            None => return Err(io::Error::from(io::ErrorKind::NotConnected)),
+        }
         debug!(
             "send to proxy: {}: {} -> {} ({} Bytes)",
             "TCP",
@@ -437,11 +441,7 @@ impl StreamWorker2 {
             payload.len()
         );
 
-        // Send
-        match &mut self.stream_tx {
-            Some(tx) => tx.write_all(payload).await,
-            None => return Err(io::Error::from(io::ErrorKind::NotConnected)),
-        }
+        Ok(())
     }
 
     /// Shuts down the read, write, or both halves of the worker.
@@ -495,18 +495,14 @@ pub trait ForwardDatagram: Send {
     fn forward(&mut self, dst: SocketAddrV4, src: SocketAddrV4, payload: &[u8]) -> io::Result<()>;
 }
 
-enum DatagramWorkerEvent {
-    Recv(usize, SocketAddrV4),
-    Close,
-}
-
 /// Represents a worker of a proxied UDP datagram.
 pub struct DatagramWorker {
     src: Arc<AtomicU64>,
     local_port: u16,
-    socks_tx: SocksSendHalf,
+    tx_tx: UnboundedSender<(Vec<u8>, SocketAddrV4)>,
     is_closed: Arc<AtomicBool>,
     close_tx: Sender<()>,
+    close_tx2: Sender<()>,
 }
 
 impl DatagramWorker {
@@ -516,75 +512,131 @@ impl DatagramWorker {
         src: SocketAddrV4,
         proxy: &ProxyConfig,
     ) -> io::Result<(DatagramWorker, u16)> {
-        let (mut socks_rx, socks_tx, local_port) = match proxy {
+        let (mut socks_rx, mut socks_tx, local_port) = match proxy {
             ProxyConfig::Socks(remote, options) => socks::bind(remote.clone(), options).await?,
         };
 
+        let (tx_tx, mut tx_rx): (
+            UnboundedSender<(Vec<u8>, SocketAddrV4)>,
+            UnboundedReceiver<(Vec<u8>, SocketAddrV4)>,
+        ) = mpsc::unbounded_channel();
         let a_src = Arc::new(AtomicU64::from(socket_addr_v4_to_u64(&src)));
         let a_src_cloned = Arc::clone(&a_src);
         let is_closed = Arc::new(AtomicBool::new(false));
         let is_closed_cloned = Arc::clone(&is_closed);
         let (close_tx, mut close_rx) = mpsc::channel(1);
+        let (close_tx2, mut close_rx2) = mpsc::channel(1);
+
+        // Send
         tokio::spawn(async move {
-            let mut buffer = vec![0u8; u16::MAX as usize];
             loop {
-                let event;
+                let is_close;
 
                 // Select
                 {
+                    let tx_rx_fuse = tx_rx.recv().fuse();
                     let close_rx_fuse = close_rx.recv().fuse();
-                    let socks_rx_fuse = socks_rx.recv_from(&mut buffer).fuse();
 
-                    futures::pin_mut!(close_rx_fuse, socks_rx_fuse);
+                    futures::pin_mut!(tx_rx_fuse, close_rx_fuse);
 
                     futures::select! {
-                        _ = close_rx_fuse => {
-                            event = DatagramWorkerEvent::Close;
+                        r = tx_rx_fuse => match r {
+                            Some((payload, dst)) => {
+                                match socks_tx.send_to(payload.as_slice(), dst).await {
+                                    Ok(size) => {
+                                        debug!(
+                                            "send to proxy: {}: {} -> {} ({} Bytes)",
+                                            "UDP", local_port, dst, size
+                                        );
+                                    },
+                                    Err(ref e) => {
+                                        warn!("handle send: {}: {} -> {}: {}", "UDP", local_port, dst, e);
+                                    }
+                                }
+                                is_close = false;
+                            }
+                            None => is_close = false
                         },
+                        _ = close_rx_fuse => is_close = true
+                    }
+                }
+
+                if is_close {
+                    // Close
+                    break;
+                }
+            }
+        });
+
+        // Receive
+        tokio::spawn(async move {
+            let mut buffer = vec![0u8; u16::MAX as usize];
+            loop {
+                let size;
+                let mut addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0);
+
+                // Select
+                {
+                    let socks_rx_fuse = socks_rx.recv_from(&mut buffer).fuse();
+                    let close_rx_fuse = close_rx2.recv().fuse();
+
+                    futures::pin_mut!(socks_rx_fuse, close_rx_fuse);
+
+                    futures::select! {
                         socks_rx_result = socks_rx_fuse => {
                             match socks_rx_result {
-                                Ok((size, addr)) => event = DatagramWorkerEvent::Recv(size, addr),
+                                Ok((this_size, this_addr)) => {
+                                    debug!(
+                                        "receive from proxy: {}: {} -> {} ({} Bytes)",
+                                        "UDP", this_addr, local_port, this_size
+                                    );
+
+                                    size = this_size;
+                                    addr = this_addr;
+                                },
                                 Err(ref e) => {
                                     if e.kind() == io::ErrorKind::TimedOut {
                                         time::delay_for(Duration::from_millis(TIMEDOUT_WAIT)).await;
                                         continue;
                                     }
+
                                     warn!(
-                                        "proxy: {}: {} = {}: {}",
+                                        "receive from proxy: {}: {} = {}: {}",
                                         "UDP",
                                         local_port,
                                         u64_to_socket_addr_v4(a_src_cloned.load(Ordering::Relaxed)),
                                         e
                                     );
 
-                                    event = DatagramWorkerEvent::Close;
+                                    size = 0;
                                 }
                             }
                         }
+                        _ = close_rx_fuse => size = 0
                     };
                 }
 
-                // TODO: race condition may be appeared
-                match event {
-                    DatagramWorkerEvent::Recv(size, addr) => {
-                        // Send
-                        debug!(
-                            "receive from proxy: {}: {} -> {} ({} Bytes)",
-                            "UDP", addr, local_port, size
+                if size > 0 {
+                    // Send
+                    if let Err(ref e) = tx.lock().unwrap().forward(
+                        addr,
+                        u64_to_socket_addr_v4(a_src_cloned.load(Ordering::Relaxed)),
+                        &buffer[..size],
+                    ) {
+                        warn!(
+                            "handle receive: {}: {} -> {}: {}",
+                            "UDP", addr, local_port, e
                         );
+                    }
+                } else {
+                    is_closed_cloned.store(true, Ordering::Relaxed);
+                    trace!(
+                        "close datagram {} = {}",
+                        local_port,
+                        u64_to_socket_addr_v4(a_src_cloned.load(Ordering::Relaxed))
+                    );
 
-                        if let Err(ref e) = tx.lock().unwrap().forward(
-                            addr,
-                            u64_to_socket_addr_v4(a_src_cloned.load(Ordering::Relaxed)),
-                            &buffer[..size],
-                        ) {
-                            warn!("handle {}: {} -> {}: {}", "UDP", addr, local_port, e);
-                        }
-                    }
-                    DatagramWorkerEvent::Close => {
-                        is_closed_cloned.store(true, Ordering::Relaxed);
-                        break;
-                    }
+                    break;
                 }
             }
         });
@@ -595,26 +647,23 @@ impl DatagramWorker {
             DatagramWorker {
                 src: a_src,
                 local_port,
-                socks_tx,
+                tx_tx,
                 is_closed,
                 close_tx,
+                close_tx2,
             },
             local_port,
         ))
     }
 
     /// Sends data on the proxied datagram in UDP to the destination.
-    pub async fn send_to(&mut self, payload: &[u8], dst: SocketAddrV4) -> io::Result<usize> {
-        debug!(
-            "send to proxy {}: {} -> {} ({} Bytes)",
-            "UDP",
-            self.local_port,
-            dst,
-            payload.len()
-        );
-
+    pub fn send_to(&mut self, payload: Vec<u8>, dst: SocketAddrV4) -> io::Result<()> {
         // Send
-        self.socks_tx.send_to(payload, dst).await
+        if let Err(_) = self.tx_tx.send((payload, dst)) {
+            return Err(io::Error::from(io::ErrorKind::NotConnected));
+        }
+
+        Ok(())
     }
 
     /// Sets the source of the worker.
@@ -636,6 +685,159 @@ impl DatagramWorker {
 }
 
 impl Drop for DatagramWorker {
+    fn drop(&mut self) {
+        let _ = self.close_tx.try_send(());
+        let _ = self.close_tx2.try_send(());
+        trace!("drop datagram {} = {}", self.src(), self.local_port);
+    }
+}
+
+/// Represents a worker of a proxied UDP datagram. Comparing with `DatagramWorker`,
+/// `DatagramWorker2` do not require the ownership of the sent payload, but have to wait until the
+/// payload was sent.
+pub struct DatagramWorker2 {
+    src: Arc<AtomicU64>,
+    local_port: u16,
+    socks_tx: SocksSendHalf,
+    is_closed: Arc<AtomicBool>,
+    close_tx: Sender<()>,
+}
+
+impl DatagramWorker2 {
+    /// Creates a new `DatagramWorker2`.
+    pub async fn bind(
+        tx: Arc<Mutex<dyn ForwardDatagram>>,
+        src: SocketAddrV4,
+        proxy: &ProxyConfig,
+    ) -> io::Result<(DatagramWorker2, u16)> {
+        let (mut socks_rx, socks_tx, local_port) = match proxy {
+            ProxyConfig::Socks(remote, options) => socks::bind(remote.clone(), options).await?,
+        };
+
+        let a_src = Arc::new(AtomicU64::from(socket_addr_v4_to_u64(&src)));
+        let a_src_cloned = Arc::clone(&a_src);
+        let is_closed = Arc::new(AtomicBool::new(false));
+        let is_closed_cloned = Arc::clone(&is_closed);
+        let (close_tx, mut close_rx) = mpsc::channel(1);
+
+        // Receive
+        tokio::spawn(async move {
+            let mut buffer = vec![0u8; u16::MAX as usize];
+            loop {
+                let size;
+                let mut addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0);
+
+                // Select
+                {
+                    let socks_rx_fuse = socks_rx.recv_from(&mut buffer).fuse();
+                    let close_rx_fuse = close_rx.recv().fuse();
+
+                    futures::pin_mut!(socks_rx_fuse, close_rx_fuse);
+
+                    futures::select! {
+                        socks_rx_result = socks_rx_fuse => {
+                            match socks_rx_result {
+                                Ok((this_size, this_addr)) => {
+                                    debug!(
+                                        "receive from proxy: {}: {} -> {} ({} Bytes)",
+                                        "UDP", this_addr, local_port, this_size
+                                    );
+
+                                    size = this_size;
+                                    addr = this_addr;
+                                },
+                                Err(ref e) => {
+                                    if e.kind() == io::ErrorKind::TimedOut {
+                                        time::delay_for(Duration::from_millis(TIMEDOUT_WAIT)).await;
+                                        continue;
+                                    }
+
+                                    warn!(
+                                        "receive from proxy: {}: {} = {}: {}",
+                                        "UDP",
+                                        local_port,
+                                        u64_to_socket_addr_v4(a_src_cloned.load(Ordering::Relaxed)),
+                                        e
+                                    );
+
+                                    size = 0;
+                                }
+                            }
+                        }
+                        _ = close_rx_fuse => size = 0
+                    };
+                }
+
+                if size > 0 {
+                    // Send
+                    if let Err(ref e) = tx.lock().unwrap().forward(
+                        addr,
+                        u64_to_socket_addr_v4(a_src_cloned.load(Ordering::Relaxed)),
+                        &buffer[..size],
+                    ) {
+                        warn!(
+                            "handle receive: {}: {} -> {}: {}",
+                            "UDP", addr, local_port, e
+                        );
+                    }
+                } else {
+                    is_closed_cloned.store(true, Ordering::Relaxed);
+                    trace!(
+                        "close datagram {} = {}",
+                        local_port,
+                        u64_to_socket_addr_v4(a_src_cloned.load(Ordering::Relaxed))
+                    );
+
+                    break;
+                }
+            }
+        });
+
+        trace!("create datagram {} = {}", src, local_port);
+
+        Ok((
+            DatagramWorker2 {
+                src: a_src,
+                local_port,
+                socks_tx,
+                is_closed,
+                close_tx,
+            },
+            local_port,
+        ))
+    }
+
+    /// Sends data on the proxied datagram in UDP to the destination.
+    pub async fn send_to(&mut self, payload: &[u8], dst: SocketAddrV4) -> io::Result<usize> {
+        // Send
+        let size = self.socks_tx.send_to(payload, dst).await?;
+        debug!(
+            "send to proxy {}: {} -> {} ({} Bytes)",
+            "UDP", self.local_port, dst, size
+        );
+
+        Ok(size)
+    }
+
+    /// Sets the source of the worker.
+    pub fn set_src(&mut self, src: &SocketAddrV4) {
+        self.src
+            .store(socket_addr_v4_to_u64(src), Ordering::Relaxed);
+        trace!("set datagram {} = {}", src, self.local_port);
+    }
+
+    /// Returns the source of the worker.
+    pub fn src(&self) -> SocketAddrV4 {
+        u64_to_socket_addr_v4(self.src.load(Ordering::Relaxed))
+    }
+
+    /// Returns if the worker is closed.
+    pub fn is_closed(&self) -> bool {
+        self.is_closed.load(Ordering::Relaxed)
+    }
+}
+
+impl Drop for DatagramWorker2 {
     fn drop(&mut self) {
         let _ = self.close_tx.try_send(());
         trace!("drop datagram {} = {}", self.src(), self.local_port);

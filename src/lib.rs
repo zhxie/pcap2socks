@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 //! Redirect traffic to a SOCKS proxy with pcap.
 
 use ipnetwork::Ipv4Network;
@@ -1624,8 +1626,10 @@ impl Redirector {
         self.datagrams
             .get_mut(&port)
             .ok_or(io::Error::from(io::ErrorKind::NotFound))?
-            .send_to(payload, SocketAddrV4::new(udp.dst_ip_addr(), udp.dst()))
-            .await?;
+            .send_to(
+                payload.to_vec(),
+                SocketAddrV4::new(udp.dst_ip_addr(), udp.dst()),
+            )?;
 
         Ok(())
     }
