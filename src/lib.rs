@@ -1364,14 +1364,17 @@ impl Redirector {
                 }
             } else {
                 // ACK0
-                if !is_writable && self.tx.lock().unwrap().get_cache_size(dst, src) == 0 {
-                    // LAST_ACK
-                    // Clean up
-                    self.streams.remove(&key);
-                    self.states.remove(&key);
-                    self.tx.lock().unwrap().clean_up(dst, src);
+                if !is_writable {
+                    let mut tx_locked = self.tx.lock().unwrap();
+                    if tx_locked.get_cache_size(dst, src) == 0 {
+                        // LAST_ACK
+                        // Clean up
+                        self.streams.remove(&key);
+                        self.states.remove(&key);
+                        tx_locked.clean_up(dst, src);
 
-                    return Ok(());
+                        return Ok(());
+                    }
                 } else {
                     // Duplicate ACK
                     state.admit(tcp.acknowledgement());
