@@ -13,7 +13,7 @@ use super::Timer;
 const MAX_U32_WINDOW_SIZE: usize = 16 * 1024 * 1024;
 
 /// Represents if the buffer should be allocated in the initial constructor of caches.
-const ALLOC_IN_INITIAL: bool = true;
+const ALLOC_IN_INITIAL: bool = false;
 
 /// Represents a queue cache. The `Queue` can hold continuos bytes constantly unless they are
 /// invalidated. The `Queue` can be used as a send window of a TCP connection.
@@ -61,7 +61,13 @@ impl Queue {
             let prev_tail = self.tail();
             let new_len = min(
                 self.capacity,
-                max(self.buffer.len() * 3 / 2, self.size + payload.len()),
+                max(
+                    self.buffer
+                        .len()
+                        .checked_add(self.buffer.len() / 2)
+                        .unwrap_or(usize::MAX),
+                    self.size + payload.len(),
+                ),
             );
             self.buffer.resize(new_len, 0);
 
@@ -502,7 +508,16 @@ impl Window {
         if size > self.buffer.len() {
             // Extend the buffer
             let prev_len = self.buffer.len();
-            let new_len = min(self.capacity, max(self.buffer.len() * 3 / 2, size));
+            let new_len = min(
+                self.capacity,
+                max(
+                    self.buffer
+                        .len()
+                        .checked_add(self.buffer.len() / 2)
+                        .unwrap_or(usize::MAX),
+                    size,
+                ),
+            );
             self.buffer.resize(new_len, 0);
 
             // From the begin of the buffer to the tail

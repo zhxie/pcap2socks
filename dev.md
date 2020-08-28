@@ -72,7 +72,7 @@ This is the development documentation of pcap2socks.
 
 `MAX_U32_WINDOW_SIZE`: Represents the max distance of u32 values between packets in an u32 window. Data with sequence `1000` and sequence `101000` may be recognized as increment but discontinuous, but data with sequence `101000` and `1000` may be recognized as expired or out of order. The former example's seconds data will be pushed into the cache, while the latter's will be dropped. Default as `16777216` Bytes, or 16 MB.
 
-`ALLOC_IN_INITIAL`: Represents if the buffer should be allocated in the initial constructor of caches. Allocating the full buffer in the constructor may reduce the time overhead in future expansion of the vector, but will also lead to take more memory consumption. Default as `true`.
+`ALLOC_IN_INITIAL`: Represents if the buffer should be allocated in the initial constructor of caches. Allocating the full buffer in the constructor may reduce the time overhead in future expansion of the vector, but will also lead to take more memory consumption. Default as `false`.
 
 ### TCP
 
