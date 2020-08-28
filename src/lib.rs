@@ -880,35 +880,46 @@ impl Forwarder {
     }
 
     fn send(&mut self, indicator: &Indicator) -> io::Result<()> {
-        // Serialize
+        // Serialize and send
         let size = indicator.len();
         let buffer_size = max(size, MINIMUM_FRAME_SIZE);
-        let mut buffer = vec![0u8; buffer_size];
-        indicator.serialize(&mut buffer[..size])?;
-
-        // Send
-        self.tx.send_to(&buffer, None).unwrap_or(Ok(()))?;
-        debug!("send to pcap: {} ({} Bytes)", indicator.brief(), size);
+        let mut result = None;
+        self.tx.build_and_send(1, buffer_size, &mut |buffer| {
+            if let Err(e) = indicator.serialize(&mut buffer[..size]) {
+                result = Some(e);
+            }
+        });
+        match result {
+            Some(e) => return Err(e),
+            None => debug!("send to pcap: {} ({} Bytes)", indicator.brief(), size),
+        }
 
         Ok(())
     }
 
     fn send_with_payload(&mut self, indicator: &Indicator, payload: &[u8]) -> io::Result<()> {
-        // Serialize
+        // Serialize and send
         let size = indicator.len();
         let buffer_size = max(size + payload.len(), MINIMUM_FRAME_SIZE);
-        let mut buffer = vec![0u8; buffer_size];
-        // TODO: intermediate performance degradation
-        indicator.serialize_with_payload(&mut buffer[..size + payload.len()], payload)?;
-
-        // Send
-        self.tx.send_to(&buffer, None).unwrap_or(Ok(()))?;
-        debug!(
-            "send to pcap: {} ({} + {} Bytes)",
-            indicator.brief(),
-            size,
-            payload.len()
-        );
+        let mut result = None;
+        self.tx
+            .build_and_send(1, buffer_size, &mut |buffer| {
+                if let Err(e) =
+                    indicator.serialize_with_payload(&mut buffer[..size + payload.len()], payload)
+                {
+                    result = Some(e);
+                }
+            })
+            .unwrap_or(Ok(()))?;
+        match result {
+            Some(e) => return Err(e),
+            None => debug!(
+                "send to pcap: {} ({} + {} Bytes)",
+                indicator.brief(),
+                size,
+                payload.len()
+            ),
+        }
 
         Ok(())
     }
