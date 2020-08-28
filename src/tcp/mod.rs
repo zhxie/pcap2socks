@@ -793,6 +793,7 @@ impl TcpTxState {
             self.dst,
             self.src
         );
+        // TODO: intermediate performance degradation
         self.cache.append(&payload, self.rto)?;
 
         Ok(payload)
@@ -811,6 +812,7 @@ impl TcpTxState {
 
     /// Appends the payload to the queue of the TCP connection.
     pub fn append_queue(&mut self, payload: &[u8]) {
+        // TODO: major performance degradation
         self.queue.extend(payload);
         trace!(
             "append {} Bytes to TCP queue of {} -> {}",

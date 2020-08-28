@@ -12,6 +12,9 @@ use super::Timer;
 /// Represents the max distance of u32 values between packets in an u32 window.
 const MAX_U32_WINDOW_SIZE: usize = 16 * 1024 * 1024;
 
+/// Represents if the buffer should be allocated in the initial constructor of caches.
+const ALLOC_IN_INITIAL: bool = true;
+
 /// Represents a queue cache. The `Queue` can hold continuos bytes constantly unless they are
 /// invalidated. The `Queue` can be used as a send window of a TCP connection.
 #[derive(Debug)]
@@ -34,7 +37,10 @@ impl Queue {
     /// Creates a new `Queue` with the specified capacity.
     pub fn with_capacity(capacity: usize, sequence: u32) -> Queue {
         Queue {
-            buffer: Vec::new(),
+            buffer: match ALLOC_IN_INITIAL {
+                true => Vec::with_capacity(capacity),
+                false => Vec::new(),
+            },
             capacity,
             sequence,
             head: 0,
@@ -450,7 +456,10 @@ impl Window {
     /// Creates a new `Window` with the specified capacity.
     pub fn with_capacity(capacity: usize, sequence: u32) -> Window {
         Window {
-            buffer: Vec::new(),
+            buffer: match ALLOC_IN_INITIAL {
+                true => Vec::with_capacity(capacity),
+                false => Vec::new(),
+            },
             capacity,
             sequence,
             head: 0,

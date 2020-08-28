@@ -898,6 +898,7 @@ impl Forwarder {
         let size = indicator.len();
         let buffer_size = max(size + payload.len(), MINIMUM_FRAME_SIZE);
         let mut buffer = vec![0u8; buffer_size];
+        // TODO: intermediate performance degradation
         indicator.serialize_with_payload(&mut buffer[..size + payload.len()], payload)?;
 
         // Send
