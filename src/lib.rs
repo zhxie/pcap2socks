@@ -90,7 +90,7 @@ pub struct Forwarder {
     local_ip_addr: Ipv4Addr,
     ipv4_identification_map: HashMap<(Ipv4Addr, Ipv4Addr), u16>,
     states: HashMap<(SocketAddrV4, SocketAddrV4), TcpTxState>,
-    upload: Option<Arc<AtomicUsize>>,
+    download: Option<Arc<AtomicUsize>>,
 }
 
 impl Forwarder {
@@ -110,7 +110,7 @@ impl Forwarder {
             local_ip_addr,
             ipv4_identification_map: HashMap::new(),
             states: HashMap::new(),
-            upload: None,
+            download: None,
         }
     }
 
@@ -120,7 +120,7 @@ impl Forwarder {
         mtu: usize,
         local_hardware_addr: HardwareAddr,
         local_ip_addr: Ipv4Addr,
-        upload: Arc<AtomicUsize>,
+        download: Arc<AtomicUsize>,
     ) -> Forwarder {
         Forwarder {
             tx,
@@ -131,7 +131,7 @@ impl Forwarder {
             local_ip_addr,
             ipv4_identification_map: HashMap::new(),
             states: HashMap::new(),
-            upload: Some(upload),
+            download: Some(download),
         }
     }
 
@@ -919,8 +919,8 @@ impl Forwarder {
         }
 
         // Monitor
-        if let Some(upload) = &self.upload {
-            upload.fetch_add(buffer_size, Ordering::Relaxed);
+        if let Some(download) = &self.download {
+            download.fetch_add(buffer_size, Ordering::Relaxed);
         }
 
         Ok(())
@@ -951,8 +951,8 @@ impl Forwarder {
         }
 
         // Monitor
-        if let Some(upload) = &self.upload {
-            upload.fetch_add(buffer_size, Ordering::Relaxed);
+        if let Some(download) = &self.download {
+            download.fetch_add(buffer_size, Ordering::Relaxed);
         }
 
         Ok(())
@@ -1157,7 +1157,7 @@ impl Redirector {
         &mut self,
         rx: &mut Receiver,
         is_running: Arc<AtomicBool>,
-        download: Arc<AtomicUsize>,
+        upload: Arc<AtomicUsize>,
     ) -> io::Result<()> {
         loop {
             // Monitor
@@ -1171,7 +1171,7 @@ impl Redirector {
                             match t {
                                 LayerKinds::Arp => {
                                     if let Err(ref e) =
-                                        self.handle_arp_monitored(indicator, Arc::clone(&download))
+                                        self.handle_arp_monitored(indicator, Arc::clone(&upload))
                                     {
                                         warn!("handle {}: {}", indicator.brief(), e);
                                     }
@@ -1181,7 +1181,7 @@ impl Redirector {
                                         .handle_ipv4_monitored(
                                             indicator,
                                             frame,
-                                            Arc::clone(&download),
+                                            Arc::clone(&upload),
                                         )
                                         .await
                                     {
@@ -1223,7 +1223,7 @@ impl Redirector {
     fn handle_arp_monitored(
         &mut self,
         indicator: &Indicator,
-        download: Arc<AtomicUsize>,
+        upload: Arc<AtomicUsize>,
     ) -> io::Result<()> {
         if let Some(gw_ip_addr) = self.gw_ip_addr {
             if let Some(arp) = indicator.arp() {
@@ -1235,7 +1235,7 @@ impl Redirector {
                     self.handle_arp_raw(indicator)?;
 
                     // Monitor
-                    download.fetch_add(indicator.content_len(), Ordering::Relaxed);
+                    upload.fetch_add(indicator.content_len(), Ordering::Relaxed);
                 }
             }
         }
@@ -1288,7 +1288,7 @@ impl Redirector {
         &mut self,
         indicator: &Indicator,
         frame: &[u8],
-        download: Arc<AtomicUsize>,
+        upload: Arc<AtomicUsize>,
     ) -> io::Result<()> {
         if let Some(ipv4) = indicator.ipv4() {
             let src = ipv4.src();
@@ -1296,7 +1296,7 @@ impl Redirector {
                 self.handle_ipv4_raw(indicator, frame).await?;
 
                 // Monitor
-                download.fetch_add(indicator.content_len(), Ordering::Relaxed);
+                upload.fetch_add(indicator.content_len(), Ordering::Relaxed);
             }
         }
 
