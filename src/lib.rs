@@ -9,6 +9,7 @@ use rand::{self, Rng};
 use std::cmp::{max, min};
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, Shutdown, SocketAddrV4};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -89,6 +90,7 @@ pub struct Forwarder {
     local_ip_addr: Ipv4Addr,
     ipv4_identification_map: HashMap<(Ipv4Addr, Ipv4Addr), u16>,
     states: HashMap<(SocketAddrV4, SocketAddrV4), TcpTxState>,
+    upload: Option<Arc<AtomicUsize>>,
 }
 
 impl Forwarder {
@@ -108,6 +110,28 @@ impl Forwarder {
             local_ip_addr,
             ipv4_identification_map: HashMap::new(),
             states: HashMap::new(),
+            upload: None,
+        }
+    }
+
+    /// Creates a new `Forwarder` which is monitored.
+    pub fn new_monitored(
+        tx: Sender,
+        mtu: usize,
+        local_hardware_addr: HardwareAddr,
+        local_ip_addr: Ipv4Addr,
+        upload: Arc<AtomicUsize>,
+    ) -> Forwarder {
+        Forwarder {
+            tx,
+            src_mtu: HashMap::new(),
+            local_mtu: mtu,
+            src_hardware_addr: HashMap::new(),
+            local_hardware_addr,
+            local_ip_addr,
+            ipv4_identification_map: HashMap::new(),
+            states: HashMap::new(),
+            upload: Some(upload),
         }
     }
 
@@ -894,6 +918,11 @@ impl Forwarder {
             None => debug!("send to pcap: {} ({} Bytes)", indicator.brief(), size),
         }
 
+        // Monitor
+        if let Some(upload) = &self.upload {
+            upload.fetch_add(buffer_size, Ordering::Relaxed);
+        }
+
         Ok(())
     }
 
@@ -919,6 +948,11 @@ impl Forwarder {
                 size,
                 payload.len()
             ),
+        }
+
+        // Monitor
+        if let Some(upload) = &self.upload {
+            upload.fetch_add(buffer_size, Ordering::Relaxed);
         }
 
         Ok(())
@@ -1084,7 +1118,7 @@ impl Redirector {
         redirector
     }
 
-    /// Opens an `Interface` for redirect.
+    /// Opens an `Interface` for redirection.
     pub async fn open(&mut self, rx: &mut Receiver) -> io::Result<()> {
         loop {
             match rx.next() {
@@ -1118,6 +1152,58 @@ impl Redirector {
         }
     }
 
+    /// Opens an `Interface` for redirection and monitoring.
+    pub async fn open_monitored(
+        &mut self,
+        rx: &mut Receiver,
+        is_running: Arc<AtomicBool>,
+        download: Arc<AtomicUsize>,
+    ) -> io::Result<()> {
+        loop {
+            // Monitor
+            if !is_running.load(Ordering::Relaxed) {
+                return Ok(());
+            }
+            match rx.next() {
+                Ok(frame) => {
+                    if let Some(ref indicator) = Indicator::from(frame) {
+                        if let Some(t) = indicator.network_kind() {
+                            match t {
+                                LayerKinds::Arp => {
+                                    if let Err(ref e) =
+                                        self.handle_arp_monitored(indicator, Arc::clone(&download))
+                                    {
+                                        warn!("handle {}: {}", indicator.brief(), e);
+                                    }
+                                }
+                                LayerKinds::Ipv4 => {
+                                    if let Err(ref e) = self
+                                        .handle_ipv4_monitored(
+                                            indicator,
+                                            frame,
+                                            Arc::clone(&download),
+                                        )
+                                        .await
+                                    {
+                                        warn!("handle {}: {}", indicator.brief(), e);
+                                    }
+                                }
+                                _ => unreachable!(),
+                            }
+                        }
+                    };
+                }
+                Err(e) => {
+                    if e.kind() == io::ErrorKind::TimedOut {
+                        thread::sleep(Duration::from_millis(TIMEDOUT_WAIT));
+                        continue;
+                    }
+                    return Err(e);
+                }
+            };
+        }
+    }
+
     fn handle_arp(&mut self, indicator: &Indicator) -> io::Result<()> {
         if let Some(gw_ip_addr) = self.gw_ip_addr {
             if let Some(arp) = indicator.arp() {
@@ -1126,30 +1212,62 @@ impl Redirector {
                     && self.src_ip_addr.contains(src)
                     && arp.dst() == gw_ip_addr
                 {
-                    debug!(
-                        "receive from pcap: {} ({} Bytes)",
-                        indicator.brief(),
-                        indicator.len()
-                    );
-
-                    // Set forwarder's hardware address
-                    if !self.is_tx_src_hardware_addr_set {
-                        self.tx
-                            .lock()
-                            .unwrap()
-                            .set_src_hardware_addr(src, arp.src_hardware_addr());
-                        self.is_tx_src_hardware_addr_set = true;
-                        info!(
-                            "Device {} ({}) joined the network",
-                            src,
-                            arp.src_hardware_addr()
-                        );
-                    }
-
-                    // Send
-                    self.tx.lock().unwrap().send_arp_reply(src)?
+                    self.handle_arp_raw(indicator)?;
                 }
             }
+        }
+
+        Ok(())
+    }
+
+    fn handle_arp_monitored(
+        &mut self,
+        indicator: &Indicator,
+        download: Arc<AtomicUsize>,
+    ) -> io::Result<()> {
+        if let Some(gw_ip_addr) = self.gw_ip_addr {
+            if let Some(arp) = indicator.arp() {
+                let src = arp.src();
+                if src != self.local_ip_addr
+                    && self.src_ip_addr.contains(src)
+                    && arp.dst() == gw_ip_addr
+                {
+                    self.handle_arp_raw(indicator)?;
+
+                    // Monitor
+                    download.fetch_add(indicator.content_len(), Ordering::Relaxed);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn handle_arp_raw(&mut self, indicator: &Indicator) -> io::Result<()> {
+        if let Some(arp) = indicator.arp() {
+            let src = arp.src();
+            debug!(
+                "receive from pcap: {} ({} Bytes)",
+                indicator.brief(),
+                indicator.len()
+            );
+
+            // Set forwarder's hardware address
+            if !self.is_tx_src_hardware_addr_set {
+                self.tx
+                    .lock()
+                    .unwrap()
+                    .set_src_hardware_addr(src, arp.src_hardware_addr());
+                self.is_tx_src_hardware_addr_set = true;
+                info!(
+                    "Device {} ({}) joined the network",
+                    src,
+                    arp.src_hardware_addr()
+                );
+            }
+
+            // Send
+            self.tx.lock().unwrap().send_arp_reply(src)?;
         }
 
         Ok(())
@@ -1159,56 +1277,84 @@ impl Redirector {
         if let Some(ipv4) = indicator.ipv4() {
             let src = ipv4.src();
             if src != self.local_ip_addr && self.src_ip_addr.contains(src) {
-                debug!(
-                    "receive from pcap: {} ({} + {} Bytes)",
-                    indicator.brief(),
-                    indicator.len(),
-                    indicator.content_len() - indicator.len()
+                self.handle_ipv4_raw(indicator, frame).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_ipv4_monitored(
+        &mut self,
+        indicator: &Indicator,
+        frame: &[u8],
+        download: Arc<AtomicUsize>,
+    ) -> io::Result<()> {
+        if let Some(ipv4) = indicator.ipv4() {
+            let src = ipv4.src();
+            if src != self.local_ip_addr && self.src_ip_addr.contains(src) {
+                self.handle_ipv4_raw(indicator, frame).await?;
+
+                // Monitor
+                download.fetch_add(indicator.content_len(), Ordering::Relaxed);
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_ipv4_raw(&mut self, indicator: &Indicator, frame: &[u8]) -> io::Result<()> {
+        if let Some(ipv4) = indicator.ipv4() {
+            let src = ipv4.src();
+            debug!(
+                "receive from pcap: {} ({} + {} Bytes)",
+                indicator.brief(),
+                indicator.len(),
+                indicator.content_len() - indicator.len()
+            );
+            // Set forwarder's hardware address
+            if !self.is_tx_src_hardware_addr_set {
+                self.tx
+                    .lock()
+                    .unwrap()
+                    .set_src_hardware_addr(src, indicator.ethernet().unwrap().src());
+                self.is_tx_src_hardware_addr_set = true;
+                info!(
+                    "Device {} joined the network",
+                    indicator.ethernet().unwrap().src()
                 );
-                // Set forwarder's hardware address
-                if !self.is_tx_src_hardware_addr_set {
-                    self.tx
-                        .lock()
-                        .unwrap()
-                        .set_src_hardware_addr(src, indicator.ethernet().unwrap().src());
-                    self.is_tx_src_hardware_addr_set = true;
-                    info!(
-                        "Device {} joined the network",
-                        indicator.ethernet().unwrap().src()
-                    );
-                }
+            }
 
-                let frame_without_padding = &frame[..indicator.content_len()];
-                if ipv4.is_fragment() {
-                    // Fragmentation
-                    let frag = match self.defrag.add(indicator, frame_without_padding) {
-                        Some(frag) => frag,
-                        None => return Ok(()),
-                    };
-                    let (transport, payload) = frag.concatenate();
+            let frame_without_padding = &frame[..indicator.content_len()];
+            if ipv4.is_fragment() {
+                // Fragmentation
+                let frag = match self.defrag.add(indicator, frame_without_padding) {
+                    Some(frag) => frag,
+                    None => return Ok(()),
+                };
+                let (transport, payload) = frag.concatenate();
 
-                    if let Some(transport) = transport {
-                        match transport {
-                            Layers::Icmpv4(ref icmpv4) => self.handle_icmpv4(icmpv4)?,
-                            Layers::Tcp(ref tcp) => self.handle_tcp(tcp, &payload).await?,
-                            Layers::Udp(ref udp) => self.handle_udp(udp, &payload).await?,
-                            _ => unreachable!(),
-                        }
+                if let Some(transport) = transport {
+                    match transport {
+                        Layers::Icmpv4(ref icmpv4) => self.handle_icmpv4(icmpv4)?,
+                        Layers::Tcp(ref tcp) => self.handle_tcp(tcp, &payload).await?,
+                        Layers::Udp(ref udp) => self.handle_udp(udp, &payload).await?,
+                        _ => unreachable!(),
                     }
-                } else {
-                    if let Some(transport) = indicator.transport() {
-                        match transport {
-                            Layers::Icmpv4(icmpv4) => self.handle_icmpv4(icmpv4)?,
-                            Layers::Tcp(tcp) => {
-                                self.handle_tcp(tcp, &frame_without_padding[indicator.len()..])
-                                    .await?
-                            }
-                            Layers::Udp(udp) => {
-                                self.handle_udp(udp, &frame_without_padding[indicator.len()..])
-                                    .await?
-                            }
-                            _ => unreachable!(),
+                }
+            } else {
+                if let Some(transport) = indicator.transport() {
+                    match transport {
+                        Layers::Icmpv4(icmpv4) => self.handle_icmpv4(icmpv4)?,
+                        Layers::Tcp(tcp) => {
+                            self.handle_tcp(tcp, &frame_without_padding[indicator.len()..])
+                                .await?
                         }
+                        Layers::Udp(udp) => {
+                            self.handle_udp(udp, &frame_without_padding[indicator.len()..])
+                                .await?
+                        }
+                        _ => unreachable!(),
                     }
                 }
             }
