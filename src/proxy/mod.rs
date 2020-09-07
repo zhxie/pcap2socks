@@ -1,16 +1,14 @@
 //! Support for handling proxies.
 
-use futures::{self, FutureExt};
 use log::{debug, trace, warn};
 use std::net::{Ipv4Addr, Shutdown, SocketAddrV4};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::io;
 use tokio::net::tcp::OwnedWriteHalf;
 use tokio::prelude::*;
 use tokio::sync::mpsc::{self, Sender, UnboundedReceiver, UnboundedSender};
-use tokio::time;
+use tokio::{self, io, time};
 
 mod socks;
 use socks::SocksSendHalf;
@@ -117,13 +115,13 @@ impl StreamWorker {
 
                 // Select
                 {
-                    let tx_rx_fuse = tx_rx.recv().fuse();
-                    let tx_close_rx_fuse = tx_close_rx.recv().fuse();
+                    let tx_rx_fut = tx_rx.recv();
+                    let tx_close_rx_fut = tx_close_rx.recv();
 
-                    futures::pin_mut!(tx_rx_fuse, tx_close_rx_fuse);
+                    tokio::pin!(tx_rx_fut, tx_close_rx_fut);
 
-                    futures::select! {
-                        r = tx_rx_fuse => match r {
+                    tokio::select! {
+                        r = tx_rx_fut => match r {
                             Some(payload) => {
                                 match stream_tx.write_all(payload.as_slice()).await {
                                     Ok(_) => {
@@ -143,7 +141,7 @@ impl StreamWorker {
                             }
                             None => is_close = true
                         },
-                        _ = tx_close_rx_fuse => is_close = true
+                        _ = tx_close_rx_fut => is_close = true
                     }
                 }
 
@@ -165,13 +163,13 @@ impl StreamWorker {
 
                 // Select
                 {
-                    let stream_rx_fuse = stream_rx.read(&mut buffer).fuse();
-                    let rx_close_rx_fuse = rx_close_rx.recv().fuse();
+                    let stream_rx_fut = stream_rx.read(&mut buffer);
+                    let rx_close_rx_fut = rx_close_rx.recv();
 
-                    futures::pin_mut!(stream_rx_fuse, rx_close_rx_fuse);
+                    tokio::pin!(stream_rx_fut, rx_close_rx_fut);
 
-                    futures::select! {
-                        r = stream_rx_fuse => match r {
+                    tokio::select! {
+                        r = stream_rx_fut => match r {
                             Ok(this_size) => if this_size > 0 {
                                 debug!(
                                     "receive from proxy: {}: {} -> {} ({} Bytes)",
@@ -199,7 +197,7 @@ impl StreamWorker {
                                 size = 0;
                             }
                         },
-                        _ = rx_close_rx_fuse => size = 0
+                        _ = rx_close_rx_fut => size = 0
                     }
                 }
 
@@ -345,13 +343,13 @@ impl StreamWorker2 {
 
                 // Select
                 {
-                    let stream_rx_fuse = stream_rx.read(&mut buffer).fuse();
-                    let rx_close_rx_fuse = rx_close_rx.recv().fuse();
+                    let stream_rx_fut = stream_rx.read(&mut buffer);
+                    let rx_close_rx_fut = rx_close_rx.recv();
 
-                    futures::pin_mut!(stream_rx_fuse, rx_close_rx_fuse);
+                    tokio::pin!(stream_rx_fut, rx_close_rx_fut);
 
-                    futures::select! {
-                        r = stream_rx_fuse => match r {
+                    tokio::select! {
+                        r = stream_rx_fut => match r {
                             Ok(this_size) => if this_size > 0 {
                                 debug!(
                                     "receive from proxy: {}: {} -> {} ({} Bytes)",
@@ -379,7 +377,7 @@ impl StreamWorker2 {
                                 size = 0;
                             }
                         },
-                        _ = rx_close_rx_fuse => size = 0
+                        _ = rx_close_rx_fut => size = 0
                     }
                 }
 
@@ -534,13 +532,13 @@ impl DatagramWorker {
 
                 // Select
                 {
-                    let tx_rx_fuse = tx_rx.recv().fuse();
-                    let close_rx_fuse = close_rx.recv().fuse();
+                    let tx_rx_fut = tx_rx.recv();
+                    let close_rx_fut = close_rx.recv();
 
-                    futures::pin_mut!(tx_rx_fuse, close_rx_fuse);
+                    tokio::pin!(tx_rx_fut, close_rx_fut);
 
-                    futures::select! {
-                        r = tx_rx_fuse => match r {
+                    tokio::select! {
+                        r = tx_rx_fut => match r {
                             Some((payload, dst)) => {
                                 match socks_tx.send_to(payload.as_slice(), dst).await {
                                     Ok(size) => {
@@ -557,7 +555,7 @@ impl DatagramWorker {
                             }
                             None => is_close = false
                         },
-                        _ = close_rx_fuse => is_close = true
+                        _ = close_rx_fut => is_close = true
                     }
                 }
 
@@ -577,13 +575,13 @@ impl DatagramWorker {
 
                 // Select
                 {
-                    let socks_rx_fuse = socks_rx.recv_from(&mut buffer).fuse();
-                    let close_rx_fuse = close_rx2.recv().fuse();
+                    let socks_rx_fut = socks_rx.recv_from(&mut buffer);
+                    let close_rx_fut = close_rx2.recv();
 
-                    futures::pin_mut!(socks_rx_fuse, close_rx_fuse);
+                    tokio::pin!(socks_rx_fut, close_rx_fut);
 
-                    futures::select! {
-                        socks_rx_result = socks_rx_fuse => {
+                    tokio::select! {
+                        socks_rx_result = socks_rx_fut => {
                             match socks_rx_result {
                                 Ok((this_size, this_addr)) => {
                                     debug!(
@@ -612,7 +610,7 @@ impl DatagramWorker {
                                 }
                             }
                         }
-                        _ = close_rx_fuse => size = 0
+                        _ = close_rx_fut => size = 0
                     };
                 }
 
@@ -729,13 +727,13 @@ impl DatagramWorker2 {
 
                 // Select
                 {
-                    let socks_rx_fuse = socks_rx.recv_from(&mut buffer).fuse();
-                    let close_rx_fuse = close_rx.recv().fuse();
+                    let socks_rx_fut = socks_rx.recv_from(&mut buffer);
+                    let close_rx_fut = close_rx.recv();
 
-                    futures::pin_mut!(socks_rx_fuse, close_rx_fuse);
+                    tokio::pin!(socks_rx_fut, close_rx_fut);
 
-                    futures::select! {
-                        socks_rx_result = socks_rx_fuse => {
+                    tokio::select! {
+                        socks_rx_result = socks_rx_fut => {
                             match socks_rx_result {
                                 Ok((this_size, this_addr)) => {
                                     debug!(
@@ -764,7 +762,7 @@ impl DatagramWorker2 {
                                 }
                             }
                         }
-                        _ = close_rx_fuse => size = 0
+                        _ = close_rx_fut => size = 0
                     };
                 }
 
