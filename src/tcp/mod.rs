@@ -5,6 +5,8 @@ use std::cmp::{max, min};
 use std::collections::VecDeque;
 use std::fmt::{self, Display};
 use std::net::SocketAddrV4;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io;
 
@@ -577,6 +579,7 @@ pub struct TcpTxState {
     srtt: Option<f64>,
     rttvar: Option<f64>,
     cc: Option<Box<dyn TcpCc>>,
+    latency: Option<Arc<AtomicUsize>>,
 }
 
 impl TcpTxState {
@@ -622,6 +625,7 @@ impl TcpTxState {
                 },
                 false => None,
             },
+            latency: None,
         }
     }
 
@@ -764,6 +768,11 @@ impl TcpTxState {
         // Update RTO
         if let Some(rtt) = rtt {
             self.update_rto(rtt);
+
+            // Monitor
+            if let Some(latency) = &self.latency {
+                latency.store(rtt.as_millis() as usize, Ordering::Relaxed);
+            }
         }
     }
 
@@ -887,6 +896,11 @@ impl TcpTxState {
         let rto_f = srtt + (rttvar * RTO_K).max(1.0);
         let rto = (rto_f * 1000.0).min(u64::MAX as f64) as u64;
         self.set_rto(rto);
+    }
+
+    /// Monitors the TCP connection.
+    pub fn monitor(&mut self, latency: Arc<AtomicUsize>) {
+        self.latency = Some(latency)
     }
 
     /// Returns the source window of the TCP connection. The source window represents the received

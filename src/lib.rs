@@ -90,7 +90,9 @@ pub struct Forwarder {
     local_ip_addr: Ipv4Addr,
     ipv4_identification_map: HashMap<(Ipv4Addr, Ipv4Addr), u16>,
     states: HashMap<(SocketAddrV4, SocketAddrV4), TcpTxState>,
-    download: Option<Arc<AtomicUsize>>,
+    traffic: Option<Arc<AtomicUsize>>,
+    latency: Option<Arc<AtomicUsize>>,
+    count: Option<Arc<AtomicUsize>>,
 }
 
 impl Forwarder {
@@ -101,17 +103,15 @@ impl Forwarder {
         local_hardware_addr: HardwareAddr,
         local_ip_addr: Ipv4Addr,
     ) -> Forwarder {
-        Forwarder {
+        Forwarder::new_monitored(
             tx,
-            src_mtu: HashMap::new(),
-            local_mtu: mtu,
-            src_hardware_addr: HashMap::new(),
+            mtu,
             local_hardware_addr,
             local_ip_addr,
-            ipv4_identification_map: HashMap::new(),
-            states: HashMap::new(),
-            download: None,
-        }
+            None,
+            None,
+            None,
+        )
     }
 
     /// Creates a new `Forwarder` which is monitored.
@@ -120,7 +120,9 @@ impl Forwarder {
         mtu: usize,
         local_hardware_addr: HardwareAddr,
         local_ip_addr: Ipv4Addr,
-        download: Arc<AtomicUsize>,
+        traffic: Option<Arc<AtomicUsize>>,
+        latency: Option<Arc<AtomicUsize>>,
+        count: Option<Arc<AtomicUsize>>,
     ) -> Forwarder {
         Forwarder {
             tx,
@@ -131,7 +133,9 @@ impl Forwarder {
             local_ip_addr,
             ipv4_identification_map: HashMap::new(),
             states: HashMap::new(),
-            download: Some(download),
+            traffic,
+            latency,
+            count,
         }
     }
 
@@ -176,8 +180,13 @@ impl Forwarder {
     }
 
     /// Sets the state of a TCP connection.
-    pub fn set_state(&mut self, dst: SocketAddrV4, src: SocketAddrV4, state: TcpTxState) {
+    pub fn set_state(&mut self, dst: SocketAddrV4, src: SocketAddrV4, mut state: TcpTxState) {
         let key = (src, dst);
+
+        // Monitor
+        if let Some(latency) = &self.latency {
+            state.monitor(Arc::clone(latency));
+        }
 
         self.states.insert(key, state);
     }
@@ -919,8 +928,11 @@ impl Forwarder {
         }
 
         // Monitor
-        if let Some(download) = &self.download {
-            download.fetch_add(buffer_size, Ordering::Relaxed);
+        if let Some(traffic) = &self.traffic {
+            traffic.fetch_add(buffer_size, Ordering::Relaxed);
+        }
+        if let Some(count) = &self.count {
+            count.fetch_add(1, Ordering::Relaxed);
         }
 
         Ok(())
@@ -951,8 +963,11 @@ impl Forwarder {
         }
 
         // Monitor
-        if let Some(download) = &self.download {
+        if let Some(download) = &self.traffic {
             download.fetch_add(buffer_size, Ordering::Relaxed);
+        }
+        if let Some(count) = &self.count {
+            count.fetch_add(1, Ordering::Relaxed);
         }
 
         Ok(())
@@ -1157,7 +1172,8 @@ impl Redirector {
         &mut self,
         rx: &mut Receiver,
         is_running: Arc<AtomicBool>,
-        upload: Arc<AtomicUsize>,
+        traffic: Arc<AtomicUsize>,
+        count: Arc<AtomicUsize>,
     ) -> io::Result<()> {
         loop {
             // Monitor
@@ -1170,9 +1186,11 @@ impl Redirector {
                         if let Some(t) = indicator.network_kind() {
                             match t {
                                 LayerKinds::Arp => {
-                                    if let Err(ref e) =
-                                        self.handle_arp_monitored(indicator, Arc::clone(&upload))
-                                    {
+                                    if let Err(ref e) = self.handle_arp_monitored(
+                                        indicator,
+                                        Arc::clone(&traffic),
+                                        Arc::clone(&count),
+                                    ) {
                                         warn!("handle {}: {}", indicator.brief(), e);
                                     }
                                 }
@@ -1181,7 +1199,8 @@ impl Redirector {
                                         .handle_ipv4_monitored(
                                             indicator,
                                             frame,
-                                            Arc::clone(&upload),
+                                            Arc::clone(&traffic),
+                                            Arc::clone(&count),
                                         )
                                         .await
                                     {
@@ -1223,7 +1242,8 @@ impl Redirector {
     fn handle_arp_monitored(
         &mut self,
         indicator: &Indicator,
-        upload: Arc<AtomicUsize>,
+        traffic: Arc<AtomicUsize>,
+        count: Arc<AtomicUsize>,
     ) -> io::Result<()> {
         if let Some(gw_ip_addr) = self.gw_ip_addr {
             if let Some(arp) = indicator.arp() {
@@ -1235,7 +1255,8 @@ impl Redirector {
                     self.handle_arp_raw(indicator)?;
 
                     // Monitor
-                    upload.fetch_add(indicator.content_len(), Ordering::Relaxed);
+                    traffic.fetch_add(indicator.content_len(), Ordering::Relaxed);
+                    count.fetch_add(1, Ordering::Relaxed);
                 }
             }
         }
@@ -1288,7 +1309,8 @@ impl Redirector {
         &mut self,
         indicator: &Indicator,
         frame: &[u8],
-        upload: Arc<AtomicUsize>,
+        traffic: Arc<AtomicUsize>,
+        count: Arc<AtomicUsize>,
     ) -> io::Result<()> {
         if let Some(ipv4) = indicator.ipv4() {
             let src = ipv4.src();
@@ -1296,7 +1318,8 @@ impl Redirector {
                 self.handle_ipv4_raw(indicator, frame).await?;
 
                 // Monitor
-                upload.fetch_add(indicator.content_len(), Ordering::Relaxed);
+                traffic.fetch_add(indicator.content_len(), Ordering::Relaxed);
+                count.fetch_add(1, Ordering::Relaxed);
             }
         }
 
