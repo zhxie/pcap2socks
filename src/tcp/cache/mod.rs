@@ -30,6 +30,7 @@ pub struct Queue {
 
 impl Queue {
     /// Creates a new `Queue`.
+    #[deprecated = "Use with_capacity instead"]
     pub fn new(sequence: u32) -> Queue {
         Queue::with_capacity(usize::MAX, sequence)
     }
@@ -455,6 +456,7 @@ pub struct Window {
 
 impl Window {
     /// Creates a new `Window`.
+    #[deprecated = "Use with_capacity instead"]
     pub fn new(sequence: u32) -> Window {
         Window::with_capacity(usize::MAX, sequence)
     }
