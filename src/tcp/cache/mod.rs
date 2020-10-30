@@ -46,7 +46,10 @@ impl Queue {
             sequence,
             head: 0,
             size: 0,
-            clocks: VecDeque::with_capacity(capacity),
+            clocks: match ALLOC_IN_INITIAL {
+                true => VecDeque::with_capacity(capacity),
+                false => VecDeque::new(),
+            },
             retrans: None,
         }
     }
