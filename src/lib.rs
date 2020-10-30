@@ -1858,6 +1858,7 @@ impl Redirector {
                             self.datagram_map.remove(&prev_src);
                             trace!("reuse UDP port {} = {} to {}", port, prev_src, src);
                             self.datagram_map.insert(src.clone(), port);
+                            self.datagrams.get_mut(&port).unwrap().set_src(&src);
 
                             // Update LRU
                             self.udp_lru.put(port, src.clone());
