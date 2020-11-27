@@ -488,7 +488,7 @@ dependencies = [
 
 [[package]]
 name = "pcap2socks"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "async-socks5",
  "clap",
