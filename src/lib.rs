@@ -1135,74 +1135,45 @@ impl Redirector {
 
     /// Opens an `Interface` for redirection.
     pub async fn open(&mut self, rx: &mut Receiver) -> io::Result<()> {
-        loop {
-            match rx.next() {
-                Ok(frame) => {
-                    if let Some(ref indicator) = Indicator::from(frame) {
-                        if let Some(t) = indicator.network_kind() {
-                            match t {
-                                LayerKinds::Arp => {
-                                    if let Err(ref e) = self.handle_arp(indicator) {
-                                        warn!("handle {}: {}", indicator.brief(), e);
-                                    }
-                                }
-                                LayerKinds::Ipv4 => {
-                                    if let Err(ref e) = self.handle_ipv4(indicator, frame).await {
-                                        warn!("handle {}: {}", indicator.brief(), e);
-                                    }
-                                }
-                                _ => unreachable!(),
-                            }
-                        }
-                    };
-                }
-                Err(e) => {
-                    if e.kind() == io::ErrorKind::TimedOut {
-                        thread::sleep(Duration::from_millis(TIMEDOUT_WAIT));
-                        continue;
-                    }
-                    return Err(e);
-                }
-            };
-        }
+        self.open_monitored(rx, None, None, None).await
     }
 
     /// Opens an `Interface` for redirection and monitoring.
     pub async fn open_monitored(
         &mut self,
         rx: &mut Receiver,
-        is_running: Arc<AtomicBool>,
-        traffic: Arc<AtomicUsize>,
-        count: Arc<AtomicUsize>,
+        is_running: Option<Arc<AtomicBool>>,
+        traffic: Option<Arc<AtomicUsize>>,
+        count: Option<Arc<AtomicUsize>>,
     ) -> io::Result<()> {
         loop {
             // Monitor
-            if !is_running.load(Ordering::Relaxed) {
-                return Ok(());
+            if let Some(is_running) = &is_running {
+                if !is_running.load(Ordering::Relaxed) {
+                    return Ok(());
+                }
             }
             match rx.next() {
                 Ok(frame) => {
                     if let Some(ref indicator) = Indicator::from(frame) {
                         if let Some(t) = indicator.network_kind() {
+                            let traffic = match &traffic {
+                                Some(traffic) => Some(Arc::clone(traffic)),
+                                None => None,
+                            };
+                            let count = match &count {
+                                Some(count) => Some(Arc::clone(count)),
+                                None => None,
+                            };
                             match t {
                                 LayerKinds::Arp => {
-                                    if let Err(ref e) = self.handle_arp_monitored(
-                                        indicator,
-                                        Arc::clone(&traffic),
-                                        Arc::clone(&count),
-                                    ) {
+                                    if let Err(ref e) = self.handle_arp(indicator, traffic, count) {
                                         warn!("handle {}: {}", indicator.brief(), e);
                                     }
                                 }
                                 LayerKinds::Ipv4 => {
-                                    if let Err(ref e) = self
-                                        .handle_ipv4_monitored(
-                                            indicator,
-                                            frame,
-                                            Arc::clone(&traffic),
-                                            Arc::clone(&count),
-                                        )
-                                        .await
+                                    if let Err(ref e) =
+                                        self.handle_ipv4(indicator, frame, traffic, count).await
                                     {
                                         warn!("handle {}: {}", indicator.brief(), e);
                                     }
@@ -1223,27 +1194,11 @@ impl Redirector {
         }
     }
 
-    fn handle_arp(&mut self, indicator: &Indicator) -> io::Result<()> {
-        if let Some(gw_ip_addr) = self.gw_ip_addr {
-            if let Some(arp) = indicator.arp() {
-                let src = arp.src();
-                if src != self.local_ip_addr
-                    && self.src_ip_addr.contains(src)
-                    && arp.dst() == gw_ip_addr
-                {
-                    self.handle_arp_raw(indicator)?;
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    fn handle_arp_monitored(
+    fn handle_arp(
         &mut self,
         indicator: &Indicator,
-        traffic: Arc<AtomicUsize>,
-        count: Arc<AtomicUsize>,
+        traffic: Option<Arc<AtomicUsize>>,
+        count: Option<Arc<AtomicUsize>>,
     ) -> io::Result<()> {
         if let Some(gw_ip_addr) = self.gw_ip_addr {
             if let Some(arp) = indicator.arp() {
@@ -1252,11 +1207,37 @@ impl Redirector {
                     && self.src_ip_addr.contains(src)
                     && arp.dst() == gw_ip_addr
                 {
-                    self.handle_arp_raw(indicator)?;
+                    let src = arp.src();
+                    debug!(
+                        "receive from pcap: {} ({} Bytes)",
+                        indicator.brief(),
+                        indicator.len()
+                    );
+
+                    // Set forwarder's hardware address
+                    if !self.is_tx_src_hardware_addr_set {
+                        self.tx
+                            .lock()
+                            .unwrap()
+                            .set_src_hardware_addr(src, arp.src_hardware_addr());
+                        self.is_tx_src_hardware_addr_set = true;
+                        info!(
+                            "Device {} ({}) joined the network",
+                            src,
+                            arp.src_hardware_addr()
+                        );
+                    }
+
+                    // Send
+                    self.tx.lock().unwrap().send_arp_reply(src)?;
 
                     // Monitor
-                    traffic.fetch_add(indicator.content_len(), Ordering::Relaxed);
-                    count.fetch_add(1, Ordering::Relaxed);
+                    if let Some(traffic) = traffic {
+                        traffic.fetch_add(indicator.content_len(), Ordering::Relaxed);
+                    }
+                    if let Some(count) = count {
+                        count.fetch_add(1, Ordering::Relaxed);
+                    }
                 }
             }
         }
@@ -1264,121 +1245,76 @@ impl Redirector {
         Ok(())
     }
 
-    fn handle_arp_raw(&mut self, indicator: &Indicator) -> io::Result<()> {
-        if let Some(arp) = indicator.arp() {
-            let src = arp.src();
-            debug!(
-                "receive from pcap: {} ({} Bytes)",
-                indicator.brief(),
-                indicator.len()
-            );
-
-            // Set forwarder's hardware address
-            if !self.is_tx_src_hardware_addr_set {
-                self.tx
-                    .lock()
-                    .unwrap()
-                    .set_src_hardware_addr(src, arp.src_hardware_addr());
-                self.is_tx_src_hardware_addr_set = true;
-                info!(
-                    "Device {} ({}) joined the network",
-                    src,
-                    arp.src_hardware_addr()
-                );
-            }
-
-            // Send
-            self.tx.lock().unwrap().send_arp_reply(src)?;
-        }
-
-        Ok(())
-    }
-
-    async fn handle_ipv4(&mut self, indicator: &Indicator, frame: &[u8]) -> io::Result<()> {
-        if let Some(ipv4) = indicator.ipv4() {
-            let src = ipv4.src();
-            if src != self.local_ip_addr && self.src_ip_addr.contains(src) {
-                self.handle_ipv4_raw(indicator, frame).await?;
-            }
-        }
-
-        Ok(())
-    }
-
-    async fn handle_ipv4_monitored(
+    async fn handle_ipv4(
         &mut self,
         indicator: &Indicator,
         frame: &[u8],
-        traffic: Arc<AtomicUsize>,
-        count: Arc<AtomicUsize>,
+        traffic: Option<Arc<AtomicUsize>>,
+        count: Option<Arc<AtomicUsize>>,
     ) -> io::Result<()> {
         if let Some(ipv4) = indicator.ipv4() {
             let src = ipv4.src();
             if src != self.local_ip_addr && self.src_ip_addr.contains(src) {
-                self.handle_ipv4_raw(indicator, frame).await?;
-
-                // Monitor
-                traffic.fetch_add(indicator.content_len(), Ordering::Relaxed);
-                count.fetch_add(1, Ordering::Relaxed);
-            }
-        }
-
-        Ok(())
-    }
-
-    async fn handle_ipv4_raw(&mut self, indicator: &Indicator, frame: &[u8]) -> io::Result<()> {
-        if let Some(ipv4) = indicator.ipv4() {
-            let src = ipv4.src();
-            debug!(
-                "receive from pcap: {} ({} + {} Bytes)",
-                indicator.brief(),
-                indicator.len(),
-                indicator.content_len() - indicator.len()
-            );
-            // Set forwarder's hardware address
-            if !self.is_tx_src_hardware_addr_set {
-                self.tx
-                    .lock()
-                    .unwrap()
-                    .set_src_hardware_addr(src, indicator.ethernet().unwrap().src());
-                self.is_tx_src_hardware_addr_set = true;
-                info!(
-                    "Device {} joined the network",
-                    indicator.ethernet().unwrap().src()
+                let src = ipv4.src();
+                debug!(
+                    "receive from pcap: {} ({} + {} Bytes)",
+                    indicator.brief(),
+                    indicator.len(),
+                    indicator.content_len() - indicator.len()
                 );
-            }
+                // Set forwarder's hardware address
+                if !self.is_tx_src_hardware_addr_set {
+                    self.tx
+                        .lock()
+                        .unwrap()
+                        .set_src_hardware_addr(src, indicator.ethernet().unwrap().src());
+                    self.is_tx_src_hardware_addr_set = true;
+                    info!(
+                        "Device {} joined the network",
+                        indicator.ethernet().unwrap().src()
+                    );
+                }
 
-            let frame_without_padding = &frame[..indicator.content_len()];
-            if ipv4.is_fragment() {
-                // Fragmentation
-                let frag = match self.defrag.add(indicator, frame_without_padding) {
-                    Some(frag) => frag,
-                    None => return Ok(()),
-                };
-                let (transport, payload) = frag.concatenate();
+                let frame_without_padding = &frame[..indicator.content_len()];
+                if ipv4.is_fragment() {
+                    // Fragmentation
+                    let frag = match self.defrag.add(indicator, frame_without_padding) {
+                        Some(frag) => frag,
+                        None => return Ok(()),
+                    };
+                    let (transport, payload) = frag.concatenate();
 
-                if let Some(transport) = transport {
-                    match transport {
-                        Layers::Icmpv4(ref icmpv4) => self.handle_icmpv4(icmpv4)?,
-                        Layers::Tcp(ref tcp) => self.handle_tcp(tcp, &payload).await?,
-                        Layers::Udp(ref udp) => self.handle_udp(udp, &payload).await?,
-                        _ => unreachable!(),
+                    if let Some(transport) = transport {
+                        match transport {
+                            Layers::Icmpv4(ref icmpv4) => self.handle_icmpv4(icmpv4)?,
+                            Layers::Tcp(ref tcp) => self.handle_tcp(tcp, &payload).await?,
+                            Layers::Udp(ref udp) => self.handle_udp(udp, &payload).await?,
+                            _ => unreachable!(),
+                        }
+                    }
+                } else {
+                    if let Some(transport) = indicator.transport() {
+                        match transport {
+                            Layers::Icmpv4(icmpv4) => self.handle_icmpv4(icmpv4)?,
+                            Layers::Tcp(tcp) => {
+                                self.handle_tcp(tcp, &frame_without_padding[indicator.len()..])
+                                    .await?
+                            }
+                            Layers::Udp(udp) => {
+                                self.handle_udp(udp, &frame_without_padding[indicator.len()..])
+                                    .await?
+                            }
+                            _ => unreachable!(),
+                        }
                     }
                 }
-            } else {
-                if let Some(transport) = indicator.transport() {
-                    match transport {
-                        Layers::Icmpv4(icmpv4) => self.handle_icmpv4(icmpv4)?,
-                        Layers::Tcp(tcp) => {
-                            self.handle_tcp(tcp, &frame_without_padding[indicator.len()..])
-                                .await?
-                        }
-                        Layers::Udp(udp) => {
-                            self.handle_udp(udp, &frame_without_padding[indicator.len()..])
-                                .await?
-                        }
-                        _ => unreachable!(),
-                    }
+
+                // Monitor
+                if let Some(traffic) = traffic {
+                    traffic.fetch_add(indicator.content_len(), Ordering::Relaxed);
+                }
+                if let Some(count) = count {
+                    count.fetch_add(1, Ordering::Relaxed);
                 }
             }
         }
