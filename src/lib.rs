@@ -91,7 +91,6 @@ pub struct Forwarder {
     ipv4_identification_map: HashMap<(Ipv4Addr, Ipv4Addr), u16>,
     states: HashMap<(SocketAddrV4, SocketAddrV4), TcpTxState>,
     traffic: Option<Arc<AtomicUsize>>,
-    latency: Option<Arc<AtomicUsize>>,
     count: Option<Arc<AtomicUsize>>,
 }
 
@@ -103,15 +102,7 @@ impl Forwarder {
         local_hardware_addr: HardwareAddr,
         local_ip_addr: Ipv4Addr,
     ) -> Forwarder {
-        Forwarder::new_monitored(
-            tx,
-            mtu,
-            local_hardware_addr,
-            local_ip_addr,
-            None,
-            None,
-            None,
-        )
+        Forwarder::new_monitored(tx, mtu, local_hardware_addr, local_ip_addr, None, None)
     }
 
     /// Creates a new `Forwarder` which is monitored.
@@ -121,7 +112,6 @@ impl Forwarder {
         local_hardware_addr: HardwareAddr,
         local_ip_addr: Ipv4Addr,
         traffic: Option<Arc<AtomicUsize>>,
-        latency: Option<Arc<AtomicUsize>>,
         count: Option<Arc<AtomicUsize>>,
     ) -> Forwarder {
         Forwarder {
@@ -134,7 +124,6 @@ impl Forwarder {
             ipv4_identification_map: HashMap::new(),
             states: HashMap::new(),
             traffic,
-            latency,
             count,
         }
     }
@@ -180,13 +169,8 @@ impl Forwarder {
     }
 
     /// Sets the state of a TCP connection.
-    pub fn set_state(&mut self, dst: SocketAddrV4, src: SocketAddrV4, mut state: TcpTxState) {
+    pub fn set_state(&mut self, dst: SocketAddrV4, src: SocketAddrV4, state: TcpTxState) {
         let key = (src, dst);
-
-        // Monitor
-        if let Some(latency) = &self.latency {
-            state.monitor(Arc::clone(latency));
-        }
 
         self.states.insert(key, state);
     }
