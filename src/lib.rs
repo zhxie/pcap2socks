@@ -261,15 +261,17 @@ impl Forwarder {
             src_ip_addr,
         );
 
-        // Ethernet
-        let ethernet =
-            Ethernet::new(arp.kind(), arp.src_hardware_addr(), arp.dst_hardware_addr()).unwrap();
+        // Send
+        self.send_ethernet(arp.dst_hardware_addr(), Layers::Arp(arp), None, None)
+    }
 
-        // Indicator
-        let indicator = Indicator::new(Layers::Ethernet(ethernet), Some(Layers::Arp(arp)), None);
+    /// Sends an gratuitous ARP packet.
+    pub fn send_gratuitous_arp(&mut self) -> io::Result<()> {
+        // ARP
+        let arp = Arp::gratuitous_arp(self.local_hardware_addr, self.local_ip_addr);
 
         // Send
-        self.send(&indicator)
+        self.send_ethernet(pcap::HARDWARE_ADDR_BROADCAST, Layers::Arp(arp), None, None)
     }
 
     /// Sends an ICMPv4 echo reply packet.
@@ -1201,6 +1203,11 @@ impl Redirector {
         traffic: Option<Arc<AtomicUsize>>,
         count: Option<Arc<AtomicUsize>>,
     ) -> io::Result<()> {
+        // Send gratuitous ARP
+        if self.gw_ip_addr.is_some() {
+            self.get_tx().lock().unwrap().send_gratuitous_arp()?;
+        }
+
         loop {
             // Monitor
             if let Some(is_running) = &is_running {

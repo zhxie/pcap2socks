@@ -16,7 +16,9 @@ use interfaces as c_interfaces;
 pub type HardwareAddr = pnet::datalink::MacAddr;
 
 /// Represents the unspecified hardware address `00:00:00:00:00:00` in an Ethernet network.
-pub const HARDWARE_ADDR_UNSPECIFIED: HardwareAddr = pnet::datalink::MacAddr(0, 0, 0, 0, 0, 0);
+pub const HARDWARE_ADDR_UNSPECIFIED: HardwareAddr = MacAddr(0, 0, 0, 0, 0, 0);
+/// Represents the broadcast hardware address `FF:FF:FF:FF:FF:FF` in an Ethernet network.
+pub const HARDWARE_ADDR_BROADCAST: HardwareAddr = MacAddr(0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF);
 
 /// Represents the send half of a pcap device.
 pub type Sender = Box<dyn DataLinkSender>;

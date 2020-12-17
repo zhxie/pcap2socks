@@ -38,6 +38,23 @@ impl Arp {
         Arp::from(arp)
     }
 
+    /// Creates a `Arp` represents an gratuitous ARP.
+    pub fn gratuitous_arp(hardware_addr: MacAddr, ip_addr: Ipv4Addr) -> Arp {
+        let arp = arp::Arp {
+            hardware_type: ArpHardwareTypes::Ethernet,
+            protocol_type: EtherTypes::Ipv4,
+            hw_addr_len: 6,
+            proto_addr_len: 4,
+            operation: ArpOperations::Request,
+            sender_hw_addr: hardware_addr,
+            sender_proto_addr: ip_addr,
+            target_hw_addr: MacAddr::zero(),
+            target_proto_addr: ip_addr,
+            payload: vec![],
+        };
+        Arp::from(arp)
+    }
+
     /// Creates an `Arp` according to the given `Arp`.
     pub fn from(arp: arp::Arp) -> Arp {
         Arp { layer: arp }
