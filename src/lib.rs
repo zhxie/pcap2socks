@@ -7,7 +7,7 @@ use log::{debug, info, trace, warn};
 use lru::LruCache;
 use rand::{self, Rng};
 use std::cmp::{max, min};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::{Ipv4Addr, Shutdown, SocketAddrV4};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -83,9 +83,9 @@ const MINIMUM_FRAME_SIZE: usize = 60;
 /// Represents a channel forward traffic to the source in pcap.
 pub struct Forwarder {
     tx: Sender,
-    src_mtu: HashMap<Ipv4Addr, usize>,
+    src_mtu_map: HashMap<Ipv4Addr, usize>,
     local_mtu: usize,
-    src_hardware_addr: HashMap<Ipv4Addr, HardwareAddr>,
+    src_hardware_addr_map: HashMap<Ipv4Addr, HardwareAddr>,
     local_hardware_addr: HardwareAddr,
     local_ip_addr: Ipv4Addr,
     ipv4_identification_map: HashMap<(Ipv4Addr, Ipv4Addr), u16>,
@@ -116,9 +116,9 @@ impl Forwarder {
     ) -> Forwarder {
         Forwarder {
             tx,
-            src_mtu: HashMap::new(),
+            src_mtu_map: HashMap::new(),
             local_mtu: mtu,
-            src_hardware_addr: HashMap::new(),
+            src_hardware_addr_map: HashMap::new(),
             local_hardware_addr,
             local_ip_addr,
             ipv4_identification_map: HashMap::new(),
@@ -130,17 +130,26 @@ impl Forwarder {
 
     /// Sets the source MTU.
     pub fn set_src_mtu(&mut self, src_ip_addr: Ipv4Addr, mtu: usize) -> bool {
-        let prev_mtu = *self.src_mtu.get(&src_ip_addr).unwrap_or(&self.local_mtu);
+        let prev_mtu = *self
+            .src_mtu_map
+            .get(&src_ip_addr)
+            .unwrap_or(&self.local_mtu);
 
-        self.src_mtu.insert(src_ip_addr, min(self.local_mtu, mtu));
+        self.src_mtu_map
+            .insert(src_ip_addr, min(self.local_mtu, mtu));
         trace!("set source MTU of {} to {}", src_ip_addr, mtu);
 
-        return *self.src_mtu.get(&src_ip_addr).unwrap_or(&self.local_mtu) != prev_mtu;
+        return *self
+            .src_mtu_map
+            .get(&src_ip_addr)
+            .unwrap_or(&self.local_mtu)
+            != prev_mtu;
     }
 
     /// Sets the source hardware address.
     pub fn set_src_hardware_addr(&mut self, src_ip_addr: Ipv4Addr, hardware_addr: HardwareAddr) {
-        self.src_hardware_addr.insert(src_ip_addr, hardware_addr);
+        self.src_hardware_addr_map
+            .insert(src_ip_addr, hardware_addr);
         trace!(
             "set source hardware address of {} to {}",
             src_ip_addr,
@@ -184,7 +193,10 @@ impl Forwarder {
 
     /// Returns the source MTU.
     pub fn get_src_mtu(&self, src_ip_addr: Ipv4Addr) -> usize {
-        *self.src_mtu.get(&src_ip_addr).unwrap_or(&self.local_mtu)
+        *self
+            .src_mtu_map
+            .get(&src_ip_addr)
+            .unwrap_or(&self.local_mtu)
     }
 
     /// Returns the state of a TCP connection.
@@ -240,7 +252,7 @@ impl Forwarder {
             self.local_hardware_addr,
             self.local_ip_addr,
             *self
-                .src_hardware_addr
+                .src_hardware_addr_map
                 .get(&src_ip_addr)
                 .unwrap_or(&pcap::HARDWARE_ADDR_UNSPECIFIED),
             src_ip_addr,
@@ -493,7 +505,7 @@ impl Forwarder {
             let mut size = min(remain_size as usize, state.queue().len());
             // Avoid SWS
             if ENABLE_SEND_SWS_AVOID {
-                let mtu = *self.src_mtu.get(src.ip()).unwrap_or(&self.local_mtu);
+                let mtu = *self.src_mtu_map.get(src.ip()).unwrap_or(&self.local_mtu);
                 let mss = mtu - (Ipv4::minimum_len() + Tcp::minimum_len());
 
                 if size < mss && !state.cache().is_empty() {
@@ -556,7 +568,7 @@ impl Forwarder {
         is_fin: bool,
     ) -> io::Result<()> {
         // Segmentation
-        let mss = *self.src_mtu.get(src.ip()).unwrap_or(&self.local_mtu)
+        let mss = *self.src_mtu_map.get(src.ip()).unwrap_or(&self.local_mtu)
             - (Ipv4::minimum_len() + Tcp::minimum_len());
         let mut i = 0;
         while mss * i < payload.len() {
@@ -758,7 +770,11 @@ impl Forwarder {
                 Some(payload) => payload.len(),
                 None => 0,
             };
-        let mss = *self.src_mtu.get(&src_ip_addr).unwrap_or(&self.local_mtu) - Ipv4::minimum_len();
+        let mss = *self
+            .src_mtu_map
+            .get(&src_ip_addr)
+            .unwrap_or(&self.local_mtu)
+            - Ipv4::minimum_len();
         if size <= mss {
             // IPv4
             let ipv4 = Ipv4::new(
@@ -782,7 +798,7 @@ impl Forwarder {
             // Send
             self.send_ethernet(
                 *self
-                    .src_hardware_addr
+                    .src_hardware_addr_map
                     .get(&src_ip_addr)
                     .unwrap_or(&pcap::HARDWARE_ADDR_UNSPECIFIED),
                 Layers::Ipv4(ipv4),
@@ -857,7 +873,7 @@ impl Forwarder {
                 // Send
                 self.send_ethernet(
                     *self
-                        .src_hardware_addr
+                        .src_hardware_addr_map
                         .get(&src_ip_addr)
                         .unwrap_or(&pcap::HARDWARE_ADDR_UNSPECIFIED),
                     Layers::Ipv4(ipv4),
@@ -1072,7 +1088,7 @@ const MAX_UDP_PORT: usize = 256;
 /// Represents a channel redirect traffic to the proxy or loopback to the source in pcap.
 pub struct Redirector {
     tx: Arc<Mutex<Forwarder>>,
-    is_tx_src_hardware_addr_set: bool,
+    tx_src_hardware_addr_set_ip_addr_set: HashSet<Ipv4Addr>,
     src_ip_addr: Ipv4Network,
     local_ip_addr: Ipv4Addr,
     gw_ip_addr: Option<Ipv4Addr>,
@@ -1098,7 +1114,7 @@ impl Redirector {
     ) -> Redirector {
         let redirector = Redirector {
             tx,
-            is_tx_src_hardware_addr_set: false,
+            tx_src_hardware_addr_set_ip_addr_set: HashSet::new(),
             src_ip_addr,
             local_ip_addr,
             gw_ip_addr,
@@ -1199,18 +1215,7 @@ impl Redirector {
                     );
 
                     // Set forwarder's hardware address
-                    if !self.is_tx_src_hardware_addr_set {
-                        self.tx
-                            .lock()
-                            .unwrap()
-                            .set_src_hardware_addr(src, arp.src_hardware_addr());
-                        self.is_tx_src_hardware_addr_set = true;
-                        info!(
-                            "Device {} ({}) joined the network",
-                            src,
-                            arp.src_hardware_addr()
-                        );
-                    }
+                    self.set_tx_hardware_addr(src, arp.src_hardware_addr());
 
                     // Send
                     self.tx.lock().unwrap().send_arp_reply(src)?;
@@ -1247,17 +1252,7 @@ impl Redirector {
                     indicator.content_len() - indicator.len()
                 );
                 // Set forwarder's hardware address
-                if !self.is_tx_src_hardware_addr_set {
-                    self.tx
-                        .lock()
-                        .unwrap()
-                        .set_src_hardware_addr(src, indicator.ethernet().unwrap().src());
-                    self.is_tx_src_hardware_addr_set = true;
-                    info!(
-                        "Device {} joined the network",
-                        indicator.ethernet().unwrap().src()
-                    );
-                }
+                self.set_tx_hardware_addr(src, indicator.ethernet().unwrap().src());
 
                 let frame_without_padding = &frame[..indicator.content_len()];
                 if ipv4.is_fragment() {
@@ -1807,5 +1802,16 @@ impl Redirector {
 
     fn get_tx(&self) -> Arc<Mutex<Forwarder>> {
         Arc::clone(&self.tx)
+    }
+
+    fn set_tx_hardware_addr(&mut self, ip_addr: Ipv4Addr, hardware_addr: HardwareAddr) {
+        if !self.tx_src_hardware_addr_set_ip_addr_set.contains(&ip_addr) {
+            self.tx
+                .lock()
+                .unwrap()
+                .set_src_hardware_addr(ip_addr, hardware_addr);
+            self.tx_src_hardware_addr_set_ip_addr_set.insert(ip_addr);
+            info!("Device {} ({}) joined the network", ip_addr, hardware_addr);
+        }
     }
 }
