@@ -128,7 +128,7 @@ pcap2socks has some defects in the view of engineering.
 
 - pcap2socks ignores checksums, lengths and some other fields in headers to support non-standard systems and LRO (large receive offload), but will also bring security issues.
 
-- pcap2socks works like a router but will redirect all traffic including local traffic, so local connections via pcap2socks and broadcasts will not work properly.
+- pcap2socks works like a router but will redirect all traffic including local traffic, so local connections via pcap2socks, multicastings and broadcastings will not work properly.
 
 - The structure of the `Redirector`, the `StreamWorker` & `DatagramWorker` and the `Forwarder` looks like a chaos. Caches and states should be located in the `StreamWorker` & `DatagramWorker` instead of the `Redirector` and the `Forwarder`.
 
