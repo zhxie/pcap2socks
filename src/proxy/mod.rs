@@ -66,7 +66,7 @@ const RECV_ZERO_WAIT: u64 = 100;
 const MAX_RECV_ZERO: usize = 3;
 
 /// Represents the interval of a tick.
-const TICK_INTERVAL: u64 = 1000;
+const TICK_INTERVAL: u64 = 500;
 
 /// Represents a worker of a proxied TCP stream.
 pub struct StreamWorker {

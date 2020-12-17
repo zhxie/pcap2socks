@@ -567,6 +567,7 @@ pub struct TcpTxState {
     acknowledgement: u32,
     window: u16,
     sacks: Option<Vec<(u32, u32)>>,
+    delayed_ack: bool,
     cache: Queue,
     cache_syn: Option<Instant>,
     cache_fin: Option<Timer>,
@@ -602,6 +603,7 @@ impl TcpTxState {
             acknowledgement,
             window: RECV_WINDOW,
             sacks: None,
+            delayed_ack: false,
             cache: Queue::with_capacity(
                 (RECV_WINDOW as usize) << wscale.unwrap_or(0) as usize,
                 sequence,
@@ -782,6 +784,28 @@ impl TcpTxState {
         trace!("update TCP FIN timer of {} -> {}", self.dst, self.src);
     }
 
+    /// Set the TCP delayed ACK to the cache of the TCP connection.
+    pub fn set_delayed_ack(&mut self) {
+        self.delayed_ack = true;
+
+        trace!(
+            "set TCP delayed ACK to TCP cache of {} -> {}",
+            self.dst,
+            self.src
+        );
+    }
+
+    /// Clears the TCP delayed ACK from the cache of the TCP connection.
+    pub fn clear_delayed_ack(&mut self) {
+        self.delayed_ack = false;
+
+        trace!(
+            "clear TCP delayed ACK to TCP cache of {} -> {}",
+            self.dst,
+            self.src
+        );
+    }
+
     /// Appends the payload from the queue to the cache of the TCP connection.
     pub fn append_cache(&mut self, size: usize) -> io::Result<Vec<u8>> {
         let payload = self.queue.drain(..size).collect::<Vec<_>>();
@@ -928,6 +952,11 @@ impl TcpTxState {
     /// Returns the SACKs of the TCP connection.
     pub fn sacks(&self) -> &Option<Vec<(u32, u32)>> {
         &self.sacks
+    }
+
+    /// Returns if the TCP delayed ACK exists of the TCP connection.
+    pub fn delayed_ack(&self) -> bool {
+        self.delayed_ack
     }
 
     /// Returns the cache of the TCP connection.

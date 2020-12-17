@@ -72,6 +72,9 @@ const ENABLE_RECV_SWS_AVOID: bool = true;
 /// Represents if the send-side silly window syndrome avoidance is enabled.
 const ENABLE_SEND_SWS_AVOID: bool = true;
 
+/// Represents if the delayed ACK is enabled.
+const ENABLE_DELAYED_ACK: bool = true;
+
 /// Represents if the TCP MSS option is enabled.
 const ENABLE_MSS: bool = true;
 
@@ -483,6 +486,14 @@ impl Forwarder {
             }
         }
 
+        // Delayed ACK0
+        let state = self
+            .get_state(dst, src)
+            .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
+        if state.delayed_ack() {
+            self.send_tcp_ack_0(dst, src)?;
+        }
+
         Ok(())
     }
 
@@ -618,10 +629,13 @@ impl Forwarder {
                 Some(payload),
             )?;
 
-            // Update TCP sequence
+            // Clear TCP delayed ACK
             let state = self
                 .get_state_mut(dst, src)
                 .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
+            state.clear_delayed_ack();
+
+            // Update TCP sequence
             let record_sequence = state.sequence();
             let sub_sequence = recv_next
                 .checked_sub(record_sequence)
@@ -631,6 +645,25 @@ impl Forwarder {
             }
 
             i = i + 1;
+        }
+
+        Ok(())
+    }
+
+    /// Sends an TCP delayed ACK packet without payload.
+    pub fn send_tcp_delay_ack_0(&mut self, dst: SocketAddrV4, src: SocketAddrV4) -> io::Result<()> {
+        if ENABLE_DELAYED_ACK {
+            let state = self
+                .get_state_mut(dst, src)
+                .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
+
+            if state.delayed_ack() {
+                self.send_tcp_ack_0(dst, src)?;
+            } else {
+                state.set_delayed_ack();
+            }
+        } else {
+            self.send_tcp_ack_0(dst, src)?;
         }
 
         Ok(())
@@ -653,7 +686,15 @@ impl Forwarder {
         );
 
         // Send
-        self.send_ipv4(dst.ip().clone(), src.ip().clone(), Layers::Tcp(tcp), None)
+        self.send_ipv4(dst.ip().clone(), src.ip().clone(), Layers::Tcp(tcp), None)?;
+
+        // Clear TCP delayed ACK
+        let state = self
+            .get_state_mut(dst, src)
+            .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
+        state.clear_delayed_ack();
+
+        Ok(())
     }
 
     fn send_tcp_ack_syn(&mut self, dst: SocketAddrV4, src: SocketAddrV4) -> io::Result<()> {
@@ -690,6 +731,12 @@ impl Forwarder {
         // Send
         self.send_ipv4(dst.ip().clone(), src.ip().clone(), Layers::Tcp(tcp), None)?;
 
+        // Clear TCP delayed ACK
+        let state = self
+            .get_state_mut(dst, src)
+            .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
+        state.clear_delayed_ack();
+
         Ok(())
     }
 
@@ -709,7 +756,15 @@ impl Forwarder {
         );
 
         // Send
-        self.send_ipv4(dst.ip().clone(), src.ip().clone(), Layers::Tcp(tcp), None)
+        self.send_ipv4(dst.ip().clone(), src.ip().clone(), Layers::Tcp(tcp), None)?;
+
+        // Clear TCP delayed ACK
+        let state = self
+            .get_state_mut(dst, src)
+            .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
+        state.clear_delayed_ack();
+
+        Ok(())
     }
 
     /// Sends an TCP RST packet.
@@ -1427,9 +1482,9 @@ impl Redirector {
                                     // Update TCP acknowledgement
                                     tx_state.add_acknowledgement(size as u32);
 
-                                    // Send ACK0
+                                    // Send delayed ACK0
                                     // If there is a heavy traffic, the ACK reported may be inaccurate, which would results in retransmission
-                                    tx_locked.send_tcp_ack_0(dst, src)?;
+                                    tx_locked.send_tcp_delay_ack_0(dst, src)?;
                                 }
                                 Err(e) => {
                                     {
