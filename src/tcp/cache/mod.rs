@@ -161,6 +161,7 @@ impl Queue {
                                     as usize
                                     <= MAX_U32_WINDOW_SIZE
                                 {
+                                    // Karn's algorithm
                                     rtt = None;
                                 }
                             }

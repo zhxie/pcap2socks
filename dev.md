@@ -32,6 +32,8 @@ This is the development documentation of pcap2socks.
 
 - pcap2socks does not support the timestamp ([RFC 7323](https://www.iana.org/go/rfc7323)) option. Since only the source and destination know the full information of the traffic, pcap2socks may not trace any packets and report their timestamp correctly.
 
+- pcap2socks does not realize Nagle's algorithm ([RFC 1122](https://tools.ietf.org/html/rfc1122)) for performance consideration.
+
 - pcap2socks does not realize the zero window probe ([RFC 1122](https://tools.ietf.org/html/rfc1122)) and does not report its window explicitly.
 
 - pcap2socks does not realize keep-alive ([RFC 1122](https://tools.ietf.org/html/rfc1122)) for performance consideration.
@@ -100,9 +102,9 @@ This is the development documentation of pcap2socks.
 
 `TIMEOUT_WAIT`: Same as above. Default as `20` ms.
 
-`ENABLE_RECV_SWS_AVOID`: Represents if the receive-side silly window syndrome avoidance ([RFC 1122](https://tools.ietf.org/html/rfc1122)) is enabled. Default as `true`.
+`ENABLE_RECV_SWS_AVOID`: Represents if the receive-side silly window syndrome avoidance, Clark's algorithm, ([RFC 1122](https://tools.ietf.org/html/rfc1122)) is enabled. Default as `true`.
 
-`ENABLE_SEND_SWS_AVOID`: Represents if the send-side silly window syndrome avoidance ([RFC 896](https://tools.ietf.org/html/rfc896)) is enabled. Default as `true`.
+`ENABLE_SEND_SWS_AVOID`: Represents if the send-side silly window syndrome avoidance, Clark's algorithm, ([RFC 896](https://tools.ietf.org/html/rfc896)) is enabled. Default as `true`.
 
 `ENABLE_DELAYED_ACK`: Represents if the delayed ACK ([RFC 1122](https://tools.ietf.org/html/rfc1122)) is enabled. Default as `true`.
 

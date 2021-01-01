@@ -67,9 +67,9 @@ const MAX_U32_WINDOW_SIZE: usize = 16 * 1024 * 1024;
 /// Represents the wait time after a `TimedOut` `IoError`.
 const TIMEDOUT_WAIT: u64 = 20;
 
-/// Represents if the receive-side silly window syndrome avoidance is enabled.
+/// Represents if the receive-side silly window syndrome avoidance, Clark's algorithm, is enabled.
 const ENABLE_RECV_SWS_AVOID: bool = true;
-/// Represents if the send-side silly window syndrome avoidance is enabled.
+/// Represents if the send-side silly window syndrome avoidance, Clark's algorithm, is enabled.
 const ENABLE_SEND_SWS_AVOID: bool = true;
 
 /// Represents if the delayed ACK is enabled.
