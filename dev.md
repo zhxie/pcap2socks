@@ -28,15 +28,15 @@ This is the development documentation of pcap2socks.
 
 - pcap2socks does not consider the wait time in states like `TIME_WAIT` since the source should maintain its state.
 
-- pcap2socks does not calculate for the window scale ([RFC 7323](https://tools.ietf.org/html/rfc7323)) option and will open a same-size receive window as the source by default.
-
-- pcap2socks does not support the timestamp ([RFC 7323](https://www.iana.org/go/rfc7323)) option. Since only the source and destination know the full information of the traffic, pcap2socks may not trace any packets and report their timestamp correctly.
-
 - pcap2socks does not realize Nagle's algorithm ([RFC 1122](https://tools.ietf.org/html/rfc1122)) for performance consideration.
 
 - pcap2socks does not realize the zero window probe ([RFC 1122](https://tools.ietf.org/html/rfc1122)) and does not report its window explicitly.
 
 - pcap2socks does not realize keep-alive ([RFC 1122](https://tools.ietf.org/html/rfc1122)) for performance consideration.
+
+- pcap2socks does not calculate for the window scale ([RFC 7323](https://tools.ietf.org/html/rfc7323)) option and will open a same-size receive window as the source by default.
+
+- pcap2socks does not support the timestamp ([RFC 7323](https://www.iana.org/go/rfc7323)) option. Since only the source and destination know the full information of the traffic, pcap2socks may not trace any packets and report their timestamp correctly.
 
 ## SOCKS5 Implementation
 
@@ -126,7 +126,9 @@ This is the development documentation of pcap2socks.
 
 pcap2socks has some defects in the view of engineering.
 
-- Because pcap2socks does not implement the zero window probe and the keep-alive in any TCP connections, the traffic transmission performance may be lost. However, since pcap2socks is mainly used in LANs, the actual impact may be minimal.
+- pcap2socks does not have any accurate timers, timeout event like retransmission will only be triggered by `TICK_INTERVAL` or specific event like ACK received, extra latency in retransmission may be included.
+
+- Because pcap2socks does not meet all [RFC 1122](https://tools.ietf.org/html/rfc1122) TCP musts and shoulds, the performance may be defected. However, since pcap2socks is mainly used in LANs, the actual impact may be minimal.
 
 - pcap2socks ignores checksums, lengths and some other fields in headers to support non-standard systems and LRO (large receive offload), but will also bring security issues.
 
