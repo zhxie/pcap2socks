@@ -64,6 +64,8 @@ This is the development documentation of pcap2socks.
 
 `TIMEOUT_WAIT`: Represents the wait time after a `TimedOut` `IoError`. If the I/O timed out, the thread will sleep for a certain time before a retry. Default as `20` ms.
 
+`QUEUE_FULL_WAIT`: Represents the wait time after a queue full event. Default as `200` ms.
+
 `RECV_ZERO_WAIT`: Represents the wait time after receiving 0 byte from the stream. A receiving zero indicates the stream is either be closed, or is just a temporary spurious wake up. The thread will sleep for a certain time before a retry. Default as `100` ms.
 
 `MAX_RECV_ZERO`: Represents the maximum count of receiving 0 byte from the stream before closing it. After an amount of receiving zeroes, the stream is likely to be closed. The stream will be recognized as closed and trigger a FIN. Default as `3`.
@@ -72,7 +74,7 @@ This is the development documentation of pcap2socks.
 
 ### Cache
 
-`MAX_U32_WINDOW_SIZE`: Represents the max distance of u32 values between packets in an u32 window. Data with sequence `1000` and sequence `101000` may be recognized as increment but discontinuous, but data with sequence `101000` and `1000` may be recognized as expired or out of order. The former example's seconds data will be pushed into the cache, while the latter's will be dropped. Default as `16777216` Bytes, or 16 MB.
+`MAX_U32_WINDOW_SIZE`: Represents the maximum distance of u32 values between packets in an u32 window. Data with sequence `1000` and sequence `101000` may be recognized as increment but discontinuous, but data with sequence `101000` and `1000` may be recognized as expired or out of order. The former example's seconds data will be pushed into the cache, while the latter's will be dropped. Default as `16777216` Bytes, or 16 MB.
 
 `ALLOC_IN_INITIAL`: Represents if the buffer should be allocated in the initial constructor of caches. Allocating the full buffer in the constructor may reduce the time overhead in future expansion of the vector, but will also lead to take more memory consumption. Default as `false`.
 
@@ -83,6 +85,8 @@ This is the development documentation of pcap2socks.
 `INITIAL_SSTHRESH_RATE`: Represents the initial slow start threshold rate for congestion window in a TCP connection. Default as `100` (100 MSS).
 
 `RECV_WINDOW`: Represents the receive window size. The actual window will be multiplied by `wscale`. Default as `65535` Bytes.
+
+`MAX_QUEUE`: Represents the maximum size of extra cache in a TCP connection. Default as `16777216` Bytes, or 16 MB. You may turn off the limitation of the queue by set the value to `usize::MAX`.
 
 `ENABLE_RTO_COMPUTE`: Represents if the RTO computation ([RFC 6298](https://tools.ietf.org/html/rfc6298)) is enabled. Default as `true`.
 

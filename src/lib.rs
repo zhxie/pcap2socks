@@ -1067,6 +1067,13 @@ impl ForwardStream for Forwarder {
 
         self.send_tcp(dst, src)
     }
+
+    fn check(&self, dst: SocketAddrV4, src: SocketAddrV4) -> io::Result<usize> {
+        let state = self
+            .get_state(dst, src)
+            .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
+        Ok(state.queue_remaining())
+    }
 }
 
 impl ForwardDatagram for Forwarder {

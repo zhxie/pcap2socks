@@ -538,6 +538,9 @@ impl Display for TcpCubicCcState {
 /// Represents the receive window size.
 const RECV_WINDOW: u16 = u16::MAX;
 
+/// Represents the maximum size of extra cache in a TCP connection.
+const MAX_QUEUE: usize = 16777216;
+
 /// Represents if the RTO computation is enabled.
 const ENABLE_RTO_COMPUTE: bool = true;
 /// Represents the initial timeout for a retransmission in a TCP connection.
@@ -987,6 +990,11 @@ impl TcpTxState {
     /// Returns if the TCP FIN is in the queue of the TCP connection.
     pub fn queue_fin(&self) -> bool {
         self.queue_fin
+    }
+
+    /// Returns the remaining size of the queue of the TCP connection.
+    pub fn queue_remaining(&self) -> usize {
+        MAX_QUEUE.checked_sub(self.queue().len()).unwrap_or(0)
     }
 
     /// Returns the RTO of the TCP connection.

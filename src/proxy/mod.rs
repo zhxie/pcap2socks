@@ -55,10 +55,15 @@ pub trait ForwardStream: Send {
 
     /// Closes a stream connection.
     fn close(&mut self, dst: SocketAddrV4, src: SocketAddrV4) -> io::Result<()>;
+
+    /// Checks the stream.
+    fn check(&self, dst: SocketAddrV4, src: SocketAddrV4) -> io::Result<usize>;
 }
 
 /// Represents the wait time after a `TimedOut` `IoError`.
 const TIMEDOUT_WAIT: u64 = 20;
+/// Represents the wait time after a queue full event.
+const QUEUE_FULL_WAIT: u64 = 200;
 
 /// Represents the wait time after receiving 0 byte from the stream.
 const RECV_ZERO_WAIT: u64 = 100;
@@ -202,8 +207,39 @@ impl StreamWorker {
                 }
 
                 if size > 0 {
-                    if let Err(ref e) = tx.lock().unwrap().forward(dst, src, &buffer[..size]) {
-                        warn!("handle receive: {}: {} -> {}: {}", "TCP", dst, 0, e);
+                    // Loop until the data was transferred to the forwarder
+                    let mut is_sent = false;
+                    loop {
+                        {
+                            let mut tx_locked = tx.lock().unwrap();
+                            match tx_locked.check(dst, src) {
+                                Ok(remaining) => {
+                                    // If the queue remains size
+                                    if remaining >= size {
+                                        if let Err(ref e) =
+                                            tx_locked.forward(dst, src, &buffer[..size])
+                                        {
+                                            warn!(
+                                                "handle receive: {}: {} -> {}: {}",
+                                                "TCP", dst, 0, e
+                                            );
+                                        }
+                                        is_sent = true;
+                                    }
+                                }
+                                Err(ref e) => {
+                                    is_sent = true;
+                                    warn!("handle receive: {}: {} -> {}: {}", "TCP", dst, 0, e)
+                                }
+                            }
+                        }
+
+                        if is_sent {
+                            break;
+                        } else {
+                            // Pause if the queue is full
+                            time::delay_for(Duration::from_millis(QUEUE_FULL_WAIT)).await;
+                        }
                     }
                 } else {
                     // Close
