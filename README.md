@@ -2,6 +2,8 @@
 
 **pcap2socks** is a proxy which redirect traffic to a SOCKS proxy with pcap written in Rust.
 
+You can use [pcap2socks GUI](https://github.com/zhxie/pcap2socks-gui) for a front-end interface.
+
 _pcap2socks is designed to accelerate games in game consoles._
 
 ## Features
