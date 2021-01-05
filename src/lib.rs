@@ -769,10 +769,29 @@ impl Forwarder {
         Ok(())
     }
 
-    /// Sends an TCP RST packet.
-    pub fn send_tcp_rst(&mut self, dst: SocketAddrV4, src: SocketAddrV4) -> io::Result<()> {
+    /// Sends an TCP ACK/RST packet of an untracked connection.
+    pub fn send_tcp_ack_rst_untracked(
+        &mut self,
+        dst: SocketAddrV4,
+        src: SocketAddrV4,
+        sequence: u32,
+    ) -> io::Result<()> {
         // TCP
-        let tcp = Tcp::new_rst(dst.port(), src.port(), 0, 0, 0, None);
+        let tcp = Tcp::new_ack_rst(dst.port(), src.port(), sequence, 0, 0, None);
+
+        // Send
+        self.send_ipv4(dst.ip().clone(), src.ip().clone(), Layers::Tcp(tcp), None)
+    }
+
+    /// Sends an TCP RST packet.
+    pub fn send_tcp_rst(
+        &mut self,
+        dst: SocketAddrV4,
+        src: SocketAddrV4,
+        sequence: u32,
+    ) -> io::Result<()> {
+        // TCP
+        let tcp = Tcp::new_rst(dst.port(), src.port(), sequence, 0, 0, None);
 
         // Send
         self.send_ipv4(dst.ip().clone(), src.ip().clone(), Layers::Tcp(tcp), None)
@@ -1212,7 +1231,7 @@ impl Redirector {
     ) -> io::Result<()> {
         // Send gratuitous ARP
         if self.gw_ip_addr.is_some() {
-            self.get_tx().lock().unwrap().send_gratuitous_arp()?;
+            self.tx.lock().unwrap().send_gratuitous_arp()?;
         }
 
         loop {
@@ -1501,12 +1520,8 @@ impl Redirector {
                                     tx_locked.send_tcp_delay_ack_0(dst, src)?;
                                 }
                                 Err(e) => {
-                                    {
-                                        // Send ACK/RST
-                                        let mut tx_locked = self.tx.lock().unwrap();
-
-                                        tx_locked.send_tcp_ack_rst(dst, src)?;
-                                    }
+                                    // Send ACK/RST
+                                    self.tx.lock().unwrap().send_tcp_ack_rst(dst, src)?;
 
                                     // Clean up
                                     self.clean_up(src, dst);
@@ -1533,8 +1548,8 @@ impl Redirector {
                         }
                     }
                 } else {
-                    // Send RST
-                    self.tx.lock().unwrap().send_tcp_rst(dst, src)?;
+                    // Send ACK/RST
+                    self.tx.lock().unwrap().send_tcp_ack_rst(dst, src)?;
 
                     // Clean up
                     self.clean_up(src, dst);
@@ -1596,8 +1611,11 @@ impl Redirector {
                 self.handle_tcp_fin(tcp, payload)?;
             }
         } else {
-            // Send RST
-            self.tx.lock().unwrap().send_tcp_rst(dst, src)?;
+            // Send ACK/RST
+            self.tx
+                .lock()
+                .unwrap()
+                .send_tcp_ack_rst_untracked(dst, src, tcp.acknowledgement())?;
         }
 
         Ok(())
@@ -1689,84 +1707,109 @@ impl Redirector {
     fn handle_tcp_rst(&mut self, tcp: &Tcp) {
         let src = SocketAddrV4::new(tcp.src_ip_addr(), tcp.src());
         let dst = SocketAddrV4::new(tcp.dst_ip_addr(), tcp.dst());
+        let key = (src, dst);
 
-        // Clean up
-        self.clean_up(src, dst);
+        if tcp.is_ack() {
+            match self.states.get(&key) {
+                Some(state) => {
+                    // Exam ACK
+                    if tcp.sequence() == state.recv_next() {
+                        // Admit RST
+                        // Clean up
+                        self.clean_up(src, dst);
+                    }
+                }
+                None => {
+                    // Clean up
+                    self.clean_up(src, dst);
+                }
+            }
+        } else {
+            // Clean up
+            self.clean_up(src, dst);
+        }
     }
 
     fn handle_tcp_fin(&mut self, tcp: &Tcp, payload: &[u8]) -> io::Result<()> {
         let src = SocketAddrV4::new(tcp.src_ip_addr(), tcp.src());
         let dst = SocketAddrV4::new(tcp.dst_ip_addr(), tcp.dst());
         let key = (src, dst);
+        let is_exist = self.streams.get(&key).is_some();
         let (is_writable, is_readable) = match self.streams.get(&key) {
             Some(stream) => (!stream.is_tx_closed(), !stream.is_rx_closed()),
             None => (false, false),
         };
 
-        if is_writable {
-            let state = self
-                .states
-                .get_mut(&key)
-                .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
-            if tcp.is_fin() {
-                // Update FIN sequence
-                state.set_fin_sequence(
-                    tcp.sequence()
-                        .checked_add(payload.len() as u32)
-                        .unwrap_or_else(|| payload.len() as u32 - (u32::MAX - tcp.sequence())),
-                );
-            }
-
-            // If the receive next is the same as the FIN sequence, the FIN should be popped
-            if let Some(fin_sequence) = state.fin_sequence() {
-                if fin_sequence == state.recv_next() {
-                    // Admit FIN
-                    state.admit_fin();
-                    state.add_recv_next(1);
-
-                    {
-                        let mut tx_locked = self.tx.lock().unwrap();
-                        let tx_state = tx_locked
-                            .get_state_mut(dst, src)
-                            .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
-
-                        tx_state.add_acknowledgement(1);
-
-                        // Send ACK0
-                        tx_locked.send_tcp_ack_0(dst, src)?;
-                    }
-                    if is_readable {
-                        // Close by local
-                        let stream = self
-                            .streams
-                            .get_mut(&key)
-                            .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
-                        stream.shutdown(Shutdown::Write);
-                    } else {
-                        // Close by remote
-                        // Clean up
-                        self.clean_up(src, dst);
-                    }
-                } else {
-                    trace!(
-                        "TCP out of order of {} -> {} at {}",
-                        src,
-                        dst,
+        if is_exist {
+            if is_writable {
+                let state = self
+                    .states
+                    .get_mut(&key)
+                    .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
+                if tcp.is_fin() {
+                    // Update FIN sequence
+                    state.set_fin_sequence(
                         tcp.sequence()
+                            .checked_add(payload.len() as u32)
+                            .unwrap_or_else(|| payload.len() as u32 - (u32::MAX - tcp.sequence())),
                     );
+                }
 
-                    if payload.len() == 0 {
-                        // Send ACK0
-                        self.tx.lock().unwrap().send_tcp_ack_0(dst, src)?;
+                // If the receive next is the same as the FIN sequence, the FIN should be popped
+                if let Some(fin_sequence) = state.fin_sequence() {
+                    if fin_sequence == state.recv_next() {
+                        // Admit FIN
+                        state.admit_fin();
+                        state.add_recv_next(1);
+
+                        {
+                            let mut tx_locked = self.tx.lock().unwrap();
+                            let tx_state = tx_locked
+                                .get_state_mut(dst, src)
+                                .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
+
+                            tx_state.add_acknowledgement(1);
+
+                            // Send ACK0
+                            tx_locked.send_tcp_ack_0(dst, src)?;
+                        }
+                        if is_readable {
+                            // Close by local
+                            let stream = self
+                                .streams
+                                .get_mut(&key)
+                                .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
+                            stream.shutdown(Shutdown::Write);
+                        } else {
+                            // Close by remote
+                            // Clean up
+                            self.clean_up(src, dst);
+                        }
+                    } else {
+                        trace!(
+                            "TCP out of order of {} -> {} at {}",
+                            src,
+                            dst,
+                            tcp.sequence()
+                        );
+
+                        if payload.len() == 0 {
+                            // Send ACK0
+                            self.tx.lock().unwrap().send_tcp_ack_0(dst, src)?;
+                        }
                     }
                 }
+            } else {
+                // Retransmission
+                // Send ACK0
+                self.tx.lock().unwrap().send_tcp_ack_0(dst, src)?;
             }
         } else {
-            // Send RST
-            self.tx.lock().unwrap().send_tcp_rst(dst, src)?;
-
-            // Clean up
-            self.clean_up(src, dst);
+            // Send ACK/RST
+            self.tx
+                .lock()
+                .unwrap()
+                .send_tcp_ack_rst_untracked(dst, src, tcp.acknowledgement())?;
         }
 
         Ok(())
