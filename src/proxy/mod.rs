@@ -5,8 +5,8 @@ use std::net::{Ipv4Addr, Shutdown, SocketAddrV4};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::OwnedWriteHalf;
-use tokio::prelude::*;
 use tokio::sync::mpsc::{self, Sender, UnboundedReceiver, UnboundedSender};
 use tokio::{self, io, time};
 
@@ -187,13 +187,13 @@ impl StreamWorker {
                                 if recv_zero > MAX_RECV_ZERO {
                                     size = 0;
                                 } else {
-                                    time::delay_for(Duration::from_millis(RECV_ZERO_WAIT)).await;
+                                    time::sleep(Duration::from_millis(RECV_ZERO_WAIT)).await;
                                     continue;
                                 }
                             },
                             Err(ref e) => {
                                 if e.kind() == io::ErrorKind::TimedOut {
-                                    time::delay_for(Duration::from_millis(TIMEDOUT_WAIT)).await;
+                                    time::sleep(Duration::from_millis(TIMEDOUT_WAIT)).await;
                                     continue;
                                 }
 
@@ -238,7 +238,7 @@ impl StreamWorker {
                             break;
                         } else {
                             // Pause if the queue is full
-                            time::delay_for(Duration::from_millis(QUEUE_FULL_WAIT)).await;
+                            time::sleep(Duration::from_millis(QUEUE_FULL_WAIT)).await;
                         }
                     }
                 } else {
@@ -258,7 +258,7 @@ impl StreamWorker {
         // Timeout
         tokio::spawn(async move {
             loop {
-                time::delay_for(Duration::from_millis(TICK_INTERVAL)).await;
+                time::sleep(Duration::from_millis(TICK_INTERVAL)).await;
                 // Send
                 if let Err(ref e) = tx_cloned.lock().unwrap().tick(dst, src) {
                     if e.kind() == io::ErrorKind::NotFound {
@@ -398,13 +398,13 @@ impl StreamWorker2 {
                                 if recv_zero > MAX_RECV_ZERO {
                                     size = 0;
                                 } else {
-                                    time::delay_for(Duration::from_millis(RECV_ZERO_WAIT)).await;
+                                    time::sleep(Duration::from_millis(RECV_ZERO_WAIT)).await;
                                     continue;
                                 }
                             },
                             Err(ref e) => {
                                 if e.kind() == io::ErrorKind::TimedOut {
-                                    time::delay_for(Duration::from_millis(TIMEDOUT_WAIT)).await;
+                                    time::sleep(Duration::from_millis(TIMEDOUT_WAIT)).await;
                                     continue;
                                 }
 
@@ -438,7 +438,7 @@ impl StreamWorker2 {
         // Timeout
         tokio::spawn(async move {
             loop {
-                time::delay_for(Duration::from_millis(TICK_INTERVAL)).await;
+                time::sleep(Duration::from_millis(TICK_INTERVAL)).await;
                 // Send
                 if let Err(ref e) = tx_cloned.lock().unwrap().tick(dst, src) {
                     if e.kind() == io::ErrorKind::NotFound {
@@ -630,7 +630,7 @@ impl DatagramWorker {
                                 },
                                 Err(ref e) => {
                                     if e.kind() == io::ErrorKind::TimedOut {
-                                        time::delay_for(Duration::from_millis(TIMEDOUT_WAIT)).await;
+                                        time::sleep(Duration::from_millis(TIMEDOUT_WAIT)).await;
                                         continue;
                                     }
 
@@ -782,7 +782,7 @@ impl DatagramWorker2 {
                                 },
                                 Err(ref e) => {
                                     if e.kind() == io::ErrorKind::TimedOut {
-                                        time::delay_for(Duration::from_millis(TIMEDOUT_WAIT)).await;
+                                        time::sleep(Duration::from_millis(TIMEDOUT_WAIT)).await;
                                         continue;
                                     }
 

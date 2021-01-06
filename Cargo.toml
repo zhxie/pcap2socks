@@ -13,7 +13,7 @@ categories = ["command-line-utilities", "network-programming"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-async-socks5 = "0.3.2"
+async-socks5 = "0.5.0"
 clap = "2.33.1"
 dns-lookup = "1.0.5"
 env_logger = "0.8.2"
@@ -23,7 +23,7 @@ lru = "0.6.3"
 pnet = "0.27.2"
 rand = "0.8.1"
 structopt = "0.3.21"
-tokio = { version = "0.2.24", features = ["macros", "rt-core", "rt-threaded", "sync", "tcp", "time", "udp"] }
+tokio = { version = "1.0.1", features = ["rt", "rt-multi-thread", "io-util", "net", "time", "macros", "sync"] }
 
 [target.'cfg(windows)'.dependencies]
 netifs = { git = "https://github.com/zhxie/netifs-rs" }

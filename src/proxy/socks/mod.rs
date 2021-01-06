@@ -3,7 +3,6 @@ use log::trace;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::Arc;
 use tokio::io::{self, BufStream};
-use tokio::net::udp::{RecvHalf, SendHalf};
 use tokio::net::{TcpStream, UdpSocket};
 
 /// Represents the username and the password of the authentication connecting to a SOCKS5 server.
@@ -81,13 +80,13 @@ const ATYP_IPV4: u8 = 1;
 #[derive(Debug)]
 pub struct SocksSendHalf {
     stream: Arc<BufStream<TcpStream>>,
-    send_half: SendHalf,
+    socket: Arc<UdpSocket>,
 }
 
 impl SocksSendHalf {
     /// Creates a new `SocksSendHalf`.
-    pub fn new(stream: Arc<BufStream<TcpStream>>, send_half: SendHalf) -> SocksSendHalf {
-        SocksSendHalf { stream, send_half }
+    pub fn new(stream: Arc<BufStream<TcpStream>>, socket: Arc<UdpSocket>) -> SocksSendHalf {
+        SocksSendHalf { stream, socket }
     }
 
     /// Sends data on the socket to the given address.
@@ -105,7 +104,7 @@ impl SocksSendHalf {
         // Data
         &buf[10..].copy_from_slice(payload);
 
-        self.send_half.send(buf.as_slice()).await
+        self.socket.send(buf.as_slice()).await
     }
 }
 
@@ -113,23 +112,23 @@ impl SocksSendHalf {
 #[derive(Debug)]
 pub struct SocksRecvHalf {
     stream: Arc<BufStream<TcpStream>>,
-    recv_half: RecvHalf,
+    socket: Arc<UdpSocket>,
     buffer: Vec<u8>,
 }
 
 impl SocksRecvHalf {
     /// Creates a new `SocksRecvHalf`.
-    pub fn new(stream: Arc<BufStream<TcpStream>>, recv_half: RecvHalf) -> SocksRecvHalf {
+    pub fn new(stream: Arc<BufStream<TcpStream>>, socket: Arc<UdpSocket>) -> SocksRecvHalf {
         SocksRecvHalf {
             stream,
-            recv_half,
+            socket,
             buffer: vec![0u8; u16::MAX as usize],
         }
     }
 
     /// Receives a single datagram message on the socket.
     pub async fn recv_from(&mut self, buffer: &mut [u8]) -> io::Result<(usize, SocketAddrV4)> {
-        let n = self.recv_half.recv(&mut self.buffer).await?;
+        let n = self.socket.recv(&mut self.buffer).await?;
         // ATYP and address
         match self.buffer[3] {
             ATYP_IPV4 => {}
@@ -208,14 +207,15 @@ pub async fn bind(
         );
     }
 
-    let (socket_rx, socket_tx) = socket.split();
-
     let a_stream = Arc::new(stream);
     let a_stream_cloned = Arc::clone(&a_stream);
 
+    let a_socket = Arc::new(socket);
+    let a_socket_cloned = Arc::clone(&a_socket);
+
     Ok((
-        SocksRecvHalf::new(a_stream, socket_rx),
-        SocksSendHalf::new(a_stream_cloned, socket_tx),
+        SocksRecvHalf::new(a_stream, a_socket),
+        SocksSendHalf::new(a_stream_cloned, a_socket_cloned),
         local_port,
     ))
 }
