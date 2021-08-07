@@ -14,3 +14,6 @@ Packet.lib
 
 # Configurations
 *.json
+
+# macOS directories
+.DS_Store

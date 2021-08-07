@@ -1,6 +1,6 @@
 [package]
 name = "pcap2socks"
-version = "0.6.1"
+version = "0.6.2"
 authors = ["Xie Zhihao <xzh1206@gmail.com>"]
 edition = "2018"
 description = "Redirect traffic to SOCKS proxy with pcap."
@@ -15,15 +15,15 @@ categories = ["command-line-utilities", "network-programming"]
 [dependencies]
 async-socks5 = "0.5.0"
 clap = "2.33.1"
-dns-lookup = "1.0.5"
-env_logger = "0.8.2"
-ipnetwork = "0.17.0"
-log = "0.4.11"
-lru = "0.6.3"
-pnet = "0.27.2"
-rand = "0.8.1"
-structopt = "0.3.21"
-tokio = { version = "1.0.1", features = ["rt", "rt-multi-thread", "io-util", "net", "time", "macros", "sync"] }
+dns-lookup = "1.0.8"
+env_logger = "0.9.0"
+ipnetwork = "0.18.0"
+log = "0.4.14"
+lru = "0.6.6"
+pnet = "0.28.0"
+rand = "0.8.4"
+structopt = "0.3.22"
+tokio = { version = "1.9.0", features = ["rt", "rt-multi-thread", "io-util", "net", "time", "macros", "sync"] }
 
 [target.'cfg(windows)'.dependencies]
 netifs = { git = "https://github.com/zhxie/netifs-rs" }
