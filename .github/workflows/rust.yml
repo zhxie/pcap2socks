@@ -33,3 +33,10 @@ jobs:
       with:
         name: pcap2socks-latest-${{ runner.os }}-amd64
         path: ./target/release/pcap2socks
+      if: matrix.os != 'windows-latest'
+    - name: Update a build artifact (Windows)
+      uses: actions/upload-artifact@v2
+      with:
+        name: pcap2socks-latest-${{ runner.os }}-amd64
+        path: ./target/release/pcap2socks.exe
+      if: matrix.os == 'windows-latest'
