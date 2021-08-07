@@ -12,11 +12,18 @@ jobs:
     strategy:
       matrix:
         os:
+          - windows-latest
           - ubuntu-latest
           - macos-latest
 
     steps:
     - uses: actions/checkout@v2
+    - name: Download dependencies
+      run:  |
+            Invoke-WebRequest -OutFile WpdPack.zip https://www.winpcap.org/install/bin/WpdPack_4_1_2.zip
+            7z x WpdPack.zip
+            cp WpdPack/Lib/x64/Packet.lib Packet.lib
+      if: matrix.os == 'windows-latest'
     - name: Build
       run: cargo build --release --verbose
     - name: Run tests
@@ -26,3 +33,10 @@ jobs:
       with:
         name: pcap2socks-latest-${{ runner.os }}-amd64
         path: ./target/release/pcap2socks
+      if: matrix.os != 'windows-latest'
+    - name: Update a build artifact (Windows)
+      uses: actions/upload-artifact@v2
+      with:
+        name: pcap2socks-latest-${{ runner.os }}-amd64
+        path: ./target/release/pcap2socks.exe
+      if: matrix.os == 'windows-latest'
