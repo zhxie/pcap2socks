@@ -122,6 +122,7 @@ async fn main() {
             flags.force_associate_bind_addr,
             auth,
         ),
+        None,
     );
     match flags.username {
         Some(username) => info!("Proxy {} to {}@{}", src, username, flags.dst),

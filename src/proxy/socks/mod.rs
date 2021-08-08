@@ -1,3 +1,5 @@
+//! Support for handling SOCKS proxies.
+
 use async_socks5::{self, AddrKind, Auth};
 use log::trace;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
