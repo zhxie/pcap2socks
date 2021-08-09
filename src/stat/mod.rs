@@ -4,6 +4,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
 /// Represents the traffic statistics.
+#[derive(Clone, Debug)]
 pub struct Traffic {
     size: Arc<AtomicUsize>,
     count: Arc<AtomicUsize>,
