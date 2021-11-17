@@ -1092,7 +1092,11 @@ impl TcpRxState {
 
     /// Admits the acknowledgement of the TCP connection.
     pub fn admit(&mut self, acknowledgement: u32) {
-        if self.acknowledgement == acknowledgement {
+        let sub_acknowledgement = acknowledgement
+            .checked_sub(self.acknowledgement)
+            .unwrap_or_else(|| acknowledgement + (u32::MAX - self.acknowledgement) + 1)
+            as usize;
+        if sub_acknowledgement > MAX_U32_WINDOW_SIZE || sub_acknowledgement == 0 {
             self.duplicate = self.duplicate.checked_add(1).unwrap_or(usize::MAX);
             trace!(
                 "increase TCP duplicate of {} -> {} at {} to {}",
