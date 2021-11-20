@@ -93,7 +93,7 @@ impl Queue {
         let sequence = self
             .sequence
             .checked_add(self.size as u32)
-            .unwrap_or_else(|| self.size as u32 - (u32::MAX - self.sequence));
+            .unwrap_or_else(|| self.size as u32 - (u32::MAX - self.sequence) - 1);
         self.clocks.push_back((sequence, Timer::new(rto)));
 
         // From the tail to the end of the buffer
@@ -116,7 +116,8 @@ impl Queue {
     pub fn invalidate_to(&mut self, sequence: u32) -> Option<Duration> {
         let size = sequence
             .checked_sub(self.sequence)
-            .unwrap_or_else(|| u32::MAX - self.sequence + sequence) as usize;
+            .unwrap_or_else(|| sequence + (u32::MAX - self.sequence) + 1)
+            as usize;
 
         if size <= MAX_U32_WINDOW_SIZE as usize {
             self.sequence = sequence;
@@ -133,7 +134,7 @@ impl Queue {
             while !self.clocks.is_empty() {
                 let dist = sequence
                     .checked_sub(self.clocks[0].0)
-                    .unwrap_or_else(|| sequence + (u32::MAX - self.clocks[0].0))
+                    .unwrap_or_else(|| sequence + (u32::MAX - self.clocks[0].0) + 1)
                     as usize;
                 let recv_next = match self.clocks.len() {
                     1 => self.recv_next(),
@@ -141,7 +142,7 @@ impl Queue {
                 };
                 let dist_next = sequence
                     .checked_sub(recv_next)
-                    .unwrap_or_else(|| sequence + (u32::MAX - recv_next))
+                    .unwrap_or_else(|| sequence + (u32::MAX - recv_next) + 1)
                     as usize;
 
                 if dist <= MAX_U32_WINDOW_SIZE as usize && dist_next <= MAX_U32_WINDOW_SIZE as usize
@@ -157,7 +158,7 @@ impl Queue {
                             if let Some(retrans) = self.retrans {
                                 if retrans
                                     .checked_sub(sequence)
-                                    .unwrap_or_else(|| retrans + (u32::MAX - sequence))
+                                    .unwrap_or_else(|| retrans + (u32::MAX - sequence) + 1)
                                     as usize
                                     <= MAX_U32_WINDOW_SIZE
                                 {
@@ -182,7 +183,7 @@ impl Queue {
                 if self
                     .sequence
                     .checked_sub(retrans)
-                    .unwrap_or_else(|| self.sequence + (u32::MAX - retrans))
+                    .unwrap_or_else(|| self.sequence + (u32::MAX - retrans) + 1)
                     as usize
                     <= MAX_U32_WINDOW_SIZE
                 {
@@ -203,7 +204,7 @@ impl Queue {
         }
         let distance = sequence
             .checked_sub(self.sequence)
-            .unwrap_or_else(|| sequence + (u32::MAX - self.sequence))
+            .unwrap_or_else(|| sequence + (u32::MAX - self.sequence) + 1)
             as usize;
         if distance > self.size {
             return Err(Error::new(
@@ -253,7 +254,7 @@ impl Queue {
             Some(recv_next) => {
                 let size = recv_next
                     .checked_sub(self.sequence)
-                    .unwrap_or_else(|| recv_next + (u32::MAX - self.sequence))
+                    .unwrap_or_else(|| recv_next + (u32::MAX - self.sequence) + 1)
                     as usize;
 
                 self.get(self.sequence, size).unwrap()
@@ -278,7 +279,7 @@ impl Queue {
             Some(recv_next) => {
                 let size = recv_next
                     .checked_sub(self.sequence)
-                    .unwrap_or_else(|| recv_next + (u32::MAX - self.sequence))
+                    .unwrap_or_else(|| recv_next + (u32::MAX - self.sequence) + 1)
                     as usize;
 
                 // Update clock
@@ -286,7 +287,7 @@ impl Queue {
                     let next_sequence = self.clocks.front().unwrap().0;
                     if recv_next
                         .checked_sub(next_sequence)
-                        .unwrap_or_else(|| recv_next + (u32::MAX - next_sequence))
+                        .unwrap_or_else(|| recv_next + (u32::MAX - next_sequence) + 1)
                         as usize
                         <= MAX_U32_WINDOW_SIZE
                     {
@@ -335,7 +336,7 @@ impl Queue {
     fn tail(&self) -> usize {
         self.head
             .checked_add(self.size)
-            .unwrap_or_else(|| self.size - (self.buffer.len() - self.head))
+            .unwrap_or_else(|| self.size - (self.buffer.len() - self.head) - 1)
             .checked_rem(self.buffer.len())
             .unwrap_or(0)
     }
@@ -344,7 +345,7 @@ impl Queue {
     pub fn recv_next(&self) -> u32 {
         self.sequence
             .checked_add(self.size as u32)
-            .unwrap_or_else(|| self.size as u32 - (u32::MAX - self.sequence))
+            .unwrap_or_else(|| self.size as u32 - (u32::MAX - self.sequence) - 1)
     }
 
     /// Returns if the queue is empty.
@@ -484,21 +485,21 @@ impl Window {
     pub fn append(&mut self, sequence: u32, payload: &[u8]) -> Result<Option<Vec<u8>>> {
         let sub_sequence = sequence
             .checked_sub(self.sequence)
-            .unwrap_or_else(|| sequence + (u32::MAX - self.sequence))
+            .unwrap_or_else(|| sequence + (u32::MAX - self.sequence) + 1)
             as usize;
         let (sequence, payload, sub_sequence) = if sub_sequence > MAX_U32_WINDOW_SIZE {
             let recv_next = sequence
                 .checked_add(payload.len() as u32)
-                .unwrap_or_else(|| payload.len() as u32 - (u32::MAX - sequence));
+                .unwrap_or_else(|| payload.len() as u32 - (u32::MAX - sequence) - 1);
             let sub_recv_next_to_sequence = recv_next
                 .checked_sub(self.sequence)
-                .unwrap_or_else(|| sequence + (u32::MAX - recv_next));
+                .unwrap_or_else(|| sequence + (u32::MAX - recv_next) + 1);
 
             if sub_recv_next_to_sequence as usize <= MAX_U32_WINDOW_SIZE {
                 let sub_sequence = self
                     .sequence
                     .checked_sub(sequence)
-                    .unwrap_or_else(|| self.sequence + (u32::MAX - sequence));
+                    .unwrap_or_else(|| self.sequence + (u32::MAX - sequence) + 1);
                 (self.sequence, &payload[sub_sequence as usize..], 0)
             } else {
                 return Ok(None);
@@ -533,7 +534,7 @@ impl Window {
                 .map(|(sequence, &size)| {
                     let sub_sequence = sequence
                         .checked_sub(self.sequence as u64)
-                        .unwrap_or_else(|| sequence + (u32::MAX - self.sequence) as u64)
+                        .unwrap_or_else(|| sequence + (u32::MAX - self.sequence) as u64 + 1)
                         as usize;
                     let mut begin = self.get_tail(self.head, sub_sequence, prev_len);
                     let end = self.get_tail(begin, size, prev_len);
@@ -581,14 +582,14 @@ impl Window {
         // Update size
         let recv_next = sequence
             .checked_add(payload.len() as u32)
-            .unwrap_or_else(|| payload.len() as u32 - (u32::MAX - sequence));
+            .unwrap_or_else(|| payload.len() as u32 - (u32::MAX - sequence) - 1);
         let record_recv_next = self
             .sequence
             .checked_add(self.size as u32)
-            .unwrap_or_else(|| self.size as u32 - (u32::MAX - self.sequence));
+            .unwrap_or_else(|| self.size as u32 - (u32::MAX - self.sequence) - 1);
         let sub_recv_next = recv_next
             .checked_sub(record_recv_next)
-            .unwrap_or_else(|| recv_next + (u32::MAX - record_recv_next));
+            .unwrap_or_else(|| recv_next + (u32::MAX - record_recv_next) + 1);
         if sub_recv_next as usize <= MAX_U32_WINDOW_SIZE {
             self.size += sub_recv_next as usize;
         }
@@ -675,7 +676,7 @@ impl Window {
             self.sequence = self
                 .sequence
                 .checked_add(size as u32)
-                .unwrap_or_else(|| size as u32 - (u32::MAX - self.sequence));
+                .unwrap_or_else(|| size as u32 - (u32::MAX - self.sequence) - 1);
             self.head = (self.head + (size % self.buffer.len())) % self.buffer.len();
             self.size -= cont_payload.len();
 
@@ -699,7 +700,7 @@ impl Window {
     pub fn recv_next(&self) -> u32 {
         self.sequence
             .checked_add(self.size as u32)
-            .unwrap_or_else(|| self.size as u32 - (u32::MAX - self.sequence))
+            .unwrap_or_else(|| self.size as u32 - (u32::MAX - self.sequence) - 1)
     }
 
     /// Returns the remaining size of the window.
@@ -714,7 +715,7 @@ impl Window {
     fn get_tail(&self, head: usize, size: usize, max: usize) -> usize {
         let mod_sub_sequence = size.checked_rem(max).unwrap_or(0);
         head.checked_add(mod_sub_sequence)
-            .unwrap_or_else(|| mod_sub_sequence - (max - head))
+            .unwrap_or_else(|| mod_sub_sequence - (max - head) - 1)
             .checked_rem(max)
             .unwrap_or(0)
     }
@@ -726,7 +727,7 @@ impl Window {
             let begin = sequence.checked_sub(u32::MAX as u64).unwrap_or(sequence) as u32;
             let end = begin
                 .checked_add(size as u32)
-                .unwrap_or_else(|| size as u32 - (u32::MAX - begin));
+                .unwrap_or_else(|| size as u32 - (u32::MAX - begin) - 1);
             v.push((begin, end));
         }
 
@@ -753,7 +754,7 @@ impl Display for Window {
         self.edges.iter().for_each(|(sequence, &size)| {
             let sub_sequence = sequence
                 .checked_sub(self.sequence as u64)
-                .unwrap_or_else(|| sequence + (u32::MAX - self.sequence) as u64)
+                .unwrap_or_else(|| sequence + (u32::MAX - self.sequence) as u64 + 1)
                 as usize;
             let begin = self.get_tail(head, sub_sequence, self.buffer.len());
             let end = self

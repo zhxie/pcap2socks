@@ -380,7 +380,8 @@ impl Forwarder {
             let size = range
                 .1
                 .checked_sub(range.0)
-                .unwrap_or_else(|| range.1 + (u32::MAX - range.0)) as usize;
+                .unwrap_or_else(|| range.1 + (u32::MAX - range.0) + 1)
+                as usize;
             let state = self
                 .get_state(dst, src)
                 .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
@@ -440,6 +441,7 @@ impl Forwarder {
             .get_state_mut(dst, src)
             .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
         let next_rto = state.next_rto();
+        // TODO: miss retransmission timed out packets refer to issue #21
         let payload = state.cache_mut().get_timed_out_and_update(next_rto);
         let sequence = state.cache().sequence();
         let size = state.cache().len();
@@ -601,10 +603,10 @@ impl Forwarder {
             let payload = &payload[i * mss..i * mss + size];
             let sequence = sequence
                 .checked_add((i * mss) as u32)
-                .unwrap_or_else(|| (i * mss) as u32 - (u32::MAX - sequence));
+                .unwrap_or_else(|| (i * mss) as u32 - (u32::MAX - sequence) - 1);
             let mut recv_next = sequence
                 .checked_add(size as u32)
-                .unwrap_or_else(|| size as u32 - (u32::MAX - sequence));
+                .unwrap_or_else(|| size as u32 - (u32::MAX - sequence) - 1);
 
             // TCP
             let tcp;
@@ -650,7 +652,7 @@ impl Forwarder {
             let record_sequence = state.sequence();
             let sub_sequence = recv_next
                 .checked_sub(record_sequence)
-                .unwrap_or_else(|| recv_next + (u32::MAX - record_sequence));
+                .unwrap_or_else(|| recv_next + (u32::MAX - record_sequence) + 1);
             if (sub_sequence as usize) <= MAX_U32_WINDOW_SIZE {
                 state.add_sequence(sub_sequence);
             }
@@ -1114,15 +1116,15 @@ fn disjoint_u32_range(main: (u32, u32), sub: (u32, u32)) -> Vec<(u32, u32)> {
     let size_main = main
         .1
         .checked_sub(main.0)
-        .unwrap_or_else(|| main.1 + (u32::MAX - main.0)) as usize;
+        .unwrap_or_else(|| main.1 + (u32::MAX - main.0) + 1) as usize;
     let diff_first = sub
         .0
         .checked_sub(main.0)
-        .unwrap_or_else(|| sub.0 + (u32::MAX - main.0)) as usize;
+        .unwrap_or_else(|| sub.0 + (u32::MAX - main.0) + 1) as usize;
     let diff_second = sub
         .1
         .checked_sub(main.1)
-        .unwrap_or_else(|| sub.1 + (u32::MAX - main.1)) as usize;
+        .unwrap_or_else(|| sub.1 + (u32::MAX - main.1) + 1) as usize;
     let mut vector = Vec::with_capacity(2);
 
     if diff_first <= MAX_U32_WINDOW_SIZE {
@@ -1145,7 +1147,7 @@ fn disjoint_u32_range(main: (u32, u32), sub: (u32, u32)) -> Vec<(u32, u32)> {
             let diff = sub
                 .1
                 .checked_sub(main.0)
-                .unwrap_or_else(|| sub.1 + (u32::MAX - main.0)) as usize;
+                .unwrap_or_else(|| sub.1 + (u32::MAX - main.0) + 1) as usize;
             if diff > MAX_U32_WINDOW_SIZE {
                 // sub is in the left of the main
                 vector.push((main.0, main.1));
@@ -1750,7 +1752,9 @@ impl Redirector {
                     state.set_fin_sequence(
                         tcp.sequence()
                             .checked_add(payload.len() as u32)
-                            .unwrap_or_else(|| payload.len() as u32 - (u32::MAX - tcp.sequence())),
+                            .unwrap_or_else(|| {
+                                payload.len() as u32 - (u32::MAX - tcp.sequence()) - 1
+                            }),
                     );
                 }
 

@@ -133,7 +133,7 @@ impl TcpTahoeCcState {
         self.cwnd_count = self
             .cwnd_count
             .checked_add(size_mod)
-            .unwrap_or_else(|| size_mod - (self.cwnd - self.cwnd_count))
+            .unwrap_or_else(|| size_mod - (self.cwnd - self.cwnd_count) - 1)
             % self.cwnd;
 
         if size >= remain {
@@ -254,7 +254,7 @@ impl TcpRenoCcState {
         self.cwnd_count = self
             .cwnd_count
             .checked_add(size_mod)
-            .unwrap_or_else(|| size_mod - (self.cwnd - self.cwnd_count))
+            .unwrap_or_else(|| size_mod - (self.cwnd - self.cwnd_count) - 1)
             % self.cwnd;
 
         if size >= remain {
@@ -433,7 +433,7 @@ impl TcpCubicCcState {
         self.cwnd_count = self
             .cwnd_count
             .checked_add(size_mod)
-            .unwrap_or_else(|| size_mod - (self.cwnd - self.cwnd_count))
+            .unwrap_or_else(|| size_mod - (self.cwnd - self.cwnd_count) - 1)
             % self.cwnd;
 
         if size >= remain {
@@ -646,7 +646,7 @@ impl TcpTxState {
         self.sequence = self
             .sequence
             .checked_add(n)
-            .unwrap_or_else(|| n - (u32::MAX - self.sequence));
+            .unwrap_or_else(|| n - (u32::MAX - self.sequence) - 1);
         trace!(
             "add TCP sequence of {} -> {} to {}",
             self.dst,
@@ -660,7 +660,7 @@ impl TcpTxState {
         self.acknowledgement = self
             .acknowledgement
             .checked_add(n)
-            .unwrap_or_else(|| n - (u32::MAX - self.acknowledgement));
+            .unwrap_or_else(|| n - (u32::MAX - self.acknowledgement) - 1);
         trace!(
             "add TCP acknowledgement of {} -> {} to {}",
             self.dst,
@@ -706,7 +706,7 @@ impl TcpTxState {
             let send_next = self.sequence;
             if sequence
                 .checked_sub(send_next)
-                .unwrap_or_else(|| sequence + (u32::MAX - send_next)) as usize
+                .unwrap_or_else(|| sequence + (u32::MAX - send_next) + 1) as usize
                 <= MAX_U32_WINDOW_SIZE
             {
                 rtt = Some(instant.elapsed());
@@ -722,7 +722,7 @@ impl TcpTxState {
         // ACK
         let sub_sequence = sequence
             .checked_sub(self.cache.sequence())
-            .unwrap_or_else(|| sequence + (u32::MAX - self.cache.sequence()));
+            .unwrap_or_else(|| sequence + (u32::MAX - self.cache.sequence()) + 1);
         if sub_sequence > 0 && sub_sequence as usize <= MAX_U32_WINDOW_SIZE {
             // Invalidate cache
             let cache_rtt = self.cache.invalidate_to(sequence);
@@ -749,7 +749,7 @@ impl TcpTxState {
         if let Some(timer) = self.cache_fin {
             if sequence
                 .checked_sub(self.cache.recv_next())
-                .unwrap_or_else(|| sequence + (u32::MAX - self.cache.recv_next()))
+                .unwrap_or_else(|| sequence + (u32::MAX - self.cache.recv_next()) + 1)
                 as usize
                 <= MAX_U32_WINDOW_SIZE
             {
@@ -1081,7 +1081,7 @@ impl TcpRxState {
         self.recv_next = self
             .recv_next
             .checked_add(n)
-            .unwrap_or_else(|| n - (u32::MAX - self.recv_next));
+            .unwrap_or_else(|| n - (u32::MAX - self.recv_next) - 1);
         trace!(
             "add TCP receive next of {} -> {} to {}",
             self.src,
