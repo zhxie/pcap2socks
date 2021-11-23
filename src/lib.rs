@@ -445,6 +445,14 @@ impl Forwarder {
         let payload = state.cache_mut().get_timed_out_and_update(next_rto);
         let sequence = state.cache().sequence();
         let size = state.cache().len();
+        trace!(
+            "[issue #21] check retransmit TCP {} -> {}, next_rto: {}, sequence: {}, size: {}",
+            dst,
+            src,
+            next_rto,
+            sequence,
+            size
+        );
 
         if size > 0 {
             if payload.len() > 0 {
