@@ -287,10 +287,17 @@ impl Logger {
                     .set_bold(true)
                     .set_color(Color::Yellow)
                     .value("warning: "),
-                Level::Info => style.set_bold(true).set_color(Color::Green).value(""),
-                _ => style.set_color(Color::Rgb(165, 165, 165)).value(""),
+                Level::Info => style.set_bold(true).value(""),
+                Level::Debug => style.set_bold(true).value("debug: "),
+                Level::Trace => style.set_bold(true).value("trace: "),
             };
-            writeln!(buf, "{}{}", level, record.args())
+            writeln!(
+                buf,
+                "[{}] {}{}",
+                chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+                level,
+                record.args()
+            )
         };
 
         let stderr_logger = env_logger::builder()

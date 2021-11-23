@@ -260,11 +260,16 @@ impl StreamWorker {
             loop {
                 time::sleep(Duration::from_millis(TICK_INTERVAL)).await;
                 // Send
-                if let Err(ref e) = tx_cloned.lock().unwrap().tick(dst, src) {
-                    if e.kind() == io::ErrorKind::NotFound {
-                        return;
+                match tx_cloned.lock().unwrap().tick(dst, src) {
+                    Ok(()) => {
+                        trace!("tick from proxy: {}: {} -> {}", "TCP", dst, 0);
                     }
-                    warn!("handle timeout: {}: {} -> {}: {}", "TCP", dst, 0, e);
+                    Err(ref e) => {
+                        if e.kind() == io::ErrorKind::NotFound {
+                            return;
+                        }
+                        warn!("handle timeout: {}: {} -> {}: {}", "TCP", dst, 0, e);
+                    }
                 }
             }
         });
@@ -440,11 +445,16 @@ impl StreamWorker2 {
             loop {
                 time::sleep(Duration::from_millis(TICK_INTERVAL)).await;
                 // Send
-                if let Err(ref e) = tx_cloned.lock().unwrap().tick(dst, src) {
-                    if e.kind() == io::ErrorKind::NotFound {
-                        return;
+                match tx_cloned.lock().unwrap().tick(dst, src) {
+                    Ok(()) => {
+                        trace!("tick from proxy: {}: {} -> {}", "TCP", dst, 0);
                     }
-                    warn!("handle timeout: {}: {} -> {}: {}", "TCP", dst, 0, e);
+                    Err(ref e) => {
+                        if e.kind() == io::ErrorKind::NotFound {
+                            return;
+                        }
+                        warn!("handle timeout: {}: {} -> {}: {}", "TCP", dst, 0, e);
+                    }
                 }
             }
         });
