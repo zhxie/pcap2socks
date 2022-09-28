@@ -48,7 +48,7 @@ impl Tcp {
         // TCP options
         let is_ts = ts.is_some();
         let is_sacks = match sacks {
-            Some(ref sacks) => sacks.len() > 0,
+            Some(ref sacks) => !sacks.is_empty(),
             None => false,
         };
 
@@ -59,9 +59,10 @@ impl Tcp {
             // Trim sacks
             let size = min(3, sacks.len());
             let mut vector = Vec::with_capacity(size * 2);
-            for i in 0..size {
-                vector.push(sacks[i].0);
-                vector.push(sacks[i].1);
+
+            for (a, b) in sacks.into_iter().take(size) {
+                vector.push(a);
+                vector.push(b);
             }
 
             d_tcp.data_offset += 3 + vector.len() as u8;
@@ -82,9 +83,9 @@ impl Tcp {
             // Trim sacks
             let size = min(4, sacks.len());
             let mut vector = Vec::with_capacity(size * 2);
-            for i in 0..size {
-                vector.push(sacks[i].0);
-                vector.push(sacks[i].1);
+            for (a, b) in sacks.into_iter().take(size) {
+                vector.push(a);
+                vector.push(b);
             }
 
             d_tcp.data_offset += 1 + vector.len() as u8;
@@ -98,6 +99,7 @@ impl Tcp {
     }
 
     /// Creates a `Tcp` represents a TCP ACK/SYN.
+    #[allow(clippy::too_many_arguments)]
     pub fn new_ack_syn(
         src: u16,
         dst: u16,
@@ -277,18 +279,18 @@ impl Tcp {
     pub fn flag_string(&self) -> String {
         let mut flags = String::from("[");
         if self.is_syn() {
-            flags = flags + "S";
+            flags += "S";
         }
         if self.is_rst() {
-            flags = flags + "R";
+            flags += "R";
         }
         if self.is_fin() {
-            flags = flags + "F";
+            flags += "F";
         }
         if self.is_ack() {
-            flags = flags + ".";
+            flags += ".";
         }
-        flags = flags + "]";
+        flags += "]";
 
         flags
     }
@@ -302,8 +304,10 @@ impl Tcp {
     pub fn mss(&self) -> Option<u16> {
         let mut buffer = vec![0u8; 40];
         let mut packet = MutableTcpOptionPacket::new(buffer.as_mut_slice()).unwrap();
-        for ref option in &self.layer.options {
+        for option in &self.layer.options {
             packet.populate(option);
+
+            #[allow(clippy::single_match)]
             match packet.get_number() {
                 TcpOptionNumbers::MSS => {
                     let mss = bytes_to_u16(&buffer[2..4]);
@@ -321,11 +325,13 @@ impl Tcp {
     pub fn wscale(&self) -> Option<u8> {
         let mut buffer = vec![0u8; 40];
         let mut packet = MutableTcpOptionPacket::new(buffer.as_mut_slice()).unwrap();
-        for ref option in &self.layer.options {
+        for option in &self.layer.options {
             packet.populate(option);
+
+            #[allow(clippy::single_match)]
             match packet.get_number() {
                 TcpOptionNumbers::WSCALE => {
-                    let wscale = *&buffer[2];
+                    let wscale = buffer[2];
 
                     return Some(wscale);
                 }
@@ -341,8 +347,10 @@ impl Tcp {
     pub fn sack(&self) -> Option<Vec<(u32, u32)>> {
         let mut buffer = vec![0u8; 40];
         let mut packet = MutableTcpOptionPacket::new(buffer.as_mut_slice()).unwrap();
-        for ref option in &self.layer.options {
+        for option in &self.layer.options {
             packet.populate(option);
+
+            #[allow(clippy::single_match)]
             match packet.get_number() {
                 TcpOptionNumbers::SACK => {
                     let mut vector = Vec::with_capacity(4);
@@ -367,8 +375,10 @@ impl Tcp {
     pub fn ts(&self) -> Option<u32> {
         let mut buffer = vec![0u8; 40];
         let mut packet = MutableTcpOptionPacket::new(buffer.as_mut_slice()).unwrap();
-        for ref option in &self.layer.options {
+        for option in &self.layer.options {
             packet.populate(option);
+
+            #[allow(clippy::single_match)]
             match packet.get_number() {
                 TcpOptionNumbers::TIMESTAMPS => {
                     let ts = bytes_to_u32(&buffer[2..6]);
@@ -387,8 +397,10 @@ impl Tcp {
     pub fn ts_ecr(&self) -> Option<u32> {
         let mut buffer = vec![0u8; 40];
         let mut packet = MutableTcpOptionPacket::new(buffer.as_mut_slice()).unwrap();
-        for ref option in &self.layer.options {
+        for option in &self.layer.options {
             packet.populate(option);
+
+            #[allow(clippy::single_match)]
             match packet.get_number() {
                 TcpOptionNumbers::TIMESTAMPS => {
                     let ts = bytes_to_u32(&buffer[6..10]);
@@ -440,7 +452,8 @@ impl Tcp {
     /// Returns if the layer indicates selective acknowledgements permitted. This function
     /// allocates space for serializing options.
     pub fn is_sack_perm(&self) -> bool {
-        for ref option in &self.layer.options {
+        for option in &self.layer.options {
+            #[allow(clippy::single_match)]
             match get_number_from_option(option) {
                 TcpOptionNumbers::SACK_PERMITTED => return true,
                 _ => {}
@@ -482,7 +495,7 @@ impl Layer for Tcp {
 
     fn serialize(&self, buffer: &mut [u8], _: usize) -> io::Result<usize> {
         let mut packet = MutableTcpPacket::new(buffer)
-            .ok_or(io::Error::new(io::ErrorKind::WriteZero, "buffer too small"))?;
+            .ok_or_else(|| io::Error::new(io::ErrorKind::WriteZero, "buffer too small"))?;
 
         packet.populate(&self.layer);
 
@@ -511,7 +524,7 @@ impl Layer for Tcp {
         n: usize,
     ) -> io::Result<usize> {
         let mut packet = MutableTcpPacket::new(buffer)
-            .ok_or(io::Error::new(io::ErrorKind::WriteZero, "buffer too small"))?;
+            .ok_or_else(|| io::Error::new(io::ErrorKind::WriteZero, "buffer too small"))?;
 
         packet.populate(&self.layer);
 
@@ -539,20 +552,18 @@ impl Layer for Tcp {
 
 fn bytes_to_u16(bytes: &[u8]) -> u16 {
     let mut result = 0;
-    let size = bytes.len();
 
-    for i in 0..min(2, size) {
-        result = result * 256 + bytes[i] as u16;
+    for byte in bytes.iter().take(2) {
+        result = result * 256 + *byte as u16;
     }
     result
 }
 
 fn bytes_to_u32(bytes: &[u8]) -> u32 {
     let mut result = 0;
-    let size = bytes.len();
 
-    for i in 0..min(4, size) {
-        result = result * 256 + bytes[i] as u32;
+    for byte in bytes.iter().take(4) {
+        result = result * 256 + *byte as u32;
     }
     result
 }

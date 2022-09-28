@@ -80,7 +80,7 @@ impl Layer for Ethernet {
 
     fn serialize(&self, buffer: &mut [u8], _: usize) -> io::Result<usize> {
         let mut packet = MutableEthernetPacket::new(buffer)
-            .ok_or(io::Error::new(io::ErrorKind::WriteZero, "buffer too small"))?;
+            .ok_or_else(|| io::Error::new(io::ErrorKind::WriteZero, "buffer too small"))?;
 
         packet.populate(&self.layer);
 

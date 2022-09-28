@@ -30,8 +30,8 @@ impl Icmpv4 {
     /// Creates a `Icmpv4` represents an ICMPv4 echo reply.
     pub fn new_echo_reply(identifier: u16, sequence_number: u16) -> Icmpv4 {
         let mut payload = vec![0u8; 4];
-        &payload[..2].copy_from_slice(&identifier.to_ne_bytes());
-        &payload[2..].copy_from_slice(&sequence_number.to_ne_bytes());
+        payload[..2].copy_from_slice(&identifier.to_ne_bytes());
+        payload[2..].copy_from_slice(&sequence_number.to_ne_bytes());
         let icmp = Icmp {
             icmp_type: IcmpTypes::EchoReply,
             icmp_code: echo_reply::IcmpCodes::NoCode,
@@ -44,7 +44,7 @@ impl Icmpv4 {
     /// Creates a `Icmpv4` represents an ICMPv4 destination host unreachable.
     pub fn new_destination_host_unreachable(payload: &[u8]) -> Icmpv4 {
         let mut next_payload = vec![0u8; 4 + payload.len()];
-        &next_payload[4..].copy_from_slice(payload);
+        next_payload[4..].copy_from_slice(payload);
         let icmp = Icmp {
             icmp_type: IcmpTypes::DestinationUnreachable,
             icmp_code: destination_unreachable::IcmpCodes::DestinationHostUnreachable,
@@ -57,7 +57,7 @@ impl Icmpv4 {
     /// Creates a `Icmpv4` represents an ICMPv4 destination port unreachable.
     pub fn new_destination_port_unreachable(payload: &[u8]) -> Icmpv4 {
         let mut next_payload = vec![0u8; 4 + payload.len()];
-        &next_payload[4..].copy_from_slice(payload);
+        next_payload[4..].copy_from_slice(payload);
         let icmp = Icmp {
             icmp_type: IcmpTypes::DestinationUnreachable,
             icmp_code: destination_unreachable::IcmpCodes::DestinationPortUnreachable,
@@ -227,24 +227,16 @@ impl Icmpv4 {
                 if !ipv4.is_fragment() {
                     let transport = match ipv4_packet.get_next_level_protocol() {
                         IpNextHeaderProtocols::Icmp => {
-                            match IcmpPacket::new(ipv4_packet.payload()) {
-                                Some(ref icmp_packet) => {
-                                    Some(Layers::Icmpv4(Icmpv4::parse(icmp_packet)))
-                                }
-                                None => None,
-                            }
+                            IcmpPacket::new(ipv4_packet.payload())
+                                .map(|icmp_packet| Layers::Icmpv4(Icmpv4::parse(&icmp_packet)))
                         }
-                        IpNextHeaderProtocols::Tcp => match TcpPacket::new(ipv4_packet.payload()) {
-                            Some(ref tcp_packet) => {
-                                Some(Layers::Tcp(Tcp::parse(tcp_packet, &ipv4)))
-                            }
-                            None => None,
+                        IpNextHeaderProtocols::Tcp => {
+                            TcpPacket::new(ipv4_packet.payload())
+                                .map(|tcp_packet| Layers::Tcp(Tcp::parse(&tcp_packet, &ipv4)))
                         },
-                        IpNextHeaderProtocols::Udp => match UdpPacket::new(ipv4_packet.payload()) {
-                            Some(ref udp_packet) => {
-                                Some(Layers::Udp(Udp::parse(udp_packet, &ipv4)))
-                            }
-                            None => None,
+                        IpNextHeaderProtocols::Udp => {
+                            UdpPacket::new(ipv4_packet.payload())
+                                .map(|udp_packet| Layers::Udp(Udp::parse(&udp_packet, &ipv4)))
                         },
                         _ => None,
                     };
@@ -309,7 +301,7 @@ impl Layer for Icmpv4 {
 
     fn serialize(&self, buffer: &mut [u8], _: usize) -> io::Result<usize> {
         let mut packet = MutableIcmpPacket::new(buffer)
-            .ok_or(io::Error::new(io::ErrorKind::WriteZero, "buffer too small"))?;
+            .ok_or_else(|| io::Error::new(io::ErrorKind::WriteZero, "buffer too small"))?;
 
         packet.populate(&self.layer);
 

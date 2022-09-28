@@ -114,7 +114,7 @@ impl Layer for Udp {
 
     fn serialize(&self, buffer: &mut [u8], n: usize) -> io::Result<usize> {
         let mut packet = MutableUdpPacket::new(buffer)
-            .ok_or(io::Error::new(io::ErrorKind::WriteZero, "buffer too small"))?;
+            .ok_or_else(|| io::Error::new(io::ErrorKind::WriteZero, "buffer too small"))?;
 
         packet.populate(&self.layer);
 
@@ -145,7 +145,7 @@ impl Layer for Udp {
         n: usize,
     ) -> io::Result<usize> {
         let mut packet = MutableUdpPacket::new(buffer)
-            .ok_or(io::Error::new(io::ErrorKind::WriteZero, "buffer too small"))?;
+            .ok_or_else(|| io::Error::new(io::ErrorKind::WriteZero, "buffer too small"))?;
 
         packet.populate(&self.layer);
 
