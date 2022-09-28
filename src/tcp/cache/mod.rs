@@ -15,7 +15,7 @@ const MAX_U32_WINDOW_SIZE: usize = 16 * 1024 * 1024;
 /// Represents if the buffer should be allocated in the initial constructor of caches.
 const ALLOC_IN_INITIAL: bool = false;
 
-/// Represents a queue cache. The `Queue` can hold continuos bytes constantly unless they are
+/// Represents a queue cache. The `Queue` can hold continuous bytes constantly unless they are
 /// invalidated. The `Queue` can be used as a send window of a TCP connection.
 #[derive(Debug)]
 pub struct Queue {
@@ -661,7 +661,7 @@ impl Window {
                 }
             }
 
-            // Continuos payload
+            // Continuous payload
             let mut cont_payload = vec![0u8; size];
 
             // From the head to the end of the buffer
