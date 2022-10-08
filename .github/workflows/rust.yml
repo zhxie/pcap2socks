@@ -24,8 +24,14 @@ jobs:
             7z x WpdPack.zip
             cp WpdPack/Lib/x64/Packet.lib Packet.lib
       if: matrix.os == 'windows-latest'
+    - name: Download cross
+      run:  cargo install cross
+      if: matrix.os == 'ubuntu-latest'
+    - name: Build arm
+      run: cross build --release --target=armv7-unknown-linux-gnueabihf --verbose
+      if: matrix.os == 'ubuntu-latest'
     - name: Build
-      run: cargo build --release --verbose
+      run:  cargo build --release --verbose
     - name: Run tests
       run: cargo test --release --verbose
     - name: Upload a build artifact
@@ -34,6 +40,12 @@ jobs:
         name: pcap2socks-latest-${{ runner.os }}-amd64
         path: ./target/release/pcap2socks
       if: matrix.os != 'windows-latest'
+    - name: Upload a armv7 artifact
+      uses: actions/upload-artifact@v2
+      with:
+        name: pcap2socks-latest-armv7
+        path: ./target/armv7-unknown-linux-gnueabihf/release/pcap2socks
+      if: matrix.os == 'ubuntu-latest'
     - name: Update a build artifact (Windows)
       uses: actions/upload-artifact@v2
       with:
