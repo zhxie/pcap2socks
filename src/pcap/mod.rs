@@ -13,7 +13,7 @@ use netifs;
 use interfaces as c_interfaces;
 
 /// Represents the hardware address MAC in an Ethernet network.
-pub type HardwareAddr = pnet::datalink::MacAddr;
+pub type HardwareAddr = MacAddr;
 
 /// Represents the unspecified hardware address `00:00:00:00:00:00` in an Ethernet network.
 pub const HARDWARE_ADDR_UNSPECIFIED: HardwareAddr = MacAddr(0, 0, 0, 0, 0, 0);
@@ -29,7 +29,7 @@ pub type Receiver = Box<dyn DataLinkReceiver>;
 const BUFFER_SIZE: usize = 256 * 1024;
 
 /// Represents a network interface and its associated addresses.
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
 pub struct Interface {
     name: String,
     alias: Option<String>,
@@ -59,16 +59,17 @@ impl Interface {
         let inters = datalink::interfaces();
         let inter = inters
             .into_iter()
-            .filter(|current_inter| current_inter.name == self.name)
-            .next()
-            .ok_or(io::Error::new(
+            .find(|current_inter| current_inter.name == self.name)
+            .ok_or_else(|| io::Error::new(
                 io::ErrorKind::NotFound,
                 "interface not found",
             ))?;
 
-        let mut config = Config::default();
-        config.write_buffer_size = BUFFER_SIZE;
-        config.read_buffer_size = BUFFER_SIZE;
+        let config = Config {
+            write_buffer_size: BUFFER_SIZE,
+            read_buffer_size: BUFFER_SIZE,
+            ..Config::default()
+        };
         let channel = datalink::channel(&inter, config)?;
         let channel = match channel {
             Channel::Ethernet(tx, rx) => (tx, rx),
@@ -95,7 +96,7 @@ impl Interface {
 
     /// Returns the first IPv4 address of the interface.
     pub fn ip_addr(&self) -> Option<Ipv4Addr> {
-        if self.ip_addrs.len() > 0 {
+        if !self.ip_addrs.is_empty() {
             Some(self.ip_addrs[0])
         } else {
             None
@@ -125,14 +126,12 @@ impl Display for Interface {
             None => self.name.clone(),
         };
 
-        let ip_addrs = format!(
-            "{}",
-            self.ip_addrs
-                .iter()
-                .map(|ip_addr| { ip_addr.to_string() })
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
+        let ip_addrs = self.ip_addrs
+            .iter()
+            .map(|ip_addr| { ip_addr.to_string() })
+            .collect::<Vec<_>>()
+            .join(", ");
+
 
         let mut flags = String::new();
         if self.is_loopback {
@@ -177,7 +176,7 @@ pub fn interfaces() -> Vec<Interface> {
                 .collect();
 
             // Exclude interface without any IPv4 address
-            if i.ip_addrs.len() <= 0 {
+            if i.ip_addrs.is_empty() {
                 return Err(());
             }
 
@@ -189,9 +188,7 @@ pub fn interfaces() -> Vec<Interface> {
         .filter_map(Result::ok)
         .collect::<Vec<_>>();
 
-    let ifs = mark_interfaces(ifs);
-
-    ifs
+    mark_interfaces(ifs)
 }
 
 #[cfg(windows)]
@@ -230,7 +227,7 @@ fn mark_interfaces(mut ifs: Vec<Interface>) -> Vec<Interface> {
 }
 
 /// Represents a virtual send half which will discard all incoming traffic.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct BlackHole {}
 
 impl BlackHole {

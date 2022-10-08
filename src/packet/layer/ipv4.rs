@@ -201,7 +201,7 @@ impl Layer for Ipv4 {
 
     fn serialize(&self, buffer: &mut [u8], n: usize) -> io::Result<usize> {
         let mut packet = MutableIpv4Packet::new(buffer)
-            .ok_or(io::Error::new(io::ErrorKind::WriteZero, "buffer too small"))?;
+            .ok_or_else(|| io::Error::new(io::ErrorKind::WriteZero, "buffer too small"))?;
 
         packet.populate(&self.layer);
 
@@ -233,7 +233,7 @@ impl Layer for Ipv4 {
         n: usize,
     ) -> io::Result<usize> {
         let mut packet = MutableIpv4Packet::new(buffer)
-            .ok_or(io::Error::new(io::ErrorKind::WriteZero, "buffer too small"))?;
+            .ok_or_else(|| io::Error::new(io::ErrorKind::WriteZero, "buffer too small"))?;
 
         packet.populate(&self.layer);
 

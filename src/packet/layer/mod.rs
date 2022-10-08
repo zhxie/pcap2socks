@@ -56,6 +56,7 @@ pub mod LayerKinds {
 }
 
 /// Represents a layer.
+#[allow(clippy::len_without_is_empty)]
 pub trait Layer: Display {
     /// Returns the kind of the layer.
     fn kind(&self) -> LayerKind;

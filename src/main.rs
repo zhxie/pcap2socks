@@ -36,7 +36,7 @@ async fn main() {
     let mtu = match flags.mtu {
         Some(mtu) => mtu,
         None => {
-            if inter.mtu() <= 0 {
+            if inter.mtu() == 0 {
                 error!("Cannot obtain the MTU. Please use --mtu <VALUE> to set");
                 return;
             }
@@ -89,7 +89,7 @@ async fn main() {
     }
 
     // Gateway
-    let gw = publish.unwrap_or(inter.ip_addr().unwrap());
+    let gw = publish.unwrap_or_else(|| inter.ip_addr().unwrap());
     if src.size() == 1 && src.network() == gw {
         error!("The source cannot be the same with the gateway (publish)");
         return;
@@ -405,7 +405,7 @@ impl FromStr for ResolvableSocketAddrV4 {
             Err(e) => {
                 has_alias = true;
 
-                let v = s.split(":").collect::<Vec<_>>();
+                let v = s.split(':').collect::<Vec<_>>();
                 if v.len() != 2 {
                     return Err(ResolvableAddrParseError::from(e));
                 }

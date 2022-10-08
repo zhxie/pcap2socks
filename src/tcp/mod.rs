@@ -92,7 +92,7 @@ impl TcpTahoeCcState {
             dst,
             mss,
             cwnd: mss,
-            ssthresh: mss.checked_mul(INITIAL_SSTHRESH_RATE).unwrap_or(usize::MAX),
+            ssthresh: mss.saturating_mul(INITIAL_SSTHRESH_RATE),
             cwnd_count: 0,
         }
     }
@@ -108,7 +108,7 @@ impl TcpTahoeCcState {
     }
 
     fn update_ssthresh(&mut self) {
-        self.ssthresh = max(self.cwnd / 2, self.mss.checked_mul(2).unwrap_or(usize::MAX));
+        self.ssthresh = max(self.cwnd / 2, self.mss.saturating_mul(2));
         trace!(
             "update TCP slow start threshold of {} -> {} to {}",
             self.dst,
@@ -121,11 +121,12 @@ impl TcpTahoeCcState {
         let remain = self.ssthresh - self.cwnd;
         let delta = min(remain, size);
 
-        self.set_cwnd(self.cwnd.checked_add(delta).unwrap_or(usize::MAX));
+        self.set_cwnd(self.cwnd.saturating_add(delta));
 
         size - delta
     }
 
+    #[allow(clippy::unnecessary_lazy_evaluations)]
     fn congestion_control(&mut self, size: usize) {
         let remain = self.cwnd - self.cwnd_count;
 
@@ -139,13 +140,10 @@ impl TcpTahoeCcState {
         if size >= remain {
             let size_remain = size - remain;
 
-            let n = (size_remain / self.cwnd)
-                .checked_add(1)
-                .unwrap_or(usize::MAX);
+            let n = (size_remain / self.cwnd).saturating_add(1);
             self.set_cwnd(
                 self.cwnd
-                    .checked_add(self.mss.checked_mul(n).unwrap_or(usize::MAX))
-                    .unwrap_or(usize::MAX),
+                    .saturating_add(self.mss.saturating_mul(n)),
             )
         }
     }
@@ -213,7 +211,7 @@ impl TcpRenoCcState {
             dst,
             mss,
             cwnd: mss,
-            ssthresh: mss.checked_mul(INITIAL_SSTHRESH_RATE).unwrap_or(usize::MAX),
+            ssthresh: mss.saturating_mul(INITIAL_SSTHRESH_RATE),
             cwnd_count: 0,
         }
     }
@@ -229,7 +227,7 @@ impl TcpRenoCcState {
     }
 
     fn update_ssthresh(&mut self) {
-        self.ssthresh = max(self.cwnd / 2, self.mss.checked_mul(2).unwrap_or(usize::MAX));
+        self.ssthresh = max(self.cwnd / 2, self.mss.saturating_mul(2));
         trace!(
             "update TCP slow start threshold of {} -> {} to {}",
             self.dst,
@@ -242,11 +240,12 @@ impl TcpRenoCcState {
         let remain = self.ssthresh - self.cwnd;
         let delta = min(remain, size);
 
-        self.set_cwnd(self.cwnd.checked_add(delta).unwrap_or(usize::MAX));
+        self.set_cwnd(self.cwnd.saturating_add(delta));
 
         size - delta
     }
 
+    #[allow(clippy::unnecessary_lazy_evaluations)]
     fn congestion_control(&mut self, size: usize) {
         let remain = self.cwnd - self.cwnd_count;
 
@@ -260,13 +259,10 @@ impl TcpRenoCcState {
         if size >= remain {
             let size_remain = size - remain;
 
-            let n = (size_remain / self.cwnd)
-                .checked_add(1)
-                .unwrap_or(usize::MAX);
+            let n = (size_remain / self.cwnd).saturating_add(1);
             self.set_cwnd(
                 self.cwnd
-                    .checked_add(self.mss.checked_mul(n).unwrap_or(usize::MAX))
-                    .unwrap_or(usize::MAX),
+                    .saturating_add(self.mss.saturating_mul(n)),
             )
         }
     }
@@ -341,13 +337,13 @@ impl TcpCubicCcState {
         TcpCubicCcState {
             src,
             dst,
-            w_max: mss.checked_mul(INITIAL_SSTHRESH_RATE).unwrap_or(usize::MAX),
-            w_last_max: mss.checked_mul(INITIAL_SSTHRESH_RATE).unwrap_or(usize::MAX),
+            w_max: mss.saturating_mul(INITIAL_SSTHRESH_RATE),
+            w_last_max: mss.saturating_mul(INITIAL_SSTHRESH_RATE),
             k: 0.0,
             last_update: Instant::now(),
             mss,
             cwnd: mss,
-            ssthresh: mss.checked_mul(INITIAL_SSTHRESH_RATE).unwrap_or(usize::MAX),
+            ssthresh: mss.saturating_mul(INITIAL_SSTHRESH_RATE),
             cwnd_count: 0,
         }
     }
@@ -389,7 +385,7 @@ impl TcpCubicCcState {
     fn update_ssthresh(&mut self) {
         self.ssthresh = max(
             (self.cwnd as f64 * CC_CUBIC_BETA) as usize,
-            self.mss.checked_mul(2).unwrap_or(usize::MAX),
+            self.mss.saturating_mul(2),
         );
         trace!(
             "update TCP slow start threshold of {} -> {} to {}",
@@ -400,10 +396,7 @@ impl TcpCubicCcState {
     }
 
     fn reset(&mut self) {
-        self.w_max = self
-            .mss
-            .checked_mul(INITIAL_SSTHRESH_RATE)
-            .unwrap_or(usize::MAX);
+        self.w_max = self.mss.saturating_mul(INITIAL_SSTHRESH_RATE);
         trace!(
             "reset TCP window max of {} -> {} to {}",
             self.dst,
@@ -421,11 +414,12 @@ impl TcpCubicCcState {
         let remain = self.ssthresh - self.cwnd;
         let delta = min(remain, size);
 
-        self.set_cwnd(self.cwnd.checked_add(delta).unwrap_or(usize::MAX));
+        self.set_cwnd(self.cwnd.saturating_add(delta));
 
         size - delta
     }
 
+    #[allow(clippy::unnecessary_lazy_evaluations)]
     fn congestion_control_fallback(&mut self, size: usize) {
         let remain = self.cwnd - self.cwnd_count;
 
@@ -440,12 +434,9 @@ impl TcpCubicCcState {
             let size_remain = size - remain;
 
             let n = (size_remain / self.cwnd)
-                .checked_add(1)
-                .unwrap_or(usize::MAX);
+                .saturating_add(1);
             self.set_cwnd(
-                self.cwnd
-                    .checked_add(self.mss.checked_mul(n).unwrap_or(usize::MAX))
-                    .unwrap_or(usize::MAX),
+                self.cwnd.saturating_add(self.mss.saturating_mul(n)),
             )
         }
     }
@@ -585,6 +576,7 @@ pub struct TcpTxState {
 
 impl TcpTxState {
     /// Creates a new `TcpTxState`.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         src: SocketAddrV4,
         dst: SocketAddrV4,
@@ -642,6 +634,7 @@ impl TcpTxState {
     }
 
     /// Adds sequence to the TCP connection.
+    #[allow(clippy::unnecessary_lazy_evaluations)]
     pub fn add_sequence(&mut self, n: u32) {
         self.sequence = self
             .sequence
@@ -656,6 +649,7 @@ impl TcpTxState {
     }
 
     /// Adds acknowledgement to the TCP connection.
+    #[allow(clippy::unnecessary_lazy_evaluations)]
     pub fn add_acknowledgement(&mut self, n: u32) {
         self.acknowledgement = self
             .acknowledgement
@@ -698,6 +692,7 @@ impl TcpTxState {
     }
 
     /// Acknowledges to the given sequence of the TCP connection.
+    #[allow(clippy::unnecessary_lazy_evaluations)]
     pub fn acknowledge(&mut self, sequence: u32) {
         let mut rtt = None;
 
@@ -870,7 +865,7 @@ impl TcpTxState {
 
     /// Doubles the RTO of the TCP connection.
     pub fn double_rto(&mut self) {
-        self.set_rto(self.rto.checked_mul(2).unwrap_or(u64::MAX));
+        self.set_rto(self.rto.saturating_mul(2));
     }
 
     /// Updates the RTO of the TCP connection.
@@ -994,7 +989,7 @@ impl TcpTxState {
 
     /// Returns the remaining size of the queue of the TCP connection.
     pub fn queue_remaining(&self) -> usize {
-        MAX_QUEUE.checked_sub(self.queue().len()).unwrap_or(0)
+        MAX_QUEUE.saturating_sub(self.queue().len())
     }
 
     /// Returns the RTO of the TCP connection.
@@ -1077,6 +1072,7 @@ impl TcpRxState {
     }
 
     /// Adds receive next to the TCP connection.
+    #[allow(clippy::unnecessary_lazy_evaluations)]
     pub fn add_recv_next(&mut self, n: u32) {
         self.recv_next = self
             .recv_next
@@ -1093,7 +1089,7 @@ impl TcpRxState {
     /// Admits the acknowledgement of the TCP connection.
     pub fn admit(&mut self, acknowledgement: u32) {
         if self.acknowledgement == acknowledgement {
-            self.duplicate = self.duplicate.checked_add(1).unwrap_or(usize::MAX);
+            self.duplicate = self.duplicate.saturating_add(1);
             trace!(
                 "increase TCP duplicate of {} -> {} at {} to {}",
                 self.src,

@@ -33,10 +33,7 @@ impl ProxyConfig {
             SocksOption::new(
                 force_associate_remote,
                 force_associate_bind_addr,
-                match auth {
-                    Some((username, password)) => Some(SocksAuth::new(username, password)),
-                    None => None,
-                },
+                auth.map(|(username, password)| SocksAuth::new(username, password)),
             ),
         )
     }
@@ -95,7 +92,7 @@ impl StreamWorker {
 
         let stream = match proxy {
             ProxyConfig::Socks(remote, options) => {
-                socks::connect(remote.clone(), dst, options).await?
+                socks::connect(*remote, dst, options).await?
             }
         };
         let stream = stream.into_inner();
@@ -284,7 +281,7 @@ impl StreamWorker {
     /// Sends data on the proxied stream in TCP to the destination.
     pub fn send(&mut self, payload: Vec<u8>) -> io::Result<()> {
         // Send
-        if let Err(_) = self.tx_tx.send(payload) {
+        if self.tx_tx.send(payload).is_err() {
             return Err(io::Error::from(io::ErrorKind::NotConnected));
         }
 
@@ -356,7 +353,7 @@ impl StreamWorker2 {
 
         let stream = match proxy {
             ProxyConfig::Socks(remote, options) => {
-                socks::connect(remote.clone(), dst, options).await?
+                socks::connect(*remote, dst, options).await?
             }
         };
         let stream = stream.into_inner();
@@ -547,9 +544,10 @@ impl DatagramWorker {
         proxy: &ProxyConfig,
     ) -> io::Result<(DatagramWorker, u16)> {
         let (mut socks_rx, mut socks_tx, local_port) = match proxy {
-            ProxyConfig::Socks(remote, options) => socks::bind(remote.clone(), options).await?,
+            ProxyConfig::Socks(remote, options) => socks::bind(*remote, options).await?,
         };
 
+        #[allow(clippy::type_complexity)]
         let (tx_tx, mut tx_rx): (
             UnboundedSender<(Vec<u8>, SocketAddrV4)>,
             UnboundedReceiver<(Vec<u8>, SocketAddrV4)>,
@@ -693,7 +691,7 @@ impl DatagramWorker {
     /// Sends data on the proxied datagram in UDP to the destination.
     pub fn send_to(&mut self, payload: Vec<u8>, dst: SocketAddrV4) -> io::Result<()> {
         // Send
-        if let Err(_) = self.tx_tx.send((payload, dst)) {
+        if self.tx_tx.send((payload, dst)).is_err() {
             return Err(io::Error::from(io::ErrorKind::NotConnected));
         }
 
@@ -745,7 +743,7 @@ impl DatagramWorker2 {
         proxy: &ProxyConfig,
     ) -> io::Result<(DatagramWorker2, u16)> {
         let (mut socks_rx, socks_tx, local_port) = match proxy {
-            ProxyConfig::Socks(remote, options) => socks::bind(remote.clone(), options).await?,
+            ProxyConfig::Socks(remote, options) => socks::bind(*remote, options).await?,
         };
 
         let a_src = Arc::new(AtomicU64::from(socket_addr_v4_to_u64(&src)));
@@ -879,7 +877,7 @@ impl Drop for DatagramWorker2 {
 }
 
 fn socket_addr_v4_to_u64(addr: &SocketAddrV4) -> u64 {
-    let ip = u32::from(addr.ip().clone());
+    let ip = u32::from(*addr.ip());
 
     ((ip as u64) << 16) + addr.port() as u64
 }

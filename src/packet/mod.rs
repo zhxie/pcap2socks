@@ -47,10 +47,7 @@ impl Indicator {
 
         let link = Layers::Ethernet(Ethernet::parse(packet));
         let network = match packet.get_ethertype() {
-            EtherTypes::Arp => match ArpPacket::new(packet.payload()) {
-                Some(ref arp_packet) => Some(Layers::Arp(Arp::parse(arp_packet))),
-                None => None,
-            },
+            EtherTypes::Arp => ArpPacket::new(packet.payload()).map(|arp_packet| Layers::Arp(Arp::parse(&arp_packet))),
             EtherTypes::Ipv4 => match Ipv4Packet::new(packet.payload()) {
                 Some(ref ipv4_packet) => {
                     let ipv4 = Ipv4::parse(ipv4_packet);
@@ -58,28 +55,16 @@ impl Indicator {
                     if !ipv4.is_fragment() {
                         transport = match ipv4_packet.get_next_level_protocol() {
                             IpNextHeaderProtocols::Icmp => {
-                                match IcmpPacket::new(ipv4_packet.payload()) {
-                                    Some(ref icmp_packet) => {
-                                        Some(Layers::Icmpv4(Icmpv4::parse(icmp_packet)))
-                                    }
-                                    None => None,
-                                }
+                                IcmpPacket::new(ipv4_packet.payload())
+                                    .map(|icmp_packet| Layers::Icmpv4(Icmpv4::parse(&icmp_packet)))
                             }
                             IpNextHeaderProtocols::Tcp => {
-                                match TcpPacket::new(ipv4_packet.payload()) {
-                                    Some(ref tcp_packet) => {
-                                        Some(Layers::Tcp(Tcp::parse(tcp_packet, &ipv4)))
-                                    }
-                                    None => None,
-                                }
+                                TcpPacket::new(ipv4_packet.payload())
+                                    .map(|tcp_packet| Layers::Tcp(Tcp::parse(&tcp_packet, &ipv4)))
                             }
                             IpNextHeaderProtocols::Udp => {
-                                match UdpPacket::new(ipv4_packet.payload()) {
-                                    Some(ref udp_packet) => {
-                                        Some(Layers::Udp(Udp::parse(udp_packet, &ipv4)))
-                                    }
-                                    None => None,
-                                }
+                                UdpPacket::new(ipv4_packet.payload())
+                                    .map(|udp_packet| Layers::Udp(Udp::parse(&udp_packet, &ipv4)))
                             }
                             _ => None,
                         };
@@ -101,10 +86,7 @@ impl Indicator {
 
     /// Creates a `Indicator` by the given frame.
     pub fn from(frame: &[u8]) -> Option<Indicator> {
-        match EthernetPacket::new(frame) {
-            Some(ref packet) => Some(Indicator::parse(packet)),
-            None => None,
-        }
+        EthernetPacket::new(frame).map(|packet| Indicator::parse(&packet))
     }
 
     /// Returns the brief of the indicator.
@@ -153,18 +135,19 @@ impl Indicator {
     }
 
     /// Returns The length of the indicator when converted into a byte-array.
+    #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         let mut size = 0;
 
         // Link
-        size = size + self.link().len();
+        size += self.link().len();
         // Network
         if let Some(network) = self.network() {
-            size = size + network.len();
+            size += network.len();
         }
         // Transport
         if let Some(transport) = self.transport() {
-            size = size + transport.len();
+            size += transport.len();
         }
 
         size
@@ -192,18 +175,18 @@ impl Indicator {
 
         // Link
         let m = self.link().serialize(&mut buffer[begin..], total)?;
-        begin = begin + m;
-        total = total - m;
+        begin += m;
+        total -= m;
         // Network
         if let Some(network) = self.network() {
             let m = network.serialize(&mut buffer[begin..], total)?;
-            begin = begin + m;
-            total = total - m;
+            begin += m;
+            total -= m;
         };
         // Transport
         if let Some(transport) = self.transport() {
             let m = transport.serialize(&mut buffer[begin..], total)?;
-            begin = begin + m;
+            begin += m;
         };
 
         Ok(begin)
@@ -218,18 +201,18 @@ impl Indicator {
         let m = self
             .link()
             .serialize_with_payload(&mut buffer[begin..], payload, total)?;
-        begin = begin + m;
-        total = total - m;
+        begin += m;
+        total -= m;
         // Network
         if let Some(network) = self.network() {
             let m = network.serialize_with_payload(&mut buffer[begin..], payload, total)?;
-            begin = begin + m;
-            total = total - m;
+            begin += m;
+            total -= m;
         };
         // Transport
         if let Some(transport) = self.transport() {
             let m = transport.serialize_with_payload(&mut buffer[begin..], payload, total)?;
-            begin = begin + m;
+            begin += m;
         };
 
         Ok(begin)
@@ -274,6 +257,7 @@ impl Indicator {
 
     /// Returns the ARP layer.
     pub fn arp(&self) -> Option<&Arp> {
+        #[allow(clippy::collapsible_match)]
         if let Some(layer) = self.network() {
             if let Layers::Arp(layer) = layer {
                 return Some(layer);
@@ -285,6 +269,7 @@ impl Indicator {
 
     /// Returns the IPv4 layer.
     pub fn ipv4(&self) -> Option<&Ipv4> {
+        #[allow(clippy::collapsible_match)]
         if let Some(layer) = self.network() {
             if let Layers::Ipv4(layer) = layer {
                 return Some(layer);
@@ -314,6 +299,7 @@ impl Indicator {
 
     /// Returns the ICMPv4 layer.
     pub fn icmpv4(&self) -> Option<&Icmpv4> {
+        #[allow(clippy::collapsible_match)]
         if let Some(layer) = self.transport() {
             if let Layers::Icmpv4(layer) = layer {
                 return Some(layer);
@@ -325,6 +311,7 @@ impl Indicator {
 
     /// Returns the TCP layer.
     pub fn tcp(&self) -> Option<&Tcp> {
+        #[allow(clippy::collapsible_match)]
         if let Some(layer) = self.transport() {
             if let Layers::Tcp(layer) = layer {
                 return Some(layer);
@@ -336,6 +323,7 @@ impl Indicator {
 
     /// Returns the UDP layer.
     pub fn udp(&self) -> Option<&Udp> {
+        #[allow(clippy::collapsible_match)]
         if let Some(layer) = self.transport() {
             if let Layers::Udp(layer) = layer {
                 return Some(layer);
@@ -370,6 +358,7 @@ impl Display for Indicator {
 const EXPIRE_TIME: u128 = 10000;
 
 /// Represents a fragmentation.
+#[allow(dead_code)]
 #[derive(Debug)]
 pub struct Fragmentation {
     ethernet: Ethernet,
@@ -423,17 +412,17 @@ impl Fragmentation {
     /// Concatenates fragmentations and returns the transport layer and the payload.
     pub fn concatenate(&self) -> (Option<Layers>, &[u8]) {
         let transport = match self.ipv4.next_level_protocol() {
-            IpNextHeaderProtocols::Icmp => match IcmpPacket::new(&self.buffer[..self.length]) {
-                Some(ref icmp_packet) => Some(Layers::Icmpv4(Icmpv4::parse(icmp_packet))),
-                None => None,
+            IpNextHeaderProtocols::Icmp => {
+                IcmpPacket::new(&self.buffer[..self.length])
+                    .map(|icmp_packet| Layers::Icmpv4(Icmpv4::parse(&icmp_packet)))
             },
-            IpNextHeaderProtocols::Tcp => match TcpPacket::new(&self.buffer[..self.length]) {
-                Some(ref tcp_packet) => Some(Layers::Tcp(Tcp::parse(tcp_packet, &self.ipv4))),
-                None => None,
+            IpNextHeaderProtocols::Tcp => {
+                TcpPacket::new(&self.buffer[..self.length])
+                    .map(|tcp_packet| Layers::Tcp(Tcp::parse(&tcp_packet, &self.ipv4)))
             },
-            IpNextHeaderProtocols::Udp => match UdpPacket::new(&self.buffer[..self.length]) {
-                Some(ref udp_packet) => Some(Layers::Udp(Udp::parse(udp_packet, &self.ipv4))),
-                None => None,
+            IpNextHeaderProtocols::Udp => {
+                UdpPacket::new(&self.buffer[..self.length])
+                    .map(|udp_packet| Layers::Udp(Udp::parse(&udp_packet, &self.ipv4)))
             },
             _ => None,
         };
@@ -460,7 +449,7 @@ impl Fragmentation {
 }
 
 /// Represents a defragmentation machine.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Defraggler {
     frags: HashMap<(Ipv4Addr, Ipv4Addr, LayerKind, u16), Fragmentation>,
 }

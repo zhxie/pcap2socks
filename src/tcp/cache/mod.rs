@@ -15,7 +15,7 @@ const MAX_U32_WINDOW_SIZE: usize = 16 * 1024 * 1024;
 /// Represents if the buffer should be allocated in the initial constructor of caches.
 const ALLOC_IN_INITIAL: bool = false;
 
-/// Represents a queue cache. The `Queue` can hold continuos bytes constantly unless they are
+/// Represents a queue cache. The `Queue` can hold continuous bytes constantly unless they are
 /// invalidated. The `Queue` can be used as a send window of a TCP connection.
 #[derive(Debug)]
 pub struct Queue {
@@ -28,6 +28,7 @@ pub struct Queue {
     retrans: Option<u32>,
 }
 
+#[allow(clippy::unnecessary_lazy_evaluations)]
 impl Queue {
     /// Creates a new `Queue`.
     #[deprecated = "Use with_capacity instead"]
@@ -120,7 +121,7 @@ impl Queue {
 
         if size <= MAX_U32_WINDOW_SIZE as usize {
             self.sequence = sequence;
-            self.size = self.size.checked_sub(size).unwrap_or(0);
+            self.size = self.size.saturating_sub(size);
             if self.size == 0 {
                 self.head = 0;
             } else {
@@ -360,7 +361,7 @@ impl Display for Queue {
         let tail = self
             .tail()
             .checked_sub(1)
-            .unwrap_or(self.buffer.len().checked_sub(1).unwrap_or(0));
+            .unwrap_or_else(|| self.buffer.len().saturating_sub(1));
 
         write!(f, "[")?;
         for i in 0..self.buffer.len() {
@@ -481,6 +482,7 @@ impl Window {
     }
 
     /// Appends some bytes to the window and returns continuous bytes from the beginning.
+    #[allow(clippy::unnecessary_lazy_evaluations)]
     pub fn append(&mut self, sequence: u32, payload: &[u8]) -> Result<Option<Vec<u8>>> {
         let sub_sequence = sequence
             .checked_sub(self.sequence)
@@ -548,7 +550,7 @@ impl Window {
             for (begin, end) in ranges {
                 // From the begin to the mid of the buffer
                 let len_a = min(
-                    (new_len - prev_len).checked_sub(begin).unwrap_or(0),
+                    (new_len - prev_len).saturating_sub(begin),
                     end - begin,
                 );
                 if len_a > 0 {
@@ -612,7 +614,7 @@ impl Window {
                     end = max(end, key + value as u64);
                 }
 
-                if pop_keys.len() <= 0 {
+                if pop_keys.is_empty() {
                     break;
                 }
 
@@ -651,7 +653,7 @@ impl Window {
 
             // Shrink range sequence is possible
             if ((u32::MAX - self.sequence) as usize) < size {
-                let keys = self.edges.keys().map(|x| *x).collect::<Vec<_>>();
+                let keys = self.edges.keys().copied().collect::<Vec<_>>();
 
                 for key in keys {
                     let value = self.edges.remove(&key).unwrap();
@@ -659,7 +661,7 @@ impl Window {
                 }
             }
 
-            // Continuos payload
+            // Continuous payload
             let mut cont_payload = vec![0u8; size];
 
             // From the head to the end of the buffer
@@ -696,6 +698,7 @@ impl Window {
     }
 
     /// Returns the receive next of the window.
+    #[allow(clippy::unnecessary_lazy_evaluations)]
     pub fn recv_next(&self) -> u32 {
         self.sequence
             .checked_add(self.size as u32)
@@ -711,6 +714,7 @@ impl Window {
         self.get_tail(self.head, self.size, self.buffer.len())
     }
 
+    #[allow(clippy::unnecessary_lazy_evaluations)]
     fn get_tail(&self, head: usize, size: usize, max: usize) -> usize {
         let mod_sub_sequence = size.checked_rem(max).unwrap_or(0);
         head.checked_add(mod_sub_sequence)
@@ -720,6 +724,7 @@ impl Window {
     }
 
     /// Returns the filled edges of the window.
+    #[allow(clippy::unnecessary_lazy_evaluations)]
     pub fn filled(&self) -> Vec<(u32, u32)> {
         let mut v = Vec::new();
         for (&sequence, &size) in &self.edges {
@@ -746,7 +751,7 @@ impl Display for Window {
         let tail = self
             .tail()
             .checked_sub(1)
-            .unwrap_or(self.buffer.len().checked_sub(1).unwrap_or(0));
+            .unwrap_or_else(|| self.buffer.len().saturating_sub(1));
 
         let mut edge_begin_set = HashSet::new();
         let mut edge_end_set = HashSet::new();

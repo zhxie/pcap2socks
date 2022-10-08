@@ -38,16 +38,17 @@ impl SocksOption {
     ) -> SocksOption {
         SocksOption {
             force_associate_remote,
-            force_associate_bind_addr: force_associate_bind_addr,
+            force_associate_bind_addr,
             auth,
         }
     }
 
     fn auth(&self) -> Option<Auth> {
-        match self.auth {
-            Some(ref auth) => Some(Auth::new(auth.username.clone(), auth.password.clone())),
-            None => None,
-        }
+        self.auth
+            .as_ref()
+            .map(|auth| {
+                Auth::new(auth.username.clone(), auth.password.clone())
+            })
     }
 }
 
@@ -60,9 +61,9 @@ pub async fn connect(
     let stream = TcpStream::connect(remote).await?;
     let mut stream = BufStream::new(stream);
     if let Err(e) = async_socks5::connect(&mut stream, dst, options.auth()).await {
-        match e {
-            async_socks5::Error::Io(e) => return Err(e),
-            _ => return Err(io::Error::new(io::ErrorKind::Other, e)),
+        return match e {
+            async_socks5::Error::Io(e) => Err(e),
+            _ => Err(io::Error::new(io::ErrorKind::Other, e)),
         }
     }
 
@@ -79,6 +80,7 @@ const HEADER_SIZE: usize = RSV_SIZE + FRAG_SIZE + ATYP_SIZE + DST_ADDR_SIZE + DS
 const ATYP_IPV4: u8 = 1;
 
 /// Represents the send half of a SOCKS5 UDP client.
+#[allow(dead_code)]
 #[derive(Debug)]
 pub struct SocksSendHalf {
     stream: Arc<BufStream<TcpStream>>,
@@ -99,18 +101,19 @@ impl SocksSendHalf {
         // ATYP
         buf[3] = ATYP_IPV4;
         // DST.ADDR
-        &buf[4..8].copy_from_slice(&dst.ip().octets());
+        buf[4..8].copy_from_slice(&dst.ip().octets());
         // DST.PORT
         buf[8] = (dst.port() / 256) as u8;
         buf[9] = (dst.port() % 256) as u8;
         // Data
-        &buf[10..].copy_from_slice(payload);
+        buf[10..].copy_from_slice(payload);
 
         self.socket.send(buf.as_slice()).await
     }
 }
 
 /// Represents the receive half of a SOCKS5 UDP client.
+#[allow(dead_code)]
 #[derive(Debug)]
 pub struct SocksRecvHalf {
     stream: Arc<BufStream<TcpStream>>,
@@ -147,7 +150,7 @@ impl SocksRecvHalf {
         );
         // Buffer
         let size = n - HEADER_SIZE;
-        &buffer[..size].copy_from_slice(&self.buffer[HEADER_SIZE..n]);
+        buffer[..size].copy_from_slice(&self.buffer[HEADER_SIZE..n]);
 
         Ok((size, addr))
     }
@@ -174,9 +177,9 @@ pub async fn bind(
     .await
     {
         Ok(datagram) => datagram,
-        Err(e) => match e {
-            async_socks5::Error::Io(e) => return Err(e),
-            _ => return Err(io::Error::new(io::ErrorKind::Other, e)),
+        Err(e) => return match e {
+            async_socks5::Error::Io(e) => Err(e),
+            _ => Err(io::Error::new(io::ErrorKind::Other, e)),
         },
     };
 
@@ -199,7 +202,7 @@ pub async fn bind(
             },
         };
     if is_rewrite {
-        let next_proxy_addr = SocketAddrV4::new(remote.ip().clone(), proxy_addr.port());
+        let next_proxy_addr = SocketAddrV4::new(*remote.ip(), proxy_addr.port());
         socket.connect(next_proxy_addr).await?;
 
         trace!(
